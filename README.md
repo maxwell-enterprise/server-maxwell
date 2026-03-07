@@ -106,16 +106,17 @@ backend-maxwell/
 │
 ├── 📂 database/
 │   └── 📂 migrations/           # SQL migration files
-│       ├── 001_create_extensions.sql
-│       ├── 002_create_enums.sql
-│       ├── 003_create_core_tables.sql
-│       ├── 004_create_commerce_tables.sql
-│       ├── 005_create_wallet_tables.sql
-│       ├── 006_create_transaction_tables.sql
-│       ├── 007_create_checkin_tables.sql
-│       ├── 008_create_automation_tables.sql
-│       ├── 009_create_rls_policies.sql
-│       └── 010_create_functions.sql
+│       ├── 001_create_extensions.sql        # legacy
+│       ├── 002_create_enums.sql             # legacy
+│       ├── 003_create_core_tables.sql       # legacy
+│       ├── 004_create_commerce_tables.sql   # legacy
+│       ├── 005_create_wallet_tables.sql     # legacy
+│       ├── 006_create_transaction_tables.sql# legacy
+│       ├── 007_create_checkin_tables.sql    # legacy
+│       ├── 008_create_automation_tables.sql # legacy
+│       ├── 009_create_rls_policies.sql      # legacy
+│       ├── 010_create_functions.sql         # legacy
+│       └── 011_full_schema_maxwellv3.sql    # ✅ skema utama (Supabase + maxwellv3)
 │
 ├── 📂 src/
 │   ├── 📄 main.ts               # Entry point aplikasi
@@ -420,6 +421,16 @@ status          gift_status ENUM (PENDING, CLAIMED, REVOKED)
 | Method | Endpoint             | Fungsi                        |
 | ------ | -------------------- | ----------------------------- |
 | `POST` | `/webhooks/midtrans` | Midtrans payment notification |
+
+**Notifikasi saat development lokal:** Midtrans mengirim webhook ke URL yang kamu set di Dashboard. `localhost` tidak bisa diakses dari internet, jadi pakai tunnel (mis. [ngrok](https://ngrok.com)):
+
+1. Jalankan server: `npm run start:dev`
+2. Di terminal lain: `ngrok http 3000`
+3. Copy URL HTTPS yang muncul (contoh: `https://abc123.ngrok-free.app`)
+4. Di **Midtrans Dashboard (Sandbox)** → **Settings** → **Configuration** → isi **Notification URL**: `https://abc123.ngrok-free.app/webhooks/midtrans`
+5. Simpan. Setiap transaksi/bayar, Midtrans akan POST ke URL itu; backend akan update status transaksi dan entitlement.
+
+Kalau ngrok di-restart, URL berubah — update lagi Notification URL di dashboard.
 
 ---
 
@@ -1031,21 +1042,14 @@ NODE_ENV=development
 
 ### Run Database Migrations
 
+Untuk menyamakan database dengan **schema maxwellv3 + Supabase** (yang dipakai front-end), cukup jalankan **satu file utama** berikut. File 001–010 bertanda *legacy* dan boleh diabaikan kalau kamu memakai skema baru ini.
+
 ```bash
-# Jalankan setiap file migration secara berurutan
-psql $DATABASE_URL -f database/migrations/001_create_extensions.sql
-psql $DATABASE_URL -f database/migrations/002_create_enums.sql
-psql $DATABASE_URL -f database/migrations/003_create_core_tables.sql
-psql $DATABASE_URL -f database/migrations/004_create_commerce_tables.sql
-psql $DATABASE_URL -f database/migrations/005_create_wallet_tables.sql
-psql $DATABASE_URL -f database/migrations/006_create_transaction_tables.sql
-psql $DATABASE_URL -f database/migrations/007_create_checkin_tables.sql
-psql $DATABASE_URL -f database/migrations/008_create_automation_tables.sql
-psql $DATABASE_URL -f database/migrations/009_create_rls_policies.sql
-psql $DATABASE_URL -f database/migrations/010_create_functions.sql
+# Recommended: jalankan skema utama yang sudah di-align dengan maxwellv3
+psql $DATABASE_URL -f database/migrations/011_full_schema_maxwellv3.sql
 ```
 
-Atau via Supabase Dashboard → SQL Editor → Paste & Run.
+Atau via Supabase Dashboard → SQL Editor → buka file `database/migrations/011_full_schema_maxwellv3.sql`, copy seluruh isinya, lalu **Paste & Run**.
 
 ### Run Development Server
 

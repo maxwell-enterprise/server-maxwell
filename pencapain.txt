@@ -1,0 +1,17 @@
+Tanggal: 7 (00:05)
+Project: Maxwell Server
+
+Pencapaian fitur yang sudah diselesaikan:
+1. Pondasi backend NestJS modular sudah jadi (AppModule + pemisahan per domain).
+2. Validasi request pakai Zod + custom validation pipe (`ZodValidationPipe`) sudah diterapkan di endpoint utama.
+3. Users module selesai untuk CRUD user, update role, dan downline endpoint.
+4. Events module selesai untuk CRUD event, status event, tier event, gate event, access rules, child events, dan attendance summary.
+5. Access Tags endpoint sudah tersedia (buat tag, list tag, lookup event by tag).
+6. Wallet module selesai untuk list wallet, detail item, history, membership card, gifting (send/claim/revoke), dan list gift sent/received.
+7. Transactions module selesai untuk checkout, list transaksi user/admin, detail transaksi, refund flow (create/approve/process), sales summary, dan webhook Midtrans endpoint.
+8. Check-in module selesai untuk scan QR, list check-in, statistik event, checkout check-in, manajemen scanner device, offline sync, dan pending sync items.
+9. Master Tiers module sudah tersedia (create/list/update/delete master tier).
+10. Struktur database migration untuk core, commerce, wallet, transaction, check-in, automation, function, dan RLS policies sudah disiapkan.
+
+Catatan:
+- Auth module masih TODO di roadmap, jadi beberapa endpoint masih pakai placeholder `temp-user-id`.

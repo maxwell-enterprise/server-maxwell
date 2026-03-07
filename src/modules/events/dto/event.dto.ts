@@ -15,46 +15,46 @@ import {
 // CREATE EVENT DTO
 // =============================================================================
 
-export const CreateEventDtoSchema = z
-  .object({
-    name: z.string().min(1).max(255),
-    slug: z.string().min(1).max(255).optional(),
-    description: z.string().optional(),
-    shortDescription: z.string().max(500).optional(),
-    type: EventTypeEnum,
-    parentEventId: z.string().uuid().optional(),
-    startTime: z.coerce.date(),
-    endTime: z.coerce.date(),
-    timezone: z.string().default('Asia/Jakarta'),
-    recurringPattern: RecurringPatternEnum.optional(),
-    recurringEndDate: z.coerce.date().optional(),
-    locationName: z.string().max(255).optional(),
-    locationAddress: z.string().optional(),
-    locationCity: z.string().max(100).optional(),
-    locationMapsUrl: z.string().url().optional(),
-    isOnline: z.boolean().default(false),
-    onlineMeetingUrl: z.string().url().optional(),
-    totalCapacity: z.number().int().positive().optional(),
-    bannerUrl: z.string().url().optional(),
-    thumbnailUrl: z.string().url().optional(),
-    isPublic: z.boolean().default(true),
-    isFeatured: z.boolean().default(false),
-    registrationStartAt: z.coerce.date().optional(),
-    registrationEndAt: z.coerce.date().optional(),
-    tags: z.array(z.string()).default([]),
-  })
-  .refine((data) => data.endTime > data.startTime, {
-    message: 'End time must be after start time',
-    path: ['endTime'],
-  });
+const CreateEventFieldsSchema = z.object({
+  name: z.string().min(1).max(255),
+  slug: z.string().min(1).max(255).optional(),
+  description: z.string().optional(),
+  shortDescription: z.string().max(500).optional(),
+  type: EventTypeEnum,
+  parentEventId: z.string().uuid().optional(),
+  startTime: z.coerce.date(),
+  endTime: z.coerce.date(),
+  timezone: z.string().default('Asia/Jakarta'),
+  recurringPattern: RecurringPatternEnum.optional(),
+  recurringEndDate: z.coerce.date().optional(),
+  locationName: z.string().max(255).optional(),
+  locationAddress: z.string().optional(),
+  locationCity: z.string().max(100).optional(),
+  locationMapsUrl: z.string().url().optional(),
+  isOnline: z.boolean().default(false),
+  onlineMeetingUrl: z.string().url().optional(),
+  totalCapacity: z.number().int().positive().optional(),
+  bannerUrl: z.string().url().optional(),
+  thumbnailUrl: z.string().url().optional(),
+  isPublic: z.boolean().default(true),
+  isFeatured: z.boolean().default(false),
+  registrationStartAt: z.coerce.date().optional(),
+  registrationEndAt: z.coerce.date().optional(),
+  tags: z.array(z.string()).default([]),
+});
+
+export const CreateEventDtoSchema = CreateEventFieldsSchema.refine(
+  (data) => data.endTime > data.startTime,
+  { message: 'End time must be after start time', path: ['endTime'] },
+);
 
 export type CreateEventDto = z.infer<typeof CreateEventDtoSchema>;
 
 // =============================================================================
-// UPDATE EVENT DTO
+// UPDATE EVENT DTO (partial of fields only - Zod v4 disallows .partial() on refined schemas)
 // =============================================================================
 
-export const UpdateEventDtoSchema = CreateEventDtoSchema.partial();
+export const UpdateEventDtoSchema = CreateEventFieldsSchema.partial();
 export type UpdateEventDto = z.infer<typeof UpdateEventDtoSchema>;
 
 // =============================================================================

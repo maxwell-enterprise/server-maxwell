@@ -22,9 +22,11 @@ import {
   RevokeGiftDto,
   WalletHistoryQueryDto,
 } from './dto';
+import { DbService } from '../../common/db.service';
 
 @Injectable()
 export class WalletService {
+  constructor(private readonly db: DbService) {}
   // ==========================================================================
   // WALLET ITEMS
   // ==========================================================================
@@ -36,25 +38,118 @@ export class WalletService {
     userId: string,
     query: WalletQueryDto,
   ): Promise<MemberWallet[]> {
-    // TODO: Query member_wallets where userId matches
-    // Filter by status, tagId, etc.
-    throw new Error('Not implemented - needs database');
+    const params: any[] = [userId];
+    const where: string[] = ['"userId" = $1'];
+
+    if (query.status) {
+      params.push(query.status);
+      where.push(`status = $${params.length}`);
+    }
+
+    const result = await this.db.query<MemberWallet>(
+      `
+      select
+        id,
+        "userId",
+        meta->>'tagId' as "tagId",
+        coalesce((meta->>'initialBalance')::int, 1) as "initialBalance",
+        coalesce((meta->>'balance')::int, 1) as balance,
+        status,
+        "qrData" as "uniqueQrString",
+        coalesce("createdAt", now()) as "qrGeneratedAt",
+        coalesce("createdAt", now()) as "validFrom",
+        "expiryDate" as "validUntil",
+        coalesce(meta->>'sourceType', 'UNKNOWN') as "sourceType",
+        meta->>'sourceTransactionId' as "sourceTransactionId",
+        meta->>'sponsorUserId' as "sponsorUserId",
+        false as "isGift",
+        null::timestamptz as "lockedAt",
+        null::text as "lockedReason",
+        subtitle as notes,
+        meta as metadata,
+        coalesce("createdAt", now()) as "createdAt",
+        coalesce("createdAt", now()) as "updatedAt"
+      from wallet_items
+      where ${where.join(' and ')}
+      order by "createdAt" desc
+      `,
+      params,
+    );
+    return result.rows;
   }
 
   /**
    * Get single wallet item
    */
   async getWalletItem(id: string, userId: string): Promise<MemberWallet> {
-    // TODO: Query wallet item, verify ownership
-    throw new NotFoundException(`Wallet item ${id} not found`);
+    const result = await this.db.query<MemberWallet>(
+      `
+      select
+        id,
+        "userId",
+        meta->>'tagId' as "tagId",
+        coalesce((meta->>'initialBalance')::int, 1) as "initialBalance",
+        coalesce((meta->>'balance')::int, 1) as balance,
+        status,
+        "qrData" as "uniqueQrString",
+        coalesce("createdAt", now()) as "qrGeneratedAt",
+        coalesce("createdAt", now()) as "validFrom",
+        "expiryDate" as "validUntil",
+        coalesce(meta->>'sourceType', 'UNKNOWN') as "sourceType",
+        meta->>'sourceTransactionId' as "sourceTransactionId",
+        meta->>'sponsorUserId' as "sponsorUserId",
+        false as "isGift",
+        null::timestamptz as "lockedAt",
+        null::text as "lockedReason",
+        subtitle as notes,
+        meta as metadata,
+        coalesce("createdAt", now()) as "createdAt",
+        coalesce("createdAt", now()) as "updatedAt"
+      from wallet_items
+      where id = $1 and "userId" = $2
+      `,
+      [id, userId],
+    );
+    const wallet = result.rows[0];
+    if (!wallet) {
+      throw new NotFoundException(`Wallet item ${id} not found`);
+    }
+    return wallet;
   }
 
   /**
    * Get wallet item by QR string (for scanning)
    */
   async getWalletByQr(qrString: string): Promise<MemberWallet | null> {
-    // TODO: Query by unique_qr_string
-    return null;
+    const result = await this.db.query<MemberWallet>(
+      `
+      select
+        id,
+        "userId",
+        meta->>'tagId' as "tagId",
+        coalesce((meta->>'initialBalance')::int, 1) as "initialBalance",
+        coalesce((meta->>'balance')::int, 1) as balance,
+        status,
+        "qrData" as "uniqueQrString",
+        coalesce("createdAt", now()) as "qrGeneratedAt",
+        coalesce("createdAt", now()) as "validFrom",
+        "expiryDate" as "validUntil",
+        coalesce(meta->>'sourceType', 'UNKNOWN') as "sourceType",
+        meta->>'sourceTransactionId' as "sourceTransactionId",
+        meta->>'sponsorUserId' as "sponsorUserId",
+        false as "isGift",
+        null::timestamptz as "lockedAt",
+        null::text as "lockedReason",
+        subtitle as notes,
+        meta as metadata,
+        coalesce("createdAt", now()) as "createdAt",
+        coalesce("createdAt", now()) as "updatedAt"
+      from wallet_items
+      where "qrData" = $1
+      `,
+      [qrString],
+    );
+    return result.rows[0] ?? null;
   }
 
   /**
@@ -69,9 +164,65 @@ export class WalletService {
     sponsorUserId?: string;
     validUntil?: Date;
   }): Promise<MemberWallet> {
-    // Generate unique QR string
-    // TODO: Insert into member_wallets
-    throw new Error('Not implemented - needs database');
+    const qrString = `WALLET-${crypto.randomUUID()}`;
+    const meta = {
+      tagId: data.tagId,
+      initialBalance: data.balance,
+      balance: data.balance,
+      sourceType: data.sourceType,
+      sourceTransactionId: data.sourceTransactionId,
+      sponsorUserId: data.sponsorUserId,
+    };
+
+    const result = await this.db.query<MemberWallet>(
+      `
+      insert into wallet_items (
+        "userId",
+        type,
+        title,
+        subtitle,
+        "expiryDate",
+        "qrData",
+        status,
+        meta,
+        "createdAt"
+      )
+      values (
+        $1,
+        'TICKET',
+        'Entitlement',
+        null,
+        $2,
+        $3,
+        'ACTIVE',
+        $4::jsonb,
+        now()
+      )
+      returning id,
+        "userId",
+        meta->>'tagId' as "tagId",
+        (meta->>'initialBalance')::int as "initialBalance",
+        (meta->>'balance')::int as balance,
+        status,
+        "qrData" as "uniqueQrString",
+        "createdAt" as "qrGeneratedAt",
+        "createdAt" as "validFrom",
+        "expiryDate" as "validUntil",
+        meta->>'sourceType' as "sourceType",
+        meta->>'sourceTransactionId' as "sourceTransactionId",
+        meta->>'sponsorUserId' as "sponsorUserId",
+        false as "isGift",
+        null::timestamptz as "lockedAt",
+        null::text as "lockedReason",
+        subtitle as notes,
+        meta as metadata,
+        "createdAt" as "createdAt",
+        "createdAt" as "updatedAt"
+      `,
+      [data.userId, data.validUntil ?? null, qrString, JSON.stringify(meta)],
+    );
+
+    return result.rows[0];
   }
 
   /**
@@ -83,12 +234,86 @@ export class WalletService {
     eventId: string,
     performedBy: string,
   ): Promise<MemberWallet> {
-    // TODO: Begin transaction
-    // 1. Get wallet, verify balance >= amount
-    // 2. Decrement balance
-    // 3. Create wallet_transaction log
-    // TODO: Commit transaction
-    throw new Error('Not implemented - needs database');
+    const client = await this.db.getClient();
+    try {
+      await client.query('begin');
+      const res = await client.query<MemberWallet>(
+        `
+        select
+          id,
+          "userId",
+          meta->>'tagId' as "tagId",
+          (meta->>'initialBalance')::int as "initialBalance",
+          (meta->>'balance')::int as balance,
+          status,
+          "qrData" as "uniqueQrString",
+          "createdAt" as "qrGeneratedAt",
+          "createdAt" as "validFrom",
+          "expiryDate" as "validUntil",
+          meta->>'sourceType' as "sourceType",
+          meta->>'sourceTransactionId' as "sourceTransactionId",
+          meta->>'sponsorUserId' as "sponsorUserId",
+          false as "isGift",
+          null::timestamptz as "lockedAt",
+          null::text as "lockedReason",
+          subtitle as notes,
+          meta as metadata,
+          "createdAt" as "createdAt",
+          "createdAt" as "updatedAt"
+        from wallet_items
+        where id = $1
+        for update
+        `,
+        [walletId],
+      );
+      const wallet = res.rows[0];
+      if (!wallet) {
+        throw new NotFoundException('Wallet not found');
+      }
+      if (wallet.balance < amount) {
+        throw new BadRequestException('Insufficient balance');
+      }
+
+      const newBalance = wallet.balance - amount;
+      const newMeta = {
+        ...(wallet.metadata || {}),
+        balance: newBalance,
+        initialBalance: wallet.initialBalance,
+        tagId: (wallet as any).tagId,
+      };
+
+      await client.query(
+        `
+        update wallet_items
+        set meta = $2::jsonb
+        where id = $1
+        `,
+        [walletId, JSON.stringify(newMeta)],
+      );
+
+      await client.query(
+        `
+        insert into wallet_transactions (
+          id, "walletItemId", "userId", "transactionType",
+          "amountChange", "balanceAfter", "referenceId", "referenceName",
+          timestamp
+        )
+        values (
+          gen_random_uuid(), $1, $2, 'USAGE',
+          $3 * -1, $4, $5, $6, now()
+        )
+        `,
+        [walletId, wallet.userId, amount, newBalance, eventId, 'Check-in'],
+      );
+
+      await client.query('commit');
+      return { ...wallet, balance: newBalance };
+    } catch (e) {
+      await client.query('rollback');
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
   // ==========================================================================
@@ -102,8 +327,24 @@ export class WalletService {
     userId: string,
     query: WalletHistoryQueryDto,
   ): Promise<{ data: WalletTransaction[]; total: number }> {
-    // TODO: Query wallet_transactions for user's wallets
-    throw new Error('Not implemented - needs database');
+    const { page, limit } = query;
+
+    const baseSql = `
+      select wt.*
+      from wallet_transactions wt
+      join wallet_items wi on wi.id = wt."walletItemId"
+      where wi."userId" = $1
+      order by wt.timestamp desc
+    `;
+
+    const { rows, total } = await this.db.paginatedQuery<WalletTransaction>(
+      baseSql,
+      [userId],
+      page,
+      limit,
+    );
+
+    return { data: rows, total };
   }
 
   /**
@@ -122,8 +363,30 @@ export class WalletService {
     notes?: string;
     performedBy?: string;
   }): Promise<WalletTransaction> {
-    // TODO: Insert into wallet_transactions
-    throw new Error('Not implemented - needs database');
+    const result = await this.db.query<WalletTransaction>(
+      `
+      insert into wallet_transactions (
+        id, "walletItemId", "userId", "transactionType",
+        "amountChange", "balanceAfter", "referenceId", "referenceName",
+        timestamp
+      )
+      values (
+        gen_random_uuid(), $1, $2, $3,
+        $4, $5, $6, $7, now()
+      )
+      returning *
+      `,
+      [
+        data.walletId,
+        data.referenceId ?? null,
+        data.type,
+        data.amount,
+        data.balanceAfter,
+        data.referenceId ?? null,
+        data.notes ?? null,
+      ],
+    );
+    return result.rows[0];
   }
 
   // ==========================================================================
@@ -233,26 +496,48 @@ export class WalletService {
    * Get user's sent gifts
    */
   async getSentGifts(userId: string): Promise<GiftAllocation[]> {
-    // TODO: Query gift_allocations where senderUserId matches
-    throw new Error('Not implemented - needs database');
+    const res = await this.db.query<GiftAllocation>(
+      `
+      select *
+      from gift_allocations
+      where "sourceUserId" = $1
+      order by "createdAt" desc
+      `,
+      [userId],
+    );
+    return res.rows;
   }
 
   /**
    * Get user's received gifts
    */
   async getReceivedGifts(userId: string): Promise<GiftAllocation[]> {
-    // TODO: Query gift_allocations where recipientUserId matches
-    throw new Error('Not implemented - needs database');
+    const res = await this.db.query<GiftAllocation>(
+      `
+      select *
+      from gift_allocations
+      where "claimedByUserId" = $1
+      order by "createdAt" desc
+      `,
+      [userId],
+    );
+    return res.rows;
   }
 
   private async findGiftByToken(token: string): Promise<GiftAllocation | null> {
-    // TODO: Query gift_allocations by token
-    return null;
+    const res = await this.db.query<GiftAllocation>(
+      'select * from gift_allocations where "claimToken" = $1',
+      [token],
+    );
+    return res.rows[0] ?? null;
   }
 
   private async findGiftById(id: string): Promise<GiftAllocation | null> {
-    // TODO: Query gift_allocations by id
-    return null;
+    const res = await this.db.query<GiftAllocation>(
+      'select * from gift_allocations where id = $1',
+      [id],
+    );
+    return res.rows[0] ?? null;
   }
 
   // ==========================================================================
@@ -263,8 +548,46 @@ export class WalletService {
    * Get or create membership card
    */
   async getMembershipCard(userId: string): Promise<MembershipCard> {
-    // TODO: Get or create card
-    throw new Error('Not implemented - needs database');
+    const result = await this.db.query<MembershipCard>(
+      `
+      select *
+      from membership_cards
+      where "userId" = $1
+      `,
+      [userId],
+    ).catch(() => ({ rows: [] as MembershipCard[] }));
+
+    if (result.rows[0]) return result.rows[0];
+
+    const cardNumber = `MX-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const insert = await this.db
+      .query<MembershipCard>(
+        `
+        insert into membership_cards (
+          id, "userId", card_number, qr_string,
+          membership_tier, tier_updated_at,
+          valid_from, is_lifetime,
+          card_design_template,
+          total_events_attended,
+          total_points_earned,
+          is_active,
+          created_at,
+          updated_at
+        )
+        values (
+          gen_random_uuid(), $1, $2, $3,
+          'BRONZE', now(),
+          now(), true,
+          'default',
+          0, 0, true, now(), now()
+        )
+        returning *
+        `,
+        [userId, cardNumber, cardNumber],
+      )
+      .catch(() => ({ rows: [] as MembershipCard[] }));
+
+    return insert.rows[0];
   }
 
   /**
