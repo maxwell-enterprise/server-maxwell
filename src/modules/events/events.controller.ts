@@ -1,51 +1,31 @@
-/**
- * MAXWELL ERP - Events Controller
- */
-
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { EventsRuntimeService } from './events.runtime.service';
 import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  Patch,
-  Param,
-  Delete,
-  Query,
-  ParseUUIDPipe,
-} from '@nestjs/common';
-import { EventsService } from './events.service';
-import {
-  CreateEventDtoSchema,
-  UpdateEventDtoSchema,
-  EventQueryDtoSchema,
-  CreateAccessTagDtoSchema,
-  CreateAccessRuleDtoSchema,
-  CreateTierDtoSchema,
-  CreateGateDtoSchema,
-} from './dto';
-import type {
-  CreateEventDto,
-  UpdateEventDto,
-  EventQueryDto,
-  CreateAccessTagDto,
   CreateAccessRuleDto,
-  CreateTierDto,
+  CreateAccessRuleDtoSchema,
+  CreateAccessTagDto,
+  CreateAccessTagDtoSchema,
+  CreateEventDto,
+  CreateEventDtoSchema,
   CreateGateDto,
+  CreateGateDtoSchema,
+  CreateTierDto,
+  CreateTierDtoSchema,
+  EventQueryDto,
+  EventQueryDtoSchema,
+  UpdateAccessTagDto,
+  UpdateAccessTagDtoSchema,
+  UpdateEventDto,
+  UpdateEventDtoSchema,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 
 @Controller('events')
 export class EventsController {
-  constructor(private readonly eventsService: EventsService) {}
-
-  // ==========================================================================
-  // EVENTS
-  // ==========================================================================
+  constructor(private readonly eventsService: EventsRuntimeService) {}
 
   @Post()
-  create(
-    @Body(new ZodValidationPipe(CreateEventDtoSchema)) dto: CreateEventDto,
-  ) {
+  create(@Body(new ZodValidationPipe(CreateEventDtoSchema)) dto: CreateEventDto) {
     return this.eventsService.create(dto);
   }
 
@@ -56,105 +36,89 @@ export class EventsController {
     return this.eventsService.findAll(query);
   }
 
-  @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.eventsService.findOne(id);
+  @Get(':identifier')
+  findOne(@Param('identifier') identifier: string) {
+    return this.eventsService.findOne(identifier);
   }
 
-  @Patch(':id')
+  @Patch(':identifier')
   update(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('identifier') identifier: string,
     @Body(new ZodValidationPipe(UpdateEventDtoSchema)) dto: UpdateEventDto,
   ) {
-    return this.eventsService.update(id, dto);
+    return this.eventsService.update(identifier, dto);
   }
 
-  @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.eventsService.remove(id);
+  @Delete(':identifier')
+  remove(@Param('identifier') identifier: string) {
+    return this.eventsService.remove(identifier);
   }
 
-  @Patch(':id/status')
+  @Patch(':identifier/status')
   updateStatus(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('identifier') identifier: string,
     @Body('status') status: string,
   ) {
-    return this.eventsService.updateStatus(id, status);
+    return this.eventsService.updateStatus(identifier, status);
   }
 
-  // ==========================================================================
-  // EVENT TIERS
-  // ==========================================================================
-
-  @Post(':eventId/tiers')
+  @Post(':eventIdentifier/tiers')
   createTier(
-    @Param('eventId', ParseUUIDPipe) eventId: string,
+    @Param('eventIdentifier') eventIdentifier: string,
     @Body(new ZodValidationPipe(CreateTierDtoSchema)) dto: CreateTierDto,
   ) {
-    return this.eventsService.createTier(eventId, dto);
+    return this.eventsService.createTier(eventIdentifier, dto);
   }
 
-  @Get(':eventId/tiers')
-  findTiers(@Param('eventId', ParseUUIDPipe) eventId: string) {
-    return this.eventsService.findTiers(eventId);
+  @Get(':eventIdentifier/tiers')
+  findTiers(@Param('eventIdentifier') eventIdentifier: string) {
+    return this.eventsService.findTiers(eventIdentifier);
   }
 
-  // ==========================================================================
-  // EVENT GATES
-  // ==========================================================================
-
-  @Post(':eventId/gates')
+  @Post(':eventIdentifier/gates')
   createGate(
-    @Param('eventId', ParseUUIDPipe) eventId: string,
+    @Param('eventIdentifier') eventIdentifier: string,
     @Body(new ZodValidationPipe(CreateGateDtoSchema)) dto: CreateGateDto,
   ) {
-    return this.eventsService.createGate(eventId, dto);
+    return this.eventsService.createGate(eventIdentifier, dto);
   }
 
-  @Get(':eventId/gates')
-  findGates(@Param('eventId', ParseUUIDPipe) eventId: string) {
-    return this.eventsService.findGates(eventId);
+  @Get(':eventIdentifier/gates')
+  findGates(@Param('eventIdentifier') eventIdentifier: string) {
+    return this.eventsService.findGates(eventIdentifier);
   }
 
-  // ==========================================================================
-  // ACCESS RULES
-  // ==========================================================================
-
-  @Post(':eventId/access-rules')
+  @Post(':eventIdentifier/access-rules')
   createAccessRule(
+    @Param('eventIdentifier') eventIdentifier: string,
     @Body(new ZodValidationPipe(CreateAccessRuleDtoSchema))
     dto: CreateAccessRuleDto,
   ) {
-    return this.eventsService.createAccessRule(dto);
+    return this.eventsService.createAccessRule({
+      ...dto,
+      eventId: eventIdentifier,
+    });
   }
 
-  @Get(':eventId/access-rules')
-  findAccessRules(@Param('eventId', ParseUUIDPipe) eventId: string) {
-    return this.eventsService.findAccessRules(eventId);
+  @Get(':eventIdentifier/access-rules')
+  findAccessRules(@Param('eventIdentifier') eventIdentifier: string) {
+    return this.eventsService.findAccessRules(eventIdentifier);
   }
 
-  // ==========================================================================
-  // CHILD EVENTS (for Series)
-  // ==========================================================================
-
-  @Get(':id/children')
-  getChildEvents(@Param('id', ParseUUIDPipe) id: string) {
-    return this.eventsService.getChildEvents(id);
+  @Get(':identifier/children')
+  getChildEvents(@Param('identifier') identifier: string) {
+    return this.eventsService.getChildEvents(identifier);
   }
 
-  @Get(':id/attendance')
-  getAttendanceSummary(@Param('id', ParseUUIDPipe) id: string) {
-    return this.eventsService.getAttendanceSummary(id);
+  @Get(':identifier/attendance')
+  getAttendanceSummary(@Param('identifier') identifier: string) {
+    return this.eventsService.getAttendanceSummary(identifier);
   }
 }
 
-// ==========================================================================
-// ACCESS TAGS CONTROLLER (Separate for better organization)
-// ==========================================================================
-
 @Controller('access-tags')
 export class AccessTagsController {
-  constructor(private readonly eventsService: EventsService) {}
+  constructor(private readonly eventsService: EventsRuntimeService) {}
 
   @Post()
   create(
@@ -169,8 +133,22 @@ export class AccessTagsController {
     return this.eventsService.findAllTags();
   }
 
-  @Get(':tagId/events')
-  findEventsByTag(@Param('tagId', ParseUUIDPipe) tagId: string) {
-    return this.eventsService.findEventsByTag(tagId);
+  @Patch(':tagIdentifier')
+  update(
+    @Param('tagIdentifier') tagIdentifier: string,
+    @Body(new ZodValidationPipe(UpdateAccessTagDtoSchema))
+    dto: UpdateAccessTagDto,
+  ) {
+    return this.eventsService.updateTag(tagIdentifier, dto);
+  }
+
+  @Delete(':tagIdentifier')
+  remove(@Param('tagIdentifier') tagIdentifier: string) {
+    return this.eventsService.removeTag(tagIdentifier);
+  }
+
+  @Get(':tagIdentifier/events')
+  findEventsByTag(@Param('tagIdentifier') tagIdentifier: string) {
+    return this.eventsService.findEventsByTag(tagIdentifier);
   }
 }

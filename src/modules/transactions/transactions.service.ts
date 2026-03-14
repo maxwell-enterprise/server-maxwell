@@ -41,16 +41,22 @@ export class TransactionsService {
     // dan simpan satu record di `payment_transactions`.
 
     // 1. Ambil produk terkait
-    const productIds = dto.items.map((i) => i.productId);
+    const productIds = [...new Set(dto.items.map((i) => i.productId))];
     const productsRes = await this.db.query<{
+      internalId: string;
       id: string;
       title: string;
       priceIdr: number;
     }>(
       `
-      select id, title, "priceIdr"
+      select
+        id::text as "internalId",
+        coalesce(public_id, id::text) as id,
+        title,
+        "priceIdr" as "priceIdr"
       from products
-      where id = any($1::uuid[])
+      where coalesce(public_id, id::text) = any($1::text[])
+         or id::text = any($1::text[])
       `,
       [productIds],
     );
@@ -62,7 +68,14 @@ export class TransactionsService {
     // 2. Hitung subtotal (tanpa voucher/tax dulu)
     let subtotal = 0;
     dto.items.forEach((item) => {
-      const prod = products.find((p) => p.id === item.productId)!;
+      const prod = products.find(
+        (product) =>
+          product.id === item.productId ||
+          product.internalId === item.productId,
+      );
+      if (!prod) {
+        throw new BadRequestException(`Product ${item.productId} not found`);
+      }
       subtotal += prod.priceIdr * item.quantity;
     });
 
@@ -75,11 +88,7 @@ export class TransactionsService {
     if (dto.guestEmail) {
       customerEmail = dto.guestEmail;
     } else if (userId) {
-      const memberRes = await this.db.query<{ email: string }>(
-        'select email from members where id = $1',
-        [userId],
-      );
-      customerEmail = memberRes.rows[0]?.email ?? null;
+      customerEmail = await this.findMemberEmail(userId);
     }
     if (!customerEmail) {
       throw new BadRequestException(
@@ -275,12 +284,7 @@ export class TransactionsService {
     userId: string,
     query: TransactionQueryDto,
   ): Promise<{ data: Transaction[]; total: number }> {
-    // Cari email dari tabel members berdasarkan userId
-    const memberRes = await this.db.query<{ email: string }>(
-      'select email from members where id = $1',
-      [userId],
-    );
-    const email = memberRes.rows[0]?.email;
+    const email = await this.findMemberEmail(userId);
     if (!email) {
       return { data: [], total: 0 };
     }
@@ -574,5 +578,18 @@ export class TransactionsService {
       createdAt: new Date(row.createdAt),
       updatedAt: new Date(row.createdAt),
     };
+  }
+
+  private async findMemberEmail(identifier: string): Promise<string | null> {
+    const memberRes = await this.db.query<{ email: string }>(
+      `
+      select email
+      from members
+      where public_id = $1 or id::text = $1
+      `,
+      [identifier],
+    );
+
+    return memberRes.rows[0]?.email ?? null;
   }
 }

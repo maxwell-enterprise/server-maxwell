@@ -25,41 +25,67 @@ export class MemberWallet {
   updatedAt: Date;
 }
 
+export class WalletItemContract {
+  id: string;
+  userId: string;
+  type: string;
+  title: string;
+  subtitle: string;
+  expiryDate?: string | null;
+  qrData?: string | null;
+  status: string;
+  isTransferable: boolean;
+  sponsoredBy?: string | null;
+  meta: Record<string, unknown>;
+  createdAt?: string | Date;
+  updatedAt: string | Date;
+}
+
 export class WalletTransaction {
   id: string;
-  walletId: string;
-  type: string;
-  amount: number;
-  balanceBefore: number;
+  walletItemId: string;
+  userId: string;
+  transactionType: string;
+  amountChange: number;
   balanceAfter: number;
-  referenceType?: string | null;
   referenceId?: string | null;
-  eventId?: string | null;
-  relatedUserId?: string | null;
-  notes?: string | null;
-  performedBy?: string | null;
-  createdAt: Date;
+  referenceName?: string | null;
+  timestamp: string | Date;
 }
 
 export class GiftAllocation {
   id: string;
-  token: string;
-  tokenExpiresAt: Date;
-  senderUserId: string;
-  walletItemId: string;
-  transferAmount: number;
-  recipientEmail?: string | null;
-  recipientPhone?: string | null;
-  recipientUserId?: string | null;
-  deliveryMethod: string;
-  deliverySentAt?: Date | null;
-  giftMessage?: string | null;
+  sourceUserId: string;
+  sourceUserName: string;
+  entitlementId: string;
+  itemName: string;
+  targetEmail?: string | null;
+  claimToken: string;
   status: string;
-  claimedAt?: Date | null;
-  revokedAt?: Date | null;
-  revokeReason?: string | null;
-  metadata: Record<string, unknown>;
-  createdAt: Date;
+  claimedByUserId?: string | null;
+  claimedAt?: string | Date | null;
+  createdAt?: string | Date;
+  tokenExpiresAt?: Date | null;
+  senderUserId?: string | null;
+  walletItemId?: string | null;
+  transferAmount?: number | null;
+}
+
+export class UserEntitlementsContract {
+  userId: string;
+  permissions: string[];
+  attributes: Record<string, unknown>;
+  credits: number;
+}
+
+export class CorporateTeamMemberContract {
+  id: string;
+  orgId?: string;
+  email: string;
+  name: string;
+  status: string;
+  joinedAt?: string | Date | null;
+  lastActive?: string | Date | null;
 }
 
 export class MembershipCard {

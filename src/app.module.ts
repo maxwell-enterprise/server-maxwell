@@ -1,13 +1,15 @@
 /**
  * MAXWELL ERP - Root Application Module
  */
-
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
+import { AppConfigModule } from './common/config/app-config.module';
+
 // Core DB module
-import { DbModule } from './common/db.module';
+import { DatabaseModule } from './common/database';
 
 // Feature Modules
 import { UsersModule } from './modules/users/users.module';
@@ -16,17 +18,37 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 import { CheckinModule } from './modules/checkin/checkin.module';
 import { MasterTiersModule } from './modules/master-tiers/master-tiers.module';
+import { MasterDoneTagsModule } from './modules/master-done-tags/master-done-tags.module';
+import { ProductsModule } from './modules/products/products.module';
+import { MembersModule } from './modules/members/members.module';
+import { InvitationsModule } from './modules/invitations/invitations.module';
+import { CartsModule } from './modules/carts/carts.module';
 
 // TODO: Add these modules when ready
 // import { AuthModule } from './modules/auth/auth.module';
-// import { ProductsModule } from './modules/products/products.module';
 // import { AutomationModule } from './modules/automation/automation.module';
 // import { FinanceModule } from './modules/finance/finance.module';
 
 @Module({
   imports: [
+    TypeOrmModule.forRoot({
+      type: 'postgres',
+      ...(process.env.DATABASE_URL
+        ? { url: process.env.DATABASE_URL }
+        : {
+            host: process.env.DB_HOST,
+            port: +(process.env.DB_PORT || 5432),
+            username: process.env.DB_USERNAME,
+            password: process.env.DB_PASSWORD,
+            database: process.env.DB_DATABASE,
+          }),
+      autoLoadEntities: true,
+      synchronize: false, // true hanya untuk development awal
+    }),
+    AppConfigModule,
+
     // Database
-    DbModule,
+    DatabaseModule,
 
     // Core Modules
     UsersModule,
@@ -35,12 +57,11 @@ import { MasterTiersModule } from './modules/master-tiers/master-tiers.module';
     TransactionsModule,
     CheckinModule,
     MasterTiersModule,
-
-    // TODO: Add ConfigModule for environment variables
-    // ConfigModule.forRoot({ isGlobal: true }),
-
-    // TODO: Add Database Module (Prisma or TypeORM)
-    // DatabaseModule,
+    MasterDoneTagsModule,
+    ProductsModule,
+    MembersModule,
+    InvitationsModule,
+    CartsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

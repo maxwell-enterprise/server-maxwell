@@ -9,27 +9,28 @@ import {
   Body,
   Param,
   Query,
-  ParseUUIDPipe,
   Delete,
 } from '@nestjs/common';
-import { CheckinService } from './checkin.service';
+import { CheckinRuntimeService } from './checkin.runtime.service';
 import {
   ScanQrDtoSchema,
   RegisterDeviceDtoSchema,
   OfflineSyncBatchDtoSchema,
   CheckinQueryDtoSchema,
+  ManualCheckinDtoSchema,
 } from './dto';
 import type {
   ScanQrDto,
   RegisterDeviceDto,
   OfflineSyncBatchDto,
   CheckinQueryDto,
+  ManualCheckinDto,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 
 @Controller('checkin')
 export class CheckinController {
-  constructor(private readonly checkinService: CheckinService) {}
+  constructor(private readonly checkinService: CheckinRuntimeService) {}
 
   /**
    * Scan QR code for check-in
@@ -57,7 +58,7 @@ export class CheckinController {
    * GET /checkin/events/:eventId/stats
    */
   @Get('events/:eventId/stats')
-  getEventStats(@Param('eventId', ParseUUIDPipe) eventId: string) {
+  getEventStats(@Param('eventId') eventId: string) {
     return this.checkinService.getEventStats(eventId);
   }
 
@@ -66,7 +67,7 @@ export class CheckinController {
    * POST /checkin/:id/checkout
    */
   @Post(':id/checkout')
-  checkout(@Param('id', ParseUUIDPipe) id: string) {
+  checkout(@Param('id') id: string) {
     return this.checkinService.checkout(id);
   }
 
@@ -118,6 +119,17 @@ export class CheckinController {
     dto: OfflineSyncBatchDto,
   ) {
     return this.checkinService.syncOfflineCheckins(dto);
+  }
+
+  /**
+   * Manual attendance recording (e.g. mobile self-check)
+   */
+  @Post('manual')
+  manualCheckin(
+    @Body(new ZodValidationPipe(ManualCheckinDtoSchema))
+    dto: ManualCheckinDto,
+  ) {
+    return this.checkinService.manualCheckin(dto.memberId, dto.eventId, dto.method);
   }
 
   /**

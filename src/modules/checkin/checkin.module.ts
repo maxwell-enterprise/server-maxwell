@@ -3,15 +3,12 @@
  */
 
 import { Module } from '@nestjs/common';
-import { CheckinService } from './checkin.service';
+import { CheckinRuntimeService } from './checkin.runtime.service';
 import { CheckinController } from './checkin.controller';
-// import { WalletModule } from '../wallet/wallet.module';
-// import { EventsModule } from '../events/events.module';
 
 @Module({
-  // imports: [WalletModule, EventsModule],
   controllers: [CheckinController],
-  providers: [CheckinService],
-  exports: [CheckinService],
+  providers: [CheckinRuntimeService],
+  exports: [CheckinRuntimeService],
 })
 export class CheckinModule {}

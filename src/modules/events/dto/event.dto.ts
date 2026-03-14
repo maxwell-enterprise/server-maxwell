@@ -1,91 +1,139 @@
-/**
- * MAXWELL ERP - Event DTOs
- */
-
 import { z } from 'zod';
 import {
-  EventTypeEnum,
-  EventStatusEnum,
-  RecurringPatternEnum,
-  TagUsageTypeEnum,
   TagCategoryEnum,
+  TagUsageTypeEnum,
 } from '../../../schemas/enums.schema';
 
-// =============================================================================
-// CREATE EVENT DTO
-// =============================================================================
+const EventTypeEnum = z.enum(['SOLO', 'CONTAINER', 'SESSION']);
+const EventStatusEnum = z.enum(['Upcoming', 'Completed', 'Cancelled']);
+const LocationModeEnum = z.enum(['OFFLINE', 'ONLINE', 'HYBRID']);
+const AdmissionPolicyEnum = z.enum([
+  'PRE_BOOKED',
+  'OPEN_MEMBER',
+  'OPEN_PUBLIC',
+  'ON_SITE_DEDUCTION',
+  'INVITED_ONLY',
+]);
 
-const CreateEventFieldsSchema = z.object({
+const EventTierDefinitionDtoSchema = z.object({
+  id: z.string().min(1).max(120),
   name: z.string().min(1).max(255),
-  slug: z.string().min(1).max(255).optional(),
-  description: z.string().optional(),
-  shortDescription: z.string().max(500).optional(),
-  type: EventTypeEnum,
-  parentEventId: z.string().uuid().optional(),
-  startTime: z.coerce.date(),
-  endTime: z.coerce.date(),
-  timezone: z.string().default('Asia/Jakarta'),
-  recurringPattern: RecurringPatternEnum.optional(),
-  recurringEndDate: z.coerce.date().optional(),
-  locationName: z.string().max(255).optional(),
-  locationAddress: z.string().optional(),
-  locationCity: z.string().max(100).optional(),
-  locationMapsUrl: z.string().url().optional(),
-  isOnline: z.boolean().default(false),
-  onlineMeetingUrl: z.string().url().optional(),
-  totalCapacity: z.number().int().positive().optional(),
-  bannerUrl: z.string().url().optional(),
-  thumbnailUrl: z.string().url().optional(),
-  isPublic: z.boolean().default(true),
-  isFeatured: z.boolean().default(false),
-  registrationStartAt: z.coerce.date().optional(),
-  registrationEndAt: z.coerce.date().optional(),
-  tags: z.array(z.string()).default([]),
+  masterCode: z.string().max(120).optional(),
+  quota: z.coerce.number().int().nonnegative(),
+  quotaSold: z.coerce.number().int().nonnegative().optional(),
+  price: z.coerce.number().nonnegative().optional(),
+  grantTagIds: z.array(z.string()).default([]),
+  bundledTiers: z
+    .array(
+      z.object({
+        eventId: z.string().min(1).max(120),
+        eventName: z.string().min(1).max(255),
+        tierId: z.string().min(1).max(120),
+        tierName: z.string().min(1).max(255),
+      }),
+    )
+    .optional(),
 });
 
-export const CreateEventDtoSchema = CreateEventFieldsSchema.refine(
-  (data) => data.endTime > data.startTime,
-  { message: 'End time must be after start time', path: ['endTime'] },
-);
+const EventGateConfigDtoSchema = z.object({
+  id: z.string().min(1).max(120),
+  name: z.string().min(1).max(255),
+  allowedTiers: z.array(z.string()).default([]),
+  assignedUserIds: z.array(z.string()).default([]),
+  isActive: z.boolean(),
+});
 
+const EventSelectionConfigDtoSchema = z.object({
+  mode: z.enum(['BUNDLE', 'OPTION']),
+  minSelect: z.coerce.number().int().positive(),
+  maxSelect: z.coerce.number().int().positive(),
+});
+
+const OperationalSessionDtoSchema = z.object({
+  id: z.string().min(1).max(120),
+  name: z.string().min(1).max(255),
+  startTime: z.string().min(1).max(120),
+  endTime: z.string().min(1).max(120),
+});
+
+const RecurringMetaDtoSchema = z.object({
+  frequency: z.string().min(1).max(100),
+  patternDescription: z.string().default(''),
+  time: z.string().min(1).max(50),
+  totalSessions: z.coerce.number().int().positive(),
+});
+
+const EventShape = {
+  id: z.string().min(1).max(120).optional(),
+  name: z.string().min(1).max(255),
+  date: z.string().min(1).max(20),
+  endDate: z.string().max(20).optional(),
+  time: z.string().max(50).optional(),
+  location: z.string().max(255).default('TBD'),
+  locationMode: LocationModeEnum.default('OFFLINE'),
+  onlineMeetingLink: z.string().max(2048).optional(),
+  locationMapLink: z.string().max(2048).optional(),
+  banner_url: z.string().max(2048).optional(),
+  description: z.string().max(5000).optional().default(''),
+  capacity: z.coerce.number().int().nonnegative().default(0),
+  attendees: z.coerce.number().int().nonnegative().default(0),
+  revenue: z.coerce.number().nonnegative().default(0),
+  status: EventStatusEnum.default('Upcoming'),
+  isVisibleInCatalog: z.boolean().default(true),
+  type: EventTypeEnum,
+  parentEventId: z.string().max(120).optional(),
+  classId: z.string().max(120).optional(),
+  admissionPolicy: AdmissionPolicyEnum.default('PRE_BOOKED'),
+  creditTags: z.array(z.string()).default([]),
+  doneTag: z.string().max(120).optional(),
+  isRecurring: z.boolean().default(false),
+  recurringMeta: RecurringMetaDtoSchema.optional(),
+  selectionConfig: EventSelectionConfigDtoSchema.optional(),
+  gates: z.array(EventGateConfigDtoSchema).optional(),
+  tiers: z.array(EventTierDefinitionDtoSchema).optional(),
+  sessions: z.array(OperationalSessionDtoSchema).optional(),
+};
+
+export const CreateEventDtoSchema = z.object(EventShape);
 export type CreateEventDto = z.infer<typeof CreateEventDtoSchema>;
 
-// =============================================================================
-// UPDATE EVENT DTO (partial of fields only - Zod v4 disallows .partial() on refined schemas)
-// =============================================================================
-
-export const UpdateEventDtoSchema = CreateEventFieldsSchema.partial();
+export const UpdateEventDtoSchema = z
+  .object({
+    ...EventShape,
+    id: z.string().min(1).max(120).optional(),
+  })
+  .partial()
+  .refine((data) => Object.keys(data).length > 0, {
+    message: 'At least one field must be provided',
+  });
 export type UpdateEventDto = z.infer<typeof UpdateEventDtoSchema>;
 
-// =============================================================================
-// EVENT QUERY DTO
-// =============================================================================
+export const EventResponseDtoSchema = z.object({
+  ...EventShape,
+  id: z.string().min(1).max(120),
+});
+export type EventResponseDto = z.infer<typeof EventResponseDtoSchema>;
 
 export const EventQueryDtoSchema = z.object({
-  page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
   search: z.string().optional(),
   type: EventTypeEnum.optional(),
   status: EventStatusEnum.optional(),
-  isPublic: z.coerce.boolean().optional(),
-  startFrom: z.coerce.date().optional(),
-  startTo: z.coerce.date().optional(),
-  sortBy: z.enum(['createdAt', 'startTime', 'name']).default('startTime'),
+  isVisibleInCatalog: z.coerce.boolean().optional(),
+  parentEventId: z.string().optional(),
+  year: z.string().regex(/^\d{4}$/).optional(),
+  sortBy: z.enum(['date', 'name', 'createdAt']).default('date'),
   sortOrder: z.enum(['asc', 'desc']).default('asc'),
 });
-
 export type EventQueryDto = z.infer<typeof EventQueryDtoSchema>;
-
-// =============================================================================
-// CREATE ACCESS TAG DTO
-// =============================================================================
 
 export const CreateAccessTagDtoSchema = z.object({
   code: z.string().min(1).max(100),
   name: z.string().min(1).max(255),
   description: z.string().optional(),
-  usageType: TagUsageTypeEnum,
-  category: TagCategoryEnum,
+  usageType: TagUsageTypeEnum.default('UNLIMITED'),
+  category: TagCategoryEnum.default('ACCESS'),
+  usageLimit: z.coerce.number().int().nonnegative().default(0),
+  isActive: z.boolean().default(true),
   validFrom: z.coerce.date().optional(),
   validUntil: z.coerce.date().optional(),
   iconUrl: z.string().url().optional(),
@@ -94,46 +142,29 @@ export const CreateAccessTagDtoSchema = z.object({
     .regex(/^#[0-9A-Fa-f]{6}$/)
     .optional(),
 });
-
 export type CreateAccessTagDto = z.infer<typeof CreateAccessTagDtoSchema>;
 
-// =============================================================================
-// CREATE ACCESS RULE DTO
-// =============================================================================
+export const UpdateAccessTagDtoSchema = CreateAccessTagDtoSchema.partial().refine(
+  (data) => Object.keys(data).length > 0,
+  {
+    message: 'At least one field must be provided',
+  },
+);
+export type UpdateAccessTagDto = z.infer<typeof UpdateAccessTagDtoSchema>;
 
 export const CreateAccessRuleDtoSchema = z.object({
-  eventId: z.string().uuid(),
-  tagId: z.string().uuid(),
-  tierId: z.string().uuid().optional(),
-  usageAmount: z.number().int().positive().default(1),
-  priority: z.number().int().default(0),
+  eventId: z.string().min(1).max(120),
+  tagId: z.string().min(1).max(120),
+  tierId: z.string().max(120).optional(),
+  usageAmount: z.coerce.number().int().positive().default(1),
+  priority: z.coerce.number().int().default(0),
 });
-
 export type CreateAccessRuleDto = z.infer<typeof CreateAccessRuleDtoSchema>;
 
-// =============================================================================
-// CREATE TIER DTO
-// =============================================================================
-
-export const CreateTierDtoSchema = z.object({
-  name: z.string().min(1).max(100),
-  description: z.string().optional(),
-  capacity: z.number().int().positive().optional(),
-  benefits: z.array(z.string()).default([]),
-  sortOrder: z.number().int().default(0),
+export const CreateTierDtoSchema = EventTierDefinitionDtoSchema.extend({
+  quotaSold: z.coerce.number().int().nonnegative().optional(),
 });
-
 export type CreateTierDto = z.infer<typeof CreateTierDtoSchema>;
 
-// =============================================================================
-// CREATE GATE DTO
-// =============================================================================
-
-export const CreateGateDtoSchema = z.object({
-  name: z.string().min(1).max(100),
-  description: z.string().optional(),
-  locationHint: z.string().optional(),
-  allowedTierIds: z.array(z.string().uuid()).default([]),
-});
-
+export const CreateGateDtoSchema = EventGateConfigDtoSchema;
 export type CreateGateDto = z.infer<typeof CreateGateDtoSchema>;
