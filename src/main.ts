@@ -1,3 +1,4 @@
+import { RequestMethod } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
@@ -15,7 +16,9 @@ async function bootstrap() {
   // Frontend expects APIs under `/fe/*`.
   // Without this prefix, Nest exposes routes as `/<controller>` (e.g. `/products`),
   // while the UI calls `/fe/products`.
-  app.setGlobalPrefix('fe');
+  app.setGlobalPrefix('fe', {
+    exclude: [{ path: '/', method: RequestMethod.GET }],
+  });
 
   app.enableShutdownHooks();
   app.enableCors({
