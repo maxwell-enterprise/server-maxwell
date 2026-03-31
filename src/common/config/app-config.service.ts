@@ -25,6 +25,10 @@ export class AppConfigService {
     return this.env.NODE_ENV === 'production';
   }
 
+  get paymentPpnRatePercent() {
+    return this.env.PAYMENT_PPN_RATE_PERCENT;
+  }
+
   get app() {
     return {
       name: this.env.APP_NAME,

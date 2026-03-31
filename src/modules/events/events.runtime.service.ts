@@ -569,7 +569,7 @@ export class EventsRuntimeService {
       insert into credit_tags (code, name, description, type, "usageLimit", "isActive")
       values ($1, $2, $3, $4, $5, $6)
       returning
-        coalesce(public_id, id::text) as id,
+        id::text as id,
         code,
         name,
         description,
@@ -594,7 +594,7 @@ export class EventsRuntimeService {
     const result = await this.db.query<AccessTagRow>(
       `
       select
-        coalesce(public_id, id::text) as id,
+        id::text as id,
         code,
         name,
         description,
@@ -649,7 +649,7 @@ export class EventsRuntimeService {
       set ${fields.join(', ')}
       where id::text = $${params.length}
       returning
-        coalesce(public_id, id::text) as id,
+        id::text as id,
         code,
         name,
         description,
@@ -991,7 +991,7 @@ export class EventsRuntimeService {
       `
       select code
       from credit_tags
-      where code = $1 or public_id = $1 or id::text = $1
+      where code = $1 or id::text = $1
       limit 1
       `,
       [trimmed],
@@ -1012,7 +1012,7 @@ export class EventsRuntimeService {
         "usageLimit" as "usageLimit",
         "isActive" as "isActive"
       from credit_tags
-      where code = $1 or public_id = $1 or id::text = $1
+      where code = $1 or id::text = $1
       limit 1
       `,
       [trimmed],

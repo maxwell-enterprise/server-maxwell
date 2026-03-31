@@ -137,6 +137,7 @@ export type PaymentStatus = z.infer<typeof PaymentStatusEnum>;
 export const PaymentMethodEnum = z.enum([
   'BANK_TRANSFER',
   'VIRTUAL_ACCOUNT',
+  'VIRTUAL_ACCOUNT_BCA',
   'CREDIT_CARD',
   'DEBIT_CARD',
   'QRIS',

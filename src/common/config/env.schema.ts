@@ -46,6 +46,11 @@ export const AppEnvSchema = z
     DB_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
     DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
     DB_APPLICATION_NAME: z.string().min(1).default('maxwell-backend'),
+
+    // Payments
+    // PPN/VAT rate used for backend pricing calculation (percent).
+    // IMPORTANT: FE is not authoritative; BE is the source of truth for Midtrans gross_amount.
+    PAYMENT_PPN_RATE_PERCENT: z.coerce.number().min(0).max(100).default(0),
   })
   .superRefine((env, ctx) => {
     if (env.DATABASE_URL) {

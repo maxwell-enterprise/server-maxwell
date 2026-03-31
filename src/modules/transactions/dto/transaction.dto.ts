@@ -13,7 +13,9 @@ import {
 // =============================================================================
 
 export const CheckoutItemDtoSchema = z.object({
-  productId: z.string().uuid(),
+  // FE saat ini bisa mengirim `public_id` (bukan UUID id internal).
+  // BE akan tetap menilai valid via query `coalesce(public_id, id::text)`.
+  productId: z.string().trim().min(1),
   quantity: z.number().int().positive(),
   pricingTierId: z.string().uuid().optional(),
 });

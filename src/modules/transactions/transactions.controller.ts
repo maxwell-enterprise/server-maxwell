@@ -42,6 +42,18 @@ export class TransactionsController {
   }
 
   /**
+   * Create Midtrans Snap token so FE can open the hosted payment page.
+   * POST /transactions/midtrans/snap
+   */
+  @Post('midtrans/snap')
+  midtransSnap(
+    @Body(new ZodValidationPipe(CheckoutDtoSchema)) dto: CheckoutDto,
+  ) {
+    const userId = null; // guest checkout for this version
+    return this.transactionsService.createMidtransSnap(userId, dto);
+  }
+
+  /**
    * Get my transactions
    * GET /transactions/my
    */
@@ -139,6 +151,6 @@ export class WebhooksController {
     @Headers('x-midtrans-signature') _signature: string,
   ) {
     // TODO: Verify signature before processing
-    return this.transactionsService.handleMidtransWebhook(dto);
+    return this.transactionsService.handleMidtransWebhook(dto, _signature);
   }
 }

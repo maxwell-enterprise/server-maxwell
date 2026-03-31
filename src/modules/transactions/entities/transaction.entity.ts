@@ -20,6 +20,14 @@ export class Transaction {
   midtransOrderId?: string | null;
   midtransTransactionId?: string | null;
   midtransPaymentType?: string | null;
+  // Aliases that match frontend naming and DB columns
+  virtualAccountNumber?: string | null;
+  qrisUrl?: string | null;
+  bankDetails?: {
+    bankName: string;
+    accountNumber: string;
+    accountHolder: string;
+  } | null;
   midtransVaNumber?: string | null;
   midtransQrString?: string | null;
   midtransRedirectUrl?: string | null;

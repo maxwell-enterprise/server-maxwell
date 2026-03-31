@@ -52,7 +52,9 @@ export const CreateProductDtoSchema = z
     priceIdr: z.coerce.number().nonnegative(),
     compareAtPriceIdr: z.coerce.number().nonnegative().optional(),
     category: ProductCategoryEnum,
-    imageUrl: z.string().max(2048).optional().default(''),
+    // FE sometimes sends `data:image/...;base64,...` which can be long.
+    // Keep a reasonable upper bound to avoid accidentally storing huge payloads.
+    imageUrl: z.string().max(200000).optional().default(''),
     items: z.array(ProductItemDtoSchema).default([]),
     hasVariants: z.boolean().default(false),
     variants: z.array(ProductVariantDtoSchema).optional(),
@@ -60,18 +62,9 @@ export const CreateProductDtoSchema = z
     isActive: z.boolean().default(true),
   })
   .superRefine((data, ctx) => {
-    const hasTopLevelItems = data.items.length > 0;
-    const hasVariantItems =
-      data.variants?.some((variant) => variant.items.length > 0) ?? false;
-
-    if (!hasTopLevelItems && !hasVariantItems) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Product must define at least one entitlement item',
-        path: ['items'],
-      });
-    }
-
+    // NOTE: `db.sql` allows `products.items` to be an empty jsonb array.
+    // FE can create a product first, then entitlement items can be added later.
+    // So we only validate variant structure here, not the presence of at least one item.
     if (data.hasVariants && !(data.variants && data.variants.length > 0)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -90,7 +83,7 @@ export const UpdateProductDtoSchema = z
     priceIdr: z.coerce.number().nonnegative().optional(),
     compareAtPriceIdr: z.coerce.number().nonnegative().nullable().optional(),
     category: ProductCategoryEnum.optional(),
-    imageUrl: z.string().max(2048).nullable().optional(),
+    imageUrl: z.string().max(200000).nullable().optional(),
     items: z.array(ProductItemDtoSchema).optional(),
     hasVariants: z.boolean().optional(),
     variants: z.array(ProductVariantDtoSchema).nullable().optional(),
@@ -122,7 +115,9 @@ export type ProductResponseDto = z.infer<typeof ProductResponseDtoSchema>;
 
 export const ProductQueryDtoSchema = z.object({
   page: z.coerce.number().int().positive().default(1),
-  limit: z.coerce.number().int().min(1).max(100).default(20),
+  // Frontend currently requests `limit=1000` for product listing.
+  // Keep backend contract aligned to avoid 400 validation failures.
+  limit: z.coerce.number().int().min(1).max(1000).default(20),
   search: z.string().optional(),
   category: ProductCategoryEnum.optional(),
   isActive: z.coerce.boolean().optional(),

@@ -382,15 +382,8 @@ export class ProductsService {
       throw new BadRequestException('Product price must be zero or positive');
     }
 
-    const topLevelItems = product.items ?? [];
-    const variantItems =
-      product.variants?.flatMap((variant) => variant.items ?? []) ?? [];
-
-    if (!topLevelItems.length && !variantItems.length) {
-      throw new BadRequestException(
-        'Product must define at least one entitlement item',
-      );
-    }
+    // `db.sql` allows `products.items` to be an empty jsonb array.
+    // FE can create a product first, then entitlement items can be filled later.
 
     if (product.hasVariants && !(product.variants && product.variants.length)) {
       throw new BadRequestException(
