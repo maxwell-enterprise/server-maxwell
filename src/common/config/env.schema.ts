@@ -33,7 +33,12 @@ export const AppEnvSchema = z
     PORT: z.coerce.number().int().positive().default(3001),
     HOST: z.string().min(1).default('0.0.0.0'),
     APP_NAME: z.string().min(1).default('backend-maxwell'),
-    APP_CORS_ORIGINS: z.string().default('http://localhost:3000'),
+    // Comma-separated. Include deployed FE origins (e.g. Vercel) or browser CORS will block.
+    APP_CORS_ORIGINS: z
+      .string()
+      .default(
+        'http://localhost:3000,https://maxwellenterpricev2.vercel.app',
+      ),
 
     DATABASE_URL: z.string().min(1).optional(),
     DB_HOST: z.string().min(1).optional(),
