@@ -114,10 +114,9 @@ export const ProductResponseDtoSchema = z.object({
 export type ProductResponseDto = z.infer<typeof ProductResponseDtoSchema>;
 
 export const ProductQueryDtoSchema = z.object({
-  page: z.coerce.number().int().positive().default(1),
-  // Frontend currently requests `limit=1000` for product listing.
-  // Keep backend contract aligned to avoid 400 validation failures.
-  limit: z.coerce.number().int().min(1).max(1000).default(20),
+  // If `limit` is omitted, backend returns full product list.
+  page: z.coerce.number().int().positive().optional(),
+  limit: z.coerce.number().int().min(1).max(1000).optional(),
   search: z.string().optional(),
   category: ProductCategoryEnum.optional(),
   isActive: z.coerce.boolean().optional(),

@@ -163,10 +163,21 @@ export class ProductsService {
       order by ${sortBy} ${sortOrder}, p.created_at desc
     `;
 
+    // `limit` is optional: when omitted, return the full sorted list.
+    if (typeof query.limit !== 'number') {
+      const fullResult = await this.db.query<ProductRow>(baseSql, params);
+      const data = fullResult.rows.map((row) => this.toProduct(row));
+
+      return {
+        data,
+        total: data.length,
+      };
+    }
+
     const { rows, total } = await this.db.paginatedQuery<ProductRow>(
       baseSql,
       params,
-      query.page,
+      query.page ?? 1,
       query.limit,
     );
 
