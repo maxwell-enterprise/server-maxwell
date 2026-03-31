@@ -5,6 +5,9 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "typeorm": "typeorm-ts-node-commonjs",
     "build": "nest build",
