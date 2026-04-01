@@ -37,7 +37,7 @@ export const AppEnvSchema = z
     APP_CORS_ORIGINS: z
       .string()
       .default(
-        'http://localhost:3000,https://maxwellenterpricev2.vercel.app',
+        'http://localhost:3000,http://127.0.0.1:3000,https://maxwellenterpricev2.vercel.app,https://*.vercel.app',
       ),
 
     DATABASE_URL: z.string().min(1).optional(),

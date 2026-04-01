@@ -16,6 +16,9 @@ export interface DatabaseRuntimeConfig {
 @Injectable()
 export class AppConfigService {
   private readonly env: AppEnv = parseAppEnv(process.env);
+  private readonly corsOriginPatterns = this.env.APP_CORS_ORIGINS.split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 
   get nodeEnv() {
     return this.env.NODE_ENV;
@@ -38,9 +41,67 @@ export class AppConfigService {
   }
 
   get corsOrigins(): string[] {
-    return this.env.APP_CORS_ORIGINS.split(',')
-      .map((origin) => origin.trim())
-      .filter(Boolean);
+    return [...this.corsOriginPatterns];
+  }
+
+  isCorsOriginAllowed(origin?: string | null): boolean {
+    // Non-browser requests (curl/Postman/server-to-server) usually omit Origin.
+    if (!origin) {
+      return true;
+    }
+
+    let parsedOrigin: URL;
+    try {
+      parsedOrigin = new URL(origin);
+    } catch {
+      return false;
+    }
+
+    const hostname = parsedOrigin.hostname.toLowerCase();
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0') {
+      return true;
+    }
+
+    return this.corsOriginPatterns.some((rule) =>
+      this.matchesOriginRule(origin, parsedOrigin, rule),
+    );
+  }
+
+  private matchesOriginRule(origin: string, parsedOrigin: URL, rule: string): boolean {
+    if (!rule) {
+      return false;
+    }
+    if (rule === '*') {
+      return true;
+    }
+    if (!rule.includes('*')) {
+      return origin === rule;
+    }
+
+    let parsedRule: URL;
+    try {
+      parsedRule = new URL(rule);
+    } catch {
+      return false;
+    }
+
+    if (parsedRule.protocol !== parsedOrigin.protocol) {
+      return false;
+    }
+
+    const escapedHost = parsedRule.hostname
+      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+      .replace(/\\\*/g, '[^.]+');
+    const hostRegex = new RegExp(`^${escapedHost}$`, 'i');
+    if (!hostRegex.test(parsedOrigin.hostname)) {
+      return false;
+    }
+
+    if (parsedRule.port && parsedRule.port !== parsedOrigin.port) {
+      return false;
+    }
+
+    return true;
   }
 
   get databaseRuntime(): DatabaseRuntimeConfig {

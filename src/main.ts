@@ -22,7 +22,13 @@ async function bootstrap() {
 
   app.enableShutdownHooks();
   app.enableCors({
-    origin: config.corsOrigins.length ? config.corsOrigins : true,
+    origin: (origin, callback) => {
+      if (config.isCorsOriginAllowed(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(new Error(`Origin ${origin ?? 'unknown'} is not allowed by CORS`), false);
+    },
     credentials: true,
   });
 
