@@ -24,6 +24,7 @@ import { ProductsModule } from './modules/products/products.module';
 import { MembersModule } from './modules/members/members.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { CartsModule } from './modules/carts/carts.module';
+import { CertificationRulesModule } from './modules/certification-rules/certification-rules.module';
 
 // TODO: Add these modules when ready
 // import { AuthModule } from './modules/auth/auth.module';
@@ -63,6 +64,7 @@ import { CartsModule } from './modules/carts/carts.module';
     MembersModule,
     InvitationsModule,
     CartsModule,
+    CertificationRulesModule,
   ],
   controllers: [RootController, AppController],
   providers: [AppService],
