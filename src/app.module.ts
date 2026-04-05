@@ -3,6 +3,11 @@
  */
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Module } from '@nestjs/common';
+import { parseAppEnv } from './common/config/env.schema';
+
+const appEnv = parseAppEnv(process.env);
+const typeOrmPostgresSsl =
+  appEnv.DB_SSL || /supabase\.(com|co)/i.test(appEnv.DATABASE_URL ?? '');
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { RootController } from './root.controller';
@@ -25,6 +30,12 @@ import { MembersModule } from './modules/members/members.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { CartsModule } from './modules/carts/carts.module';
 import { CertificationRulesModule } from './modules/certification-rules/certification-rules.module';
+import { ContractsModule } from './modules/contracts/contracts.module';
+import { StoreSupportModule } from './modules/store-support/store-support.module';
+import { CommissionRulesModule } from './modules/commission-rules/commission-rules.module';
+import { YouthImpactModule } from './modules/youth-impact/youth-impact.module';
+import { GamificationModule } from './modules/gamification/gamification.module';
+import { CommunicationModule } from './modules/communication/communication.module';
 
 // TODO: Add these modules when ready
 // import { AuthModule } from './modules/auth/auth.module';
@@ -35,15 +46,18 @@ import { CertificationRulesModule } from './modules/certification-rules/certific
   imports: [
     TypeOrmModule.forRoot({
       type: 'postgres',
-      ...(process.env.DATABASE_URL
-        ? { url: process.env.DATABASE_URL }
+      ...(appEnv.DATABASE_URL
+        ? { url: appEnv.DATABASE_URL }
         : {
-            host: process.env.DB_HOST,
-            port: +(process.env.DB_PORT || 5432),
-            username: process.env.DB_USERNAME,
-            password: process.env.DB_PASSWORD,
-            database: process.env.DB_DATABASE,
+            host: appEnv.DB_HOST,
+            port: appEnv.DB_PORT,
+            username: appEnv.DB_USERNAME,
+            password: appEnv.DB_PASSWORD,
+            database: appEnv.DB_DATABASE,
           }),
+      ...(typeOrmPostgresSsl
+        ? { ssl: { rejectUnauthorized: false } }
+        : {}),
       autoLoadEntities: true,
       synchronize: false, // true hanya untuk development awal
     }),
@@ -65,6 +79,12 @@ import { CertificationRulesModule } from './modules/certification-rules/certific
     InvitationsModule,
     CartsModule,
     CertificationRulesModule,
+    ContractsModule,
+    StoreSupportModule,
+    CommissionRulesModule,
+    YouthImpactModule,
+    GamificationModule,
+    CommunicationModule,
   ],
   controllers: [RootController, AppController],
   providers: [AppService],

@@ -763,3 +763,27 @@ create table if not exists campaigns (
   conversions integer not null default 0,
   revenue numeric(18,2) not null default 0
 );
+
+-- ============================================
+-- 15) YOUTH IMPACT (FE YouthMetric — Nest /fe/youth-impact/metrics)
+-- ============================================
+
+create table if not exists youth_metrics (
+  id text primary key,
+  school_name text not null,
+  contact_person text not null,
+  status text not null,
+  students_impacted integer not null default 0,
+  program_type text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint youth_metrics_status_check check (
+    status in ('LEAD', 'MOU_SIGNED', 'PROGRAM_ACTIVE')
+  ),
+  constraint youth_metrics_program_check check (
+    program_type in ('iChoose', 'iDo', 'iLead')
+  )
+);
+
+create index if not exists idx_youth_metrics_status on youth_metrics (status);
+create index if not exists idx_youth_metrics_program on youth_metrics (program_type);

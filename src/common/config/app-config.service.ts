@@ -118,12 +118,18 @@ export class AppConfigService {
   }
 
   get database(): PoolConfig {
+    const ssl =
+      this.env.DB_SSL ||
+      /supabase\.(com|co)/i.test(this.env.DATABASE_URL ?? '')
+        ? { rejectUnauthorized: false }
+        : undefined;
+
     const baseConfig: PoolConfig = {
       max: this.env.DB_POOL_MAX,
       idleTimeoutMillis: this.env.DB_IDLE_TIMEOUT_MS,
       connectionTimeoutMillis: this.env.DB_CONNECTION_TIMEOUT_MS,
       application_name: this.env.DB_APPLICATION_NAME,
-      ssl: this.env.DB_SSL ? { rejectUnauthorized: false } : undefined,
+      ssl,
     };
 
     if (this.env.DATABASE_URL) {
