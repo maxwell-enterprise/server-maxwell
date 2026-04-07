@@ -11,7 +11,12 @@ import {
   ProductVariantDto,
   UpdateProductDto,
 } from './dto';
-import { InstallmentConfig, Product, ProductItem, ProductVariant } from './entities';
+import {
+  InstallmentConfig,
+  Product,
+  ProductItem,
+  ProductVariant,
+} from './entities';
 
 interface ProductRow {
   internalId: string;
@@ -106,7 +111,9 @@ export class ProductsService {
     return this.toProduct(result.rows[0]);
   }
 
-  async findAll(query: ProductQueryDto): Promise<{ data: Product[]; total: number }> {
+  async findAll(
+    query: ProductQueryDto,
+  ): Promise<{ data: Product[]; total: number }> {
     const params: Array<string | boolean> = [];
     const where: string[] = [];
 
@@ -367,9 +374,9 @@ export class ProductsService {
         update.imageUrl !== undefined
           ? (update.imageUrl ?? '')
           : (existing.imageUrl ?? ''),
-      items: update.items ?? (existing.items ?? []),
+      items: update.items ?? existing.items ?? [],
       hasVariants: update.hasVariants ?? existing.hasVariants,
-      variants: update.variants ?? (existing.variants ?? undefined),
+      variants: update.variants ?? existing.variants ?? undefined,
       installmentConfig:
         update.installmentConfig !== undefined
           ? (update.installmentConfig ?? undefined)

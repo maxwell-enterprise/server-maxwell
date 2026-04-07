@@ -1,7 +1,4 @@
-import {
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { DbService } from '../../common/db.service';
 import {
   CreateCertificationRuleDto,
@@ -18,7 +15,9 @@ import {
 export class CertificationRulesService {
   constructor(private readonly db: DbService) {}
 
-  async findAll(query: CertificationRuleQueryDto): Promise<CertificationRuleRow[]> {
+  async findAll(
+    query: CertificationRuleQueryDto,
+  ): Promise<CertificationRuleRow[]> {
     const params: unknown[] = [];
     const where: string[] = [];
 
@@ -118,7 +117,11 @@ export class CertificationRulesService {
         criteria,
         "createdAt" as "createdAt"
       `,
-      [dto.name.trim(), dto.description?.trim() || null, JSON.stringify(criteria)],
+      [
+        dto.name.trim(),
+        dto.description?.trim() || null,
+        JSON.stringify(criteria),
+      ],
     );
 
     return rowToRule(result.rows[0]);
@@ -133,8 +136,7 @@ export class CertificationRulesService {
       logic: dto.logic ?? existing.logic,
       requiredTags: dto.requiredTags ?? existing.requiredTags,
       minCountValue: dto.minCountValue ?? existing.minCountValue,
-      badgeUrl:
-        dto.badgeUrl !== undefined ? dto.badgeUrl : existing.badgeUrl,
+      badgeUrl: dto.badgeUrl !== undefined ? dto.badgeUrl : existing.badgeUrl,
       isActive: dto.isActive ?? existing.isActive,
       validityPeriodMonths:
         dto.validityPeriodMonths ?? existing.validityPeriodMonths,
@@ -179,9 +181,10 @@ export class CertificationRulesService {
   }
 
   async remove(id: string): Promise<void> {
-    const r = await this.db.query(`delete from certification_rules where id::text = $1`, [
-      id,
-    ]);
+    const r = await this.db.query(
+      `delete from certification_rules where id::text = $1`,
+      [id],
+    );
     if (r.rowCount === 0) {
       throw new NotFoundException(`Certification rule ${id} not found`);
     }

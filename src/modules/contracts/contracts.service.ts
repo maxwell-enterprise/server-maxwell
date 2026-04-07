@@ -35,7 +35,9 @@ export class ContractsService {
     );
     return result.rows.map((r) => {
       const tags = Array.isArray(r.tags)
-        ? (r.tags as unknown[]).filter((x): x is string => typeof x === 'string')
+        ? (r.tags as unknown[]).filter(
+            (x): x is string => typeof x === 'string',
+          )
         : undefined;
       return {
         id: r.id,

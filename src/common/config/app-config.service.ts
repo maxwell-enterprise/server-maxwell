@@ -58,7 +58,11 @@ export class AppConfigService {
     }
 
     const hostname = parsedOrigin.hostname.toLowerCase();
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '0.0.0.0') {
+    if (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '0.0.0.0'
+    ) {
       return true;
     }
 
@@ -67,7 +71,11 @@ export class AppConfigService {
     );
   }
 
-  private matchesOriginRule(origin: string, parsedOrigin: URL, rule: string): boolean {
+  private matchesOriginRule(
+    origin: string,
+    parsedOrigin: URL,
+    rule: string,
+  ): boolean {
     if (!rule) {
       return false;
     }
@@ -119,8 +127,7 @@ export class AppConfigService {
 
   get database(): PoolConfig {
     const ssl =
-      this.env.DB_SSL ||
-      /supabase\.(com|co)/i.test(this.env.DATABASE_URL ?? '')
+      this.env.DB_SSL || /supabase\.(com|co)/i.test(this.env.DATABASE_URL ?? '')
         ? { rejectUnauthorized: false }
         : undefined;
 

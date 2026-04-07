@@ -9,7 +9,9 @@ export const CreateMasterDoneTagDtoSchema = z.object({
   description: z.string().optional(),
 });
 
-export type CreateMasterDoneTagDto = z.infer<typeof CreateMasterDoneTagDtoSchema>;
+export type CreateMasterDoneTagDto = z.infer<
+  typeof CreateMasterDoneTagDtoSchema
+>;
 
 export const UpdateMasterDoneTagDtoSchema =
   CreateMasterDoneTagDtoSchema.partial().refine(
@@ -19,7 +21,9 @@ export const UpdateMasterDoneTagDtoSchema =
     },
   );
 
-export type UpdateMasterDoneTagDto = z.infer<typeof UpdateMasterDoneTagDtoSchema>;
+export type UpdateMasterDoneTagDto = z.infer<
+  typeof UpdateMasterDoneTagDtoSchema
+>;
 
 export const MasterDoneTagQueryDtoSchema = z.object({
   search: z.string().optional(),

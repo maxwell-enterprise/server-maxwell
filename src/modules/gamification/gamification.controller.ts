@@ -11,10 +11,7 @@ export class GamificationController {
   }
 
   @Put('badges/:id')
-  upsertBadge(
-    @Param('id') id: string,
-    @Body() body: Record<string, unknown>,
-  ) {
+  upsertBadge(@Param('id') id: string, @Body() body: Record<string, unknown>) {
     return this.gamification.upsertBadge(decodeURIComponent(id), body ?? {});
   }
 
@@ -24,10 +21,7 @@ export class GamificationController {
   }
 
   @Put('rules/:id')
-  upsertRule(
-    @Param('id') id: string,
-    @Body() body: Record<string, unknown>,
-  ) {
+  upsertRule(@Param('id') id: string, @Body() body: Record<string, unknown>) {
     return this.gamification.upsertRule(decodeURIComponent(id), body ?? {});
   }
 

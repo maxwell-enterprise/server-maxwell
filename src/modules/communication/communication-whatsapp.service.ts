@@ -23,7 +23,9 @@ export class CommunicationWhatsappService {
     }));
   }
 
-  async addTask(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async addTask(
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const id = String(body.id ?? '');
     if (!id) throw new Error('task id required');
 

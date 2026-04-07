@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import { DatabaseService } from '../../common/database/database.service';
 
@@ -26,8 +30,8 @@ function isUuid(s: string): boolean {
 function uuidFromFeId(kind: 'tpl' | 'chk', feId: string): string {
   const hash = createHash('sha256').update(`${kind}:${feId}`).digest();
   const buf = Buffer.from(hash.subarray(0, 16));
-  buf[6] = (buf[6]! & 0x0f) | 0x40;
-  buf[8] = (buf[8]! & 0x3f) | 0x80;
+  buf[6] = (buf[6] & 0x0f) | 0x40;
+  buf[8] = (buf[8] & 0x3f) | 0x80;
   const h = buf.toString('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
@@ -100,7 +104,10 @@ export class StoreSupportService {
     };
   }
 
-  async upsertPricingRule(feId: string, body: Record<string, unknown>): Promise<void> {
+  async upsertPricingRule(
+    feId: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const rule: Record<string, unknown> = { ...body, id: feId };
     const name = String(rule.name ?? 'Rule');
     const description = String(rule.description ?? '');
@@ -192,20 +199,30 @@ export class StoreSupportService {
         row.maxBudgetLimit != null ? Number(row.maxBudgetLimit) : undefined,
       currentBudgetBurned: Number(row.currentBudgetBurned ?? 0),
       isFeatured: Boolean(row.isFeatured),
-      conditions: row.conditions != null ? parseJson(row.conditions, undefined) : undefined,
+      conditions:
+        row.conditions != null
+          ? parseJson(row.conditions, undefined)
+          : undefined,
       minQty: row.minQty != null ? Number(row.minQty) : undefined,
     };
   }
 
-  async upsertDiscount(feId: string, body: Record<string, unknown>): Promise<void> {
+  async upsertDiscount(
+    feId: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const code = String(body.code ?? feId);
     const title = String(body.title ?? code);
     const description = String(body.description ?? '');
     const type = String(body.type ?? 'PERCENTAGE');
     const value = Number(body.value ?? 0);
     const scope = String(body.scope ?? 'GLOBAL');
-    const targetIds = Array.isArray(body.targetIds) ? (body.targetIds as string[]) : [];
-    const validFrom = body.validFrom ? String(body.validFrom) : new Date().toISOString();
+    const targetIds = Array.isArray(body.targetIds)
+      ? (body.targetIds as string[])
+      : [];
+    const validFrom = body.validFrom
+      ? String(body.validFrom)
+      : new Date().toISOString();
     const validUntil = body.validUntil
       ? String(body.validUntil)
       : new Date(Date.now() + 864e14).toISOString();
@@ -296,7 +313,10 @@ export class StoreSupportService {
     }));
   }
 
-  async upsertInventory(sku: string, body: Record<string, unknown>): Promise<void> {
+  async upsertInventory(
+    sku: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const name = String(body.name ?? sku);
     const category = String(body.category ?? 'General');
     const stock = Number(body.stock ?? 0);
@@ -338,7 +358,9 @@ export class StoreSupportService {
     }));
   }
 
-  async createInventoryTransaction(body: Record<string, unknown>): Promise<{ id: string }> {
+  async createInventoryTransaction(
+    body: Record<string, unknown>,
+  ): Promise<{ id: string }> {
     const rawId = body.id != null ? String(body.id) : null;
     const pk = rawId && isUuid(rawId) ? rawId : randomUUID();
     const feId = rawId && !isUuid(rawId) ? rawId : null;
@@ -433,9 +455,13 @@ export class StoreSupportService {
     };
   }
 
-  async createLedgerTransaction(body: Record<string, unknown>): Promise<{ id: string }> {
+  async createLedgerTransaction(
+    body: Record<string, unknown>,
+  ): Promise<{ id: string }> {
     const feId = body.id != null ? String(body.id) : null;
-    const dateRaw = body.date ? String(body.date) : new Date().toISOString().slice(0, 10);
+    const dateRaw = body.date
+      ? String(body.date)
+      : new Date().toISOString().slice(0, 10);
     const type = String(body.type ?? 'Expense');
     const description = String(body.description ?? '');
     const amount = Number(body.amount ?? 0);
@@ -880,5 +906,230 @@ export class StoreSupportService {
          tasks = EXCLUDED.tasks`,
       [rowId, name, description, JSON.stringify(tasksPayload), createdAt],
     );
+  }
+
+  async updateOpsTaskStatus(
+    checklistFeId: string,
+    taskId: string,
+    input: { status?: string; actorRole?: string; note?: string },
+  ): Promise<unknown> {
+    const status = String(input.status ?? '').toUpperCase();
+    const allowed = ['PENDING', 'IN_PROGRESS', 'COMPLETED', 'SKIPPED'];
+    if (!allowed.includes(status)) {
+      throw new BadRequestException(
+        `status must be one of: ${allowed.join(', ')}`,
+      );
+    }
+
+    const rowId = resolveOpsRowId(checklistFeId, 'chk');
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT id, name, description, tasks, "createdAt"
+       FROM ops_checklists
+       WHERE id = $1::uuid OR tasks->>'feId' = $2
+       LIMIT 1`,
+      [rowId, checklistFeId],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new NotFoundException('Checklist not found');
+    }
+
+    const payload = parseJson<Record<string, unknown>>(row.tasks, {});
+    const tasks = Array.isArray(payload.tasks)
+      ? (payload.tasks as Array<Record<string, unknown>>)
+      : [];
+    const target = tasks.find((task) => String(task.id ?? '') === taskId);
+    if (!target) {
+      throw new NotFoundException('Task not found');
+    }
+
+    const nowIso = new Date().toISOString();
+    const actorRole = String(input.actorRole ?? 'SYSTEM');
+    const note = String(input.note ?? '');
+
+    target.status = status;
+    if (status === 'COMPLETED') {
+      target.completedAt = nowIso;
+      target.completedBy = actorRole;
+    }
+
+    const logs = Array.isArray(target.logs)
+      ? (target.logs as Array<Record<string, unknown>>)
+      : [];
+    logs.push({
+      timestamp: nowIso,
+      actor: actorRole,
+      action: 'STATUS_CHANGE',
+      note: `Changed status to ${status}${note ? `. Note: ${note}` : ''}`,
+    });
+    target.logs = logs;
+
+    const doneCount = tasks.filter((task) => {
+      const taskStatus = String(task.status ?? '').toUpperCase();
+      return taskStatus === 'COMPLETED' || taskStatus === 'SKIPPED';
+    }).length;
+    const progress =
+      tasks.length > 0 ? Math.round((doneCount / tasks.length) * 100) : 0;
+
+    payload.tasks = tasks;
+    payload.progress = progress;
+    payload.status = progress >= 100 ? 'COMPLETED' : 'ACTIVE';
+    payload.updatedAt = nowIso;
+
+    const name = String(payload.memberName ?? row.name ?? 'Checklist');
+    const description = String(payload.productName ?? row.description ?? '');
+
+    await this.db.query(
+      `UPDATE ops_checklists
+       SET name = $1, description = $2, tasks = $3::jsonb
+       WHERE id = $4::uuid`,
+      [name, description, JSON.stringify(payload), String(row.id)],
+    );
+
+    return this.rowToOpsChecklist({
+      ...row,
+      name,
+      description,
+      tasks: payload,
+    });
+  }
+
+  async listSupportTickets(params: {
+    assignedRole?: string;
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<unknown[]> {
+    const limit = Math.min(Math.max(params.limit ?? 200, 1), 1000);
+    const offset = Math.max(params.offset ?? 0, 0);
+    const assignedRole = params.assignedRole?.trim();
+    const status = params.status?.trim();
+
+    const values: unknown[] = [];
+    const where: string[] = [];
+    if (assignedRole) {
+      values.push(assignedRole);
+      where.push(`payload->>'assignedRole' = $${values.length}`);
+    }
+    if (status) {
+      values.push(status);
+      where.push(`payload->>'status' = $${values.length}`);
+    }
+    values.push(limit);
+    const limitIdx = values.length;
+    values.push(offset);
+    const offsetIdx = values.length;
+
+    const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT id, "feId", payload, "createdAt", "updatedAt"
+       FROM support_tickets
+       ${whereClause}
+       ORDER BY "updatedAt" DESC
+       LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      values,
+    );
+
+    return result.rows.map((row) => this.rowToSupportTicket(row));
+  }
+
+  private rowToSupportTicket(row: Record<string, unknown>): unknown {
+    const payload = parseJson<Record<string, unknown>>(row.payload, {});
+    return {
+      id: String(payload.id ?? row.feId ?? row.id ?? ''),
+      memberId: String(payload.memberId ?? ''),
+      memberName: String(payload.memberName ?? 'Unknown'),
+      subject: String(payload.subject ?? 'No Subject'),
+      description: String(payload.description ?? ''),
+      priority: String(payload.priority ?? 'MEDIUM'),
+      status: String(payload.status ?? 'NEW'),
+      assignedRole: String(payload.assignedRole ?? 'Operations'),
+      createdAt: toIso(payload.createdAt ?? row.createdAt),
+      updatedAt: toIso(payload.updatedAt ?? row.updatedAt ?? row.createdAt),
+    };
+  }
+
+  async createSupportTicket(body: Record<string, unknown>): Promise<unknown> {
+    const feId = String(body.id ?? `TKT-${Date.now()}`);
+    const rowId = isUuid(feId) ? feId : uuidFromFeId('chk', `support:${feId}`);
+    const nowIso = new Date().toISOString();
+    const payload: Record<string, unknown> = {
+      id: feId,
+      memberId: String(body.memberId ?? ''),
+      memberName: String(body.memberName ?? 'Unknown'),
+      subject: String(body.subject ?? 'No Subject'),
+      description: String(body.description ?? ''),
+      priority: String(body.priority ?? 'MEDIUM'),
+      status: String(body.status ?? 'NEW'),
+      assignedRole: String(body.assignedRole ?? 'Operations'),
+      createdAt: String(body.createdAt ?? nowIso),
+      updatedAt: String(body.updatedAt ?? nowIso),
+    };
+
+    await this.db.query(
+      `INSERT INTO support_tickets (id, "feId", payload, "createdAt", "updatedAt")
+       VALUES ($1::uuid, $2, $3::jsonb, $4::timestamptz, $5::timestamptz)
+       ON CONFLICT ("feId") DO UPDATE SET
+         payload = EXCLUDED.payload,
+         "updatedAt" = EXCLUDED."updatedAt"`,
+      [
+        rowId,
+        feId,
+        JSON.stringify(payload),
+        payload.createdAt,
+        payload.updatedAt,
+      ],
+    );
+
+    return payload;
+  }
+
+  async updateSupportTicket(
+    feId: string,
+    updates: Record<string, unknown>,
+  ): Promise<unknown> {
+    const rowId = isUuid(feId) ? feId : uuidFromFeId('chk', `support:${feId}`);
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT id, "feId", payload, "createdAt", "updatedAt"
+       FROM support_tickets
+       WHERE id = $1::uuid OR "feId" = $2
+       LIMIT 1`,
+      [rowId, feId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException('Support ticket not found');
+
+    const existing = parseJson<Record<string, unknown>>(row.payload, {});
+    const next = {
+      ...existing,
+      ...updates,
+      id: String(existing.id ?? row.feId ?? feId),
+      updatedAt: new Date().toISOString(),
+    };
+
+    await this.db.query(
+      `UPDATE support_tickets
+       SET payload = $1::jsonb, "updatedAt" = $2::timestamptz
+       WHERE id = $3::uuid`,
+      [JSON.stringify(next), next.updatedAt, String(row.id)],
+    );
+
+    return this.rowToSupportTicket({
+      ...row,
+      payload: next,
+      updatedAt: next.updatedAt,
+    });
+  }
+
+  async resolveSupportTicket(
+    feId: string,
+    body: { resolution?: string },
+  ): Promise<unknown> {
+    const resolution = String(body.resolution ?? '');
+    return this.updateSupportTicket(feId, {
+      status: 'RESOLVED',
+      resolution,
+      resolvedAt: new Date().toISOString(),
+    });
   }
 }

@@ -75,7 +75,9 @@ export class UsersService {
 
     if (search) {
       params.push(`%${search}%`);
-      where.push(`(m.name ilike $${params.length} or m.email ilike $${params.length})`);
+      where.push(
+        `(m.name ilike $${params.length} or m.email ilike $${params.length})`,
+      );
     }
 
     const whereSql = where.length ? `where ${where.join(' and ')}` : '';
@@ -287,13 +289,15 @@ export class UsersService {
     reason: string,
   ): Promise<User> {
     // Placeholder: just return the user; points ledger bisa ditambah nanti.
-    await this.db.query(
-      `
+    await this.db
+      .query(
+        `
       insert into points_transactions (id, user_id, points, reason, created_at)
       values (gen_random_uuid(), $1, $2, $3, now())
       `,
-      [userId, points, reason],
-    ).catch(() => {});
+        [userId, points, reason],
+      )
+      .catch(() => {});
 
     return this.findOne(userId);
   }

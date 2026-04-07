@@ -1,6 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../../common/database/database.service';
-import type { Badge, PointRule, UserGamificationProfile } from './gamification.types';
+import type {
+  Badge,
+  PointRule,
+  UserGamificationProfile,
+} from './gamification.types';
 
 @Injectable()
 export class GamificationService {
@@ -19,8 +23,7 @@ export class GamificationService {
       autoTrigger: row.autoTrigger
         ? (String(row.autoTrigger) as Badge['autoTrigger'])
         : undefined,
-      triggerThreshold:
-        th != null && th !== '' ? Number(th) : undefined,
+      triggerThreshold: th != null && th !== '' ? Number(th) : undefined,
     };
   }
 
@@ -60,11 +63,15 @@ export class GamificationService {
     return result.rows.map((r) => this.rowToBadge(r));
   }
 
-  async upsertBadge(idFromUrl: string, body: Record<string, unknown>): Promise<void> {
+  async upsertBadge(
+    idFromUrl: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const id = String(body.id ?? idFromUrl);
     const code = String(body.code ?? '');
     const name = String(body.name ?? '');
-    const description = body.description != null ? String(body.description) : '';
+    const description =
+      body.description != null ? String(body.description) : '';
     const icon = body.icon != null ? String(body.icon) : '';
     const rarity = String(body.rarity ?? 'COMMON');
     const pointBonus = Number(body.pointBonus ?? 0);
@@ -112,11 +119,15 @@ export class GamificationService {
     return result.rows.map((r) => this.rowToRule(r));
   }
 
-  async upsertRule(idFromUrl: string, body: Record<string, unknown>): Promise<void> {
+  async upsertRule(
+    idFromUrl: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const id = String(body.id ?? idFromUrl);
     const triggerType = String(body.triggerType ?? '');
     const points = Number(body.points ?? 0);
-    const description = body.description != null ? String(body.description) : '';
+    const description =
+      body.description != null ? String(body.description) : '';
     const isActive = body.isActive !== false;
 
     await this.db.query(
@@ -152,7 +163,10 @@ export class GamificationService {
     return this.rowToProfile(row);
   }
 
-  async upsertProfile(userIdFromUrl: string, body: Record<string, unknown>): Promise<void> {
+  async upsertProfile(
+    userIdFromUrl: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const userId = String(body.userId ?? userIdFromUrl);
     const userName = String(body.userName ?? '');
     const avatarUrl =

@@ -22,12 +22,14 @@ export class CommunicationPdfService {
       name: String(row.name ?? ''),
       category: String(row.category ?? ''),
       orientation: String(row.orientation ?? 'PORTRAIT'),
-      pages: Array.isArray(row.pages) ? row.pages : row.pages ?? [],
+      pages: Array.isArray(row.pages) ? row.pages : (row.pages ?? []),
       createdAt: this.iso(row.createdAt),
     }));
   }
 
-  async upsertTemplate(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async upsertTemplate(
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     let id = body.id != null ? String(body.id) : '';
     if (!id) id = `PDF-${Date.now()}`;
 

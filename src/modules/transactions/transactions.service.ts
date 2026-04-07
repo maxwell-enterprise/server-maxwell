@@ -101,9 +101,14 @@ export class TransactionsService {
         throw new BadRequestException(`Product ${item.productId} not found`);
       }
       if (!prod.isActive) {
-        throw new BadRequestException(`Product ${item.productId} is not active`);
+        throw new BadRequestException(
+          `Product ${item.productId} is not active`,
+        );
       }
-      if (!Number.isFinite(Number(prod.priceIdr)) || Number(prod.priceIdr) <= 0) {
+      if (
+        !Number.isFinite(Number(prod.priceIdr)) ||
+        Number(prod.priceIdr) <= 0
+      ) {
         throw new BadRequestException('Product price must be > 0');
       }
 
@@ -111,7 +116,12 @@ export class TransactionsService {
     });
 
     const subtotal = Math.round(subtotalRaw);
-    const pricing = await this.calculatePricing(dto, products, subtotal, userId);
+    const pricing = await this.calculatePricing(
+      dto,
+      products,
+      subtotal,
+      userId,
+    );
 
     const discountAmount = pricing.discountAmount;
     const taxAmount = pricing.taxAmount;
@@ -278,7 +288,9 @@ export class TransactionsService {
       [
         midtransCharge.vaNumber ?? null,
         midtransCharge.qrisUrl ?? null,
-        midtransCharge.bankDetails ? JSON.stringify(midtransCharge.bankDetails) : null,
+        midtransCharge.bankDetails
+          ? JSON.stringify(midtransCharge.bankDetails)
+          : null,
         payment.id,
       ],
     );
@@ -362,14 +374,22 @@ export class TransactionsService {
           `Product ${item.productId} is not active`,
         );
       }
-      if (!Number.isFinite(Number(prod.priceIdr)) || Number(prod.priceIdr) <= 0) {
+      if (
+        !Number.isFinite(Number(prod.priceIdr)) ||
+        Number(prod.priceIdr) <= 0
+      ) {
         throw new BadRequestException('Product price must be > 0');
       }
       subtotalRaw += Number(prod.priceIdr) * item.quantity;
     });
 
     const subtotal = Math.round(subtotalRaw);
-    const pricing = await this.calculatePricing(dto, products, subtotal, userId);
+    const pricing = await this.calculatePricing(
+      dto,
+      products,
+      subtotal,
+      userId,
+    );
 
     const discountAmount = pricing.discountAmount;
     const taxAmount = pricing.taxAmount;
@@ -565,7 +585,10 @@ export class TransactionsService {
     }
 
     // 4. Update payment status
-    if (dto.transaction_status === 'settlement' || dto.transaction_status === 'capture') {
+    if (
+      dto.transaction_status === 'settlement' ||
+      dto.transaction_status === 'capture'
+    ) {
       await this.db.query(
         `
         update payment_transactions
@@ -610,7 +633,10 @@ export class TransactionsService {
       return;
     }
 
-    if (dto.transaction_status === 'deny' || dto.transaction_status === 'failure') {
+    if (
+      dto.transaction_status === 'deny' ||
+      dto.transaction_status === 'failure'
+    ) {
       await this.db.query(
         `
         update payment_transactions
@@ -693,14 +719,22 @@ export class TransactionsService {
     }>,
     subtotal: number,
     userId: string | null,
-  ): Promise<{ discountAmount: number; taxAmount: number; totalAmount: number }> {
+  ): Promise<{
+    discountAmount: number;
+    taxAmount: number;
+    totalAmount: number;
+  }> {
     // NOTE: userId currently unused for voucher scopes in this first implementation.
     // The goal is to ensure totals sent to Midtrans always come from BE calculations.
     let discountAmount = 0;
 
     if (dto.voucherCode) {
       const code = dto.voucherCode.trim().toUpperCase();
-      discountAmount = await this.calculateDiscountAmount(code, dto.items, products);
+      discountAmount = await this.calculateDiscountAmount(
+        code,
+        dto.items,
+        products,
+      );
     }
 
     const taxableAmount = Math.max(0, subtotal - Math.round(discountAmount));
@@ -708,7 +742,11 @@ export class TransactionsService {
     const taxAmount = Math.round(taxableAmount * ppnRate);
     const totalAmount = taxableAmount + taxAmount;
 
-    return { discountAmount: Math.round(discountAmount), taxAmount, totalAmount };
+    return {
+      discountAmount: Math.round(discountAmount),
+      taxAmount,
+      totalAmount,
+    };
   }
 
   private async calculateDiscountAmount(
@@ -761,8 +799,16 @@ export class TransactionsService {
     const now = new Date();
     if (discount.validFrom && discount.validFrom > now) return 0;
     if (discount.validUntil && discount.validUntil < now) return 0;
-    if (discount.maxUsageLimit !== null && discount.currentUsageCount >= discount.maxUsageLimit) return 0;
-    if (discount.maxBudgetLimit !== null && discount.currentBudgetBurned >= discount.maxBudgetLimit) return 0;
+    if (
+      discount.maxUsageLimit !== null &&
+      discount.currentUsageCount >= discount.maxUsageLimit
+    )
+      return 0;
+    if (
+      discount.maxBudgetLimit !== null &&
+      discount.currentBudgetBurned >= discount.maxBudgetLimit
+    )
+      return 0;
 
     let totalDiscount = 0;
 
@@ -775,12 +821,14 @@ export class TransactionsService {
       if (qty <= 0) continue;
 
       const productMatchesLookup = (targetId: string | undefined | null) =>
-        !!targetId && (targetId === product.id || targetId === product.lookupId);
+        !!targetId &&
+        (targetId === product.id || targetId === product.lookupId);
 
       const applicable =
         discount.scope === 'GLOBAL' ||
         discount.scope === 'ABAC_COMPLEX' ||
-        (discount.scope === 'CATEGORY_SPECIFIC' && discount.targetIds?.includes(product.category)) ||
+        (discount.scope === 'CATEGORY_SPECIFIC' &&
+          discount.targetIds?.includes(product.category)) ||
         (discount.scope === 'Product_SPECIFIC' &&
           discount.targetIds?.some((tid) => productMatchesLookup(tid))) ||
         (discount.scope === 'EVENT_SPECIFIC' &&
@@ -789,7 +837,11 @@ export class TransactionsService {
       if (!applicable) continue;
 
       // BUNDLE_VOLUME: only apply when qty >= minQty (when provided)
-      if (discount.type === 'BUNDLE_VOLUME' && discount.minQty !== null && qty < discount.minQty) {
+      if (
+        discount.type === 'BUNDLE_VOLUME' &&
+        discount.minQty !== null &&
+        qty < discount.minQty
+      ) {
         continue;
       }
 

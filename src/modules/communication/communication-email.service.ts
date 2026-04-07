@@ -112,7 +112,9 @@ export class CommunicationEmailService {
     );
   }
 
-  private mapCampaignRow(row: Record<string, unknown>): Record<string, unknown> {
+  private mapCampaignRow(
+    row: Record<string, unknown>,
+  ): Record<string, unknown> {
     return {
       ...row,
       scheduledAt:

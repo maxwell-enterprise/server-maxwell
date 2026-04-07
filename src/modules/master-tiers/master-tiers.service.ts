@@ -106,4 +106,3 @@ export class MasterTiersService {
     await this.db.query('delete from ref_master_tiers where id = $1', [id]);
   }
 }
-

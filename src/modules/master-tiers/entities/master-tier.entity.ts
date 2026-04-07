@@ -6,4 +6,3 @@ export class MasterTier {
   basePriceIdr?: number | null;
   createdAt: Date;
 }
-

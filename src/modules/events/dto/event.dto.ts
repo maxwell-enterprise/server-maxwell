@@ -120,7 +120,10 @@ export const EventQueryDtoSchema = z.object({
   status: EventStatusEnum.optional(),
   isVisibleInCatalog: z.coerce.boolean().optional(),
   parentEventId: z.string().optional(),
-  year: z.string().regex(/^\d{4}$/).optional(),
+  year: z
+    .string()
+    .regex(/^\d{4}$/)
+    .optional(),
   sortBy: z.enum(['date', 'name', 'createdAt']).default('date'),
   sortOrder: z.enum(['asc', 'desc']).default('asc'),
 });
@@ -144,12 +147,13 @@ export const CreateAccessTagDtoSchema = z.object({
 });
 export type CreateAccessTagDto = z.infer<typeof CreateAccessTagDtoSchema>;
 
-export const UpdateAccessTagDtoSchema = CreateAccessTagDtoSchema.partial().refine(
-  (data) => Object.keys(data).length > 0,
-  {
-    message: 'At least one field must be provided',
-  },
-);
+export const UpdateAccessTagDtoSchema =
+  CreateAccessTagDtoSchema.partial().refine(
+    (data) => Object.keys(data).length > 0,
+    {
+      message: 'At least one field must be provided',
+    },
+  );
 export type UpdateAccessTagDto = z.infer<typeof UpdateAccessTagDtoSchema>;
 
 export const CreateAccessRuleDtoSchema = z.object({

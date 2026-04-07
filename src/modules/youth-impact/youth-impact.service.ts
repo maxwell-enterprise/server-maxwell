@@ -52,7 +52,10 @@ export class YouthImpactService {
     return this.rowToDto(row);
   }
 
-  async upsert(idFromUrl: string, body: Record<string, unknown>): Promise<void> {
+  async upsert(
+    idFromUrl: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const id = String(body.id ?? idFromUrl);
     const schoolName = String(body.schoolName ?? '');
     const contactPerson = String(body.contactPerson ?? '');

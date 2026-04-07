@@ -39,10 +39,7 @@ export class CommunicationWhatsappController {
   }
 
   @Put('templates/:id')
-  saveTemplate(
-    @Param('id') id: string,
-    @Body() body: Record<string, unknown>,
-  ) {
+  saveTemplate(@Param('id') id: string, @Body() body: Record<string, unknown>) {
     const merged = { ...(body ?? {}), id: decodeURIComponent(id) };
     return this.wa.upsertTemplate(merged);
   }

@@ -143,7 +143,9 @@ export class InvitationsService {
     return this.findAll({ memberId: memberIdentifier });
   }
 
-  async createMany(invitations: CreateInvitationDto[]): Promise<EventInvitation[]> {
+  async createMany(
+    invitations: CreateInvitationDto[],
+  ): Promise<EventInvitation[]> {
     const prepared: PreparedInvitationInsert[] = [];
 
     for (const invitation of invitations) {
@@ -365,7 +367,11 @@ export class InvitationsService {
         issuedWalletItems.push(issued);
       }
 
-      await this.updateInvitationStatus(invitation.internalId, 'ACCEPTED', client);
+      await this.updateInvitationStatus(
+        invitation.internalId,
+        'ACCEPTED',
+        client,
+      );
       const updated = await this.findRowByIdentifier(invitation.id, client);
 
       return {
@@ -388,7 +394,11 @@ export class InvitationsService {
       this.assertInvitationOwnership(invitation, member.internalId);
       await this.ensureInvitationIsActionable(invitation, client);
 
-      await this.updateInvitationStatus(invitation.internalId, 'DECLINED', client);
+      await this.updateInvitationStatus(
+        invitation.internalId,
+        'DECLINED',
+        client,
+      );
       const updated = await this.findRowByIdentifier(invitation.id, client);
 
       return this.toInvitation(updated);
@@ -407,7 +417,9 @@ export class InvitationsService {
       );
 
       if (existing.rows[0]?.exists) {
-        throw new ConflictException(`Invitation ID ${preferred} already exists`);
+        throw new ConflictException(
+          `Invitation ID ${preferred} already exists`,
+        );
       }
 
       return preferred;
@@ -466,7 +478,9 @@ export class InvitationsService {
       internalId: row.internalId,
       id: row.id,
       name: row.name,
-      tiers: Array.isArray(row.tiers) ? (row.tiers as ResolvedEvent['tiers']) : null,
+      tiers: Array.isArray(row.tiers)
+        ? (row.tiers as ResolvedEvent['tiers'])
+        : null,
       type: row.type,
       date: row.date,
       location: row.location,
@@ -533,7 +547,9 @@ export class InvitationsService {
       internalId: row.internalId,
       id: row.id,
       name: row.name,
-      tiers: Array.isArray(row.tiers) ? (row.tiers as ResolvedEvent['tiers']) : null,
+      tiers: Array.isArray(row.tiers)
+        ? (row.tiers as ResolvedEvent['tiers'])
+        : null,
       type: row.type,
       date: row.date,
       location: row.location,
@@ -584,7 +600,9 @@ export class InvitationsService {
     }
 
     if (new Set(requestedSelections).size !== requestedSelections.length) {
-      throw new BadRequestException('Duplicate sub-event selection is not allowed');
+      throw new BadRequestException(
+        'Duplicate sub-event selection is not allowed',
+      );
     }
 
     if (requestedSelections.length < selectionConfig.minSelect) {
@@ -618,7 +636,9 @@ export class InvitationsService {
       }
 
       if (seenChildren.has(childEvent.internalId)) {
-        throw new BadRequestException('Duplicate sub-event selection is not allowed');
+        throw new BadRequestException(
+          'Duplicate sub-event selection is not allowed',
+        );
       }
 
       seenChildren.add(childEvent.internalId);
@@ -637,7 +657,11 @@ export class InvitationsService {
     }
 
     if (new Date(invitation.validUntil) <= new Date()) {
-      await this.updateInvitationStatus(invitation.internalId, 'EXPIRED', executor);
+      await this.updateInvitationStatus(
+        invitation.internalId,
+        'EXPIRED',
+        executor,
+      );
       throw new BadRequestException('Invitation expired');
     }
   }
@@ -647,7 +671,9 @@ export class InvitationsService {
     memberInternalId: string,
   ): void {
     if (invitation.memberInternalId !== memberInternalId) {
-      throw new NotFoundException('Invitation not found for the requested member');
+      throw new NotFoundException(
+        'Invitation not found for the requested member',
+      );
     }
   }
 

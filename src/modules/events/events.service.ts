@@ -494,17 +494,17 @@ export class EventsService {
     createRuleDto: CreateAccessRuleDto,
   ): Promise<EventAccessRule> {
     // Untuk sekarang, mapping akses disimpan sebagai array string di kolom creditTags pada events.
-    const eventRes = await this.db.query<{ "creditTags": string[] }>(
+    const eventRes = await this.db.query<{ creditTags: string[] }>(
       'select "creditTags" from events where id = $1',
       [createRuleDto.eventId],
     );
     const tags = (eventRes.rows[0]?.creditTags ?? []) as string[];
     if (!tags.includes(createRuleDto.tagId)) {
       tags.push(createRuleDto.tagId);
-      await this.db.query(
-        'update events set "creditTags" = $2 where id = $1',
-        [createRuleDto.eventId, tags],
-      );
+      await this.db.query('update events set "creditTags" = $2 where id = $1', [
+        createRuleDto.eventId,
+        tags,
+      ]);
     }
 
     const rule: EventAccessRule = {
@@ -521,7 +521,7 @@ export class EventsService {
   }
 
   async findAccessRules(eventId: string): Promise<EventAccessRule[]> {
-    const res = await this.db.query<{ "creditTags": string[] }>(
+    const res = await this.db.query<{ creditTags: string[] }>(
       'select "creditTags" from events where id = $1',
       [eventId],
     );
@@ -564,7 +564,7 @@ export class EventsService {
     tagId: string,
     tierId?: string,
   ): Promise<boolean> {
-    const res = await this.db.query<{ "creditTags": string[] }>(
+    const res = await this.db.query<{ creditTags: string[] }>(
       'select "creditTags" from events where id = $1',
       [eventId],
     );

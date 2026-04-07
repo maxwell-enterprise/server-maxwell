@@ -56,9 +56,7 @@ import { CampaignsModule } from './modules/campaigns/campaigns.module';
             password: appEnv.DB_PASSWORD,
             database: appEnv.DB_DATABASE,
           }),
-      ...(typeOrmPostgresSsl
-        ? { ssl: { rejectUnauthorized: false } }
-        : {}),
+      ...(typeOrmPostgresSsl ? { ssl: { rejectUnauthorized: false } } : {}),
       autoLoadEntities: true,
       synchronize: false, // true hanya untuk development awal
     }),

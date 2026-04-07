@@ -70,7 +70,10 @@ export interface ScannerDeviceRow {
 export class CheckinRuntimeService {
   constructor(private readonly db: DbService) {}
 
-  async scanQr(dto: ScanQrDto, _scannedByUserId?: string): Promise<ScanResultDto> {
+  async scanQr(
+    dto: ScanQrDto,
+    _scannedByUserId?: string,
+  ): Promise<ScanResultDto> {
     const event = await this.findEvent(dto.eventId);
     const ticket = await this.findTicketByQr(dto.qrString);
 
@@ -100,7 +103,8 @@ export class CheckinRuntimeService {
 
     const ticketEventId = this.readMetaString(ticket.meta, 'eventId');
     const directMatch = ticketEventId === event.id;
-    const parentMatch = event.parentEventId && ticketEventId === event.parentEventId;
+    const parentMatch =
+      event.parentEventId && ticketEventId === event.parentEventId;
 
     if (!directMatch && !parentMatch) {
       return {
@@ -110,7 +114,8 @@ export class CheckinRuntimeService {
       };
     }
 
-    const ticketTier = this.readMetaString(ticket.meta, 'targetTier') ?? dto.tierId ?? 'GENERAL';
+    const ticketTier =
+      this.readMetaString(ticket.meta, 'targetTier') ?? dto.tierId ?? 'GENERAL';
     const gate = dto.gateId
       ? (event.gates ?? []).find((item) => item.id === dto.gateId)
       : undefined;
@@ -132,7 +137,9 @@ export class CheckinRuntimeService {
 
       if (!allowed) {
         const suggestedGate = (event.gates ?? []).find((item) =>
-          item.allowedTiers.some((tier) => tier.toUpperCase() === ticketTier.toUpperCase()),
+          item.allowedTiers.some(
+            (tier) => tier.toUpperCase() === ticketTier.toUpperCase(),
+          ),
         );
 
         return {
@@ -229,7 +236,11 @@ export class CheckinRuntimeService {
     };
   }
 
-  async manualCheckin(memberId: string, eventIdentifier: string, method: 'SELF_SCAN' | 'ADMIN_OVERRIDE' | 'GATE_SCAN' = 'GATE_SCAN'): Promise<ScanResultDto> {
+  async manualCheckin(
+    memberId: string,
+    eventIdentifier: string,
+    method: 'SELF_SCAN' | 'ADMIN_OVERRIDE' | 'GATE_SCAN' = 'GATE_SCAN',
+  ): Promise<ScanResultDto> {
     const event = await this.findEvent(eventIdentifier);
     const member = await this.findMember(memberId);
     const verificationCode = this.generateVerificationCode();
@@ -296,7 +307,9 @@ export class CheckinRuntimeService {
     };
   }
 
-  async getCheckins(query: CheckinQueryDto): Promise<{ data: AttendanceLedgerRow[]; total: number }> {
+  async getCheckins(
+    query: CheckinQueryDto,
+  ): Promise<{ data: AttendanceLedgerRow[]; total: number }> {
     const params: unknown[] = [];
     const where: string[] = [];
 
@@ -366,11 +379,14 @@ export class CheckinRuntimeService {
     const event = await this.findEvent(eventIdentifier);
 
     const totalCheckedInResult = await this.db.query<{ count: string }>(
-      'select count(*)::text as count from event_attendance_ledger where "eventId" = $1::uuid and coalesce(status, \'SUCCESS\') = \'SUCCESS\'',
+      "select count(*)::text as count from event_attendance_ledger where \"eventId\" = $1::uuid and coalesce(status, 'SUCCESS') = 'SUCCESS'",
       [event.internalId],
     );
 
-    const byTierResult = await this.db.query<{ tier: string | null; count: string }>(
+    const byTierResult = await this.db.query<{
+      tier: string | null;
+      count: string;
+    }>(
       `
       select "ticketTier" as tier, count(*)::text as count
       from event_attendance_ledger
@@ -380,7 +396,10 @@ export class CheckinRuntimeService {
       [event.internalId],
     );
 
-    const byGateResult = await this.db.query<{ gate: string | null; count: string }>(
+    const byGateResult = await this.db.query<{
+      gate: string | null;
+      count: string;
+    }>(
       `
       select "gateId" as gate, count(*)::text as count
       from event_attendance_ledger
@@ -406,10 +425,16 @@ export class CheckinRuntimeService {
       totalRegistered: Number(event.attendeeCount ?? 0),
       totalCheckedIn: parseInt(totalCheckedInResult.rows[0]?.count ?? '0', 10),
       byTier: Object.fromEntries(
-        byTierResult.rows.map((row) => [row.tier ?? 'GENERAL', parseInt(row.count, 10)]),
+        byTierResult.rows.map((row) => [
+          row.tier ?? 'GENERAL',
+          parseInt(row.count, 10),
+        ]),
       ),
       byGate: Object.fromEntries(
-        byGateResult.rows.map((row) => [row.gate ?? 'UNASSIGNED', parseInt(row.count, 10)]),
+        byGateResult.rows.map((row) => [
+          row.gate ?? 'UNASSIGNED',
+          parseInt(row.count, 10),
+        ]),
       ),
       hourlyCheckins: Object.fromEntries(
         hourlyResult.rows.map((row) => [row.bucket, parseInt(row.count, 10)]),
@@ -483,7 +508,12 @@ export class CheckinRuntimeService {
         last_sync_at as "lastSyncAt",
         registered_at as "registeredAt"
       `,
-      [dto.deviceId.trim(), dto.deviceName.trim(), eventInternalId, dto.gateId ?? null],
+      [
+        dto.deviceId.trim(),
+        dto.deviceName.trim(),
+        eventInternalId,
+        dto.gateId ?? null,
+      ],
     );
 
     return this.toDevice(result.rows[0]);
@@ -568,11 +598,7 @@ export class CheckinRuntimeService {
           insert into offline_sync_queue (device_id, action_type, payload, status, attempts, created_at)
           values ($1, $2, $3::jsonb, 'FAILED', 1, now())
           `,
-          [
-            dto.deviceId,
-            item.actionType,
-            JSON.stringify(item),
-          ],
+          [dto.deviceId, item.actionType, JSON.stringify(item)],
         );
 
         results.push({
@@ -596,7 +622,11 @@ export class CheckinRuntimeService {
   }
 
   async getPendingSyncItems(deviceId: string) {
-    const result = await this.db.query<{ id: string; payload: unknown; status: string }>(
+    const result = await this.db.query<{
+      id: string;
+      payload: unknown;
+      status: string;
+    }>(
       `
       select id::text as id, payload, status
       from offline_sync_queue
@@ -610,7 +640,9 @@ export class CheckinRuntimeService {
     return result.rows;
   }
 
-  private async findEvent(identifier: string): Promise<EventRow & { attendeeCount: number }> {
+  private async findEvent(
+    identifier: string,
+  ): Promise<EventRow & { attendeeCount: number }> {
     const result = await this.db.query<EventRow>(
       `
       select
@@ -642,7 +674,9 @@ export class CheckinRuntimeService {
     };
   }
 
-  private async findTicketByQr(qrString: string): Promise<WalletTicketRow | null> {
+  private async findTicketByQr(
+    qrString: string,
+  ): Promise<WalletTicketRow | null> {
     const parts = qrString.split(':');
     const itemIdentifier = parts.length > 3 ? parts[3] : undefined;
 
@@ -668,7 +702,11 @@ export class CheckinRuntimeService {
   }
 
   private async findMember(identifier: string) {
-    const result = await this.db.query<{ id: string; name: string; email: string | null }>(
+    const result = await this.db.query<{
+      id: string;
+      name: string;
+      email: string | null;
+    }>(
       `
       select
         coalesce(public_id, id::text) as id,
@@ -688,7 +726,9 @@ export class CheckinRuntimeService {
     return result.rows[0];
   }
 
-  private async resolveEventInternalId(identifier: string | undefined): Promise<string | null> {
+  private async resolveEventInternalId(
+    identifier: string | undefined,
+  ): Promise<string | null> {
     const trimmed = identifier?.trim();
     if (!trimmed) {
       return null;
@@ -707,7 +747,10 @@ export class CheckinRuntimeService {
     return result.rows[0]?.internalId ?? null;
   }
 
-  private readMetaString(meta: Record<string, unknown> | null, key: string): string | null {
+  private readMetaString(
+    meta: Record<string, unknown> | null,
+    key: string,
+  ): string | null {
     const value = meta?.[key];
     return typeof value === 'string' && value.trim() ? value.trim() : null;
   }
@@ -735,7 +778,7 @@ export class CheckinRuntimeService {
       lastSyncAt:
         row.lastSyncAt instanceof Date
           ? row.lastSyncAt.toISOString()
-          : row.lastSyncAt ?? undefined,
+          : (row.lastSyncAt ?? undefined),
       registeredAt:
         row.registeredAt instanceof Date
           ? row.registeredAt.toISOString()

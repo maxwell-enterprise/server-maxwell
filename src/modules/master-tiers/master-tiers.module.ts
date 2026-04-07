@@ -7,4 +7,3 @@ import { MasterTiersController } from './master-tiers.controller';
   providers: [MasterTiersService],
 })
 export class MasterTiersModule {}
-

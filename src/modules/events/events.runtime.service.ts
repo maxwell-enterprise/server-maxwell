@@ -148,7 +148,9 @@ export class EventsRuntimeService {
 
   async create(dto: CreateEventDto): Promise<EventContract> {
     const publicId = await this.resolvePublicId(dto.id, dto.name);
-    const parentInternalId = await this.resolveEventInternalId(dto.parentEventId);
+    const parentInternalId = await this.resolveEventInternalId(
+      dto.parentEventId,
+    );
     const normalized = this.normalizeEventPayload(dto);
 
     const result = await this.db.query<EventRow>(
@@ -263,7 +265,9 @@ export class EventsRuntimeService {
 
     if (query.search?.trim()) {
       params.push(`%${query.search.trim()}%`);
-      where.push(`(e.name ilike $${params.length} or coalesce(e.public_id, e.id::text) ilike $${params.length})`);
+      where.push(
+        `(e.name ilike $${params.length} or coalesce(e.public_id, e.id::text) ilike $${params.length})`,
+      );
     }
     if (query.type) {
       params.push(query.type);
@@ -282,7 +286,9 @@ export class EventsRuntimeService {
       where.push(`to_char(e.date, 'YYYY-MM-DD') like $${params.length}`);
     }
     if (query.parentEventId?.trim()) {
-      const parentInternalId = await this.resolveEventInternalId(query.parentEventId);
+      const parentInternalId = await this.resolveEventInternalId(
+        query.parentEventId,
+      );
       if (!parentInternalId) {
         return [];
       }
@@ -346,7 +352,10 @@ export class EventsRuntimeService {
     return this.toEvent(row);
   }
 
-  async update(identifier: string, dto: UpdateEventDto): Promise<EventContract> {
+  async update(
+    identifier: string,
+    dto: UpdateEventDto,
+  ): Promise<EventContract> {
     const existing = await this.findRowByIdentifier(identifier);
     const fields: string[] = [];
     const params: unknown[] = [];
@@ -513,14 +522,22 @@ export class EventsRuntimeService {
 
   async remove(identifier: string): Promise<void> {
     const existing = await this.findRowByIdentifier(identifier);
-    await this.db.query('delete from events where id = $1::uuid', [existing.internalId]);
+    await this.db.query('delete from events where id = $1::uuid', [
+      existing.internalId,
+    ]);
   }
 
-  async updateStatus(identifier: string, status: string): Promise<EventContract> {
+  async updateStatus(
+    identifier: string,
+    status: string,
+  ): Promise<EventContract> {
     return this.update(identifier, { status: status as EventStatus });
   }
 
-  async createTier(eventIdentifier: string, dto: CreateTierDto): Promise<EventTierDefinition[]> {
+  async createTier(
+    eventIdentifier: string,
+    dto: CreateTierDto,
+  ): Promise<EventTierDefinition[]> {
     const event = await this.findOne(eventIdentifier);
     const tiers = [...(event.tiers ?? [])];
     tiers.push({
@@ -537,7 +554,10 @@ export class EventsRuntimeService {
     return event.tiers ?? [];
   }
 
-  async createGate(eventIdentifier: string, dto: CreateGateDto): Promise<EventGateConfig[]> {
+  async createGate(
+    eventIdentifier: string,
+    dto: CreateGateDto,
+  ): Promise<EventGateConfig[]> {
     const event = await this.findOne(eventIdentifier);
     const gates = [...(event.gates ?? [])];
     gates.push({
@@ -665,14 +685,20 @@ export class EventsRuntimeService {
 
   async removeTag(tagIdentifier: string): Promise<void> {
     const target = await this.resolveTagRecord(tagIdentifier);
-    await this.db.query('delete from credit_tags where id::text = $1', [target.id]);
+    await this.db.query('delete from credit_tags where id::text = $1', [
+      target.id,
+    ]);
   }
 
   async createAccessRule(dto: CreateAccessRuleDto) {
-    const eventInternalId = await this.resolveRequiredEventInternalId(dto.eventId);
+    const eventInternalId = await this.resolveRequiredEventInternalId(
+      dto.eventId,
+    );
     const tagCode = await this.resolveTagCode(dto.tagId);
     const event = await this.findOne(dto.eventId);
-    const creditTags = Array.from(new Set([...(event.creditTags ?? []), tagCode]));
+    const creditTags = Array.from(
+      new Set([...(event.creditTags ?? []), tagCode]),
+    );
 
     await this.db.query(
       'update events set "creditTags" = $2::text[], "updatedAt" = now() where id = $1::uuid',
@@ -749,7 +775,8 @@ export class EventsRuntimeService {
   }
 
   async getChildEvents(identifier: string): Promise<EventContract[]> {
-    const parentInternalId = await this.resolveRequiredEventInternalId(identifier);
+    const parentInternalId =
+      await this.resolveRequiredEventInternalId(identifier);
     const result = await this.db.query<EventRow>(
       `
       select
@@ -926,7 +953,8 @@ export class EventsRuntimeService {
       code: row.code,
       name: row.name,
       description: row.description ?? undefined,
-      type: row.type === 'CONSUMABLE' ? 'CONSUMABLE_CREDIT' : 'UNLIMITED_ACCESS',
+      type:
+        row.type === 'CONSUMABLE' ? 'CONSUMABLE_CREDIT' : 'UNLIMITED_ACCESS',
       usageType: row.type ?? 'UNLIMITED',
       usageLimit: Number(row.usageLimit ?? 0),
       category: 'ACCESS',
@@ -934,7 +962,10 @@ export class EventsRuntimeService {
     };
   }
 
-  private async resolvePublicId(requestedId: string | undefined, name: string): Promise<string> {
+  private async resolvePublicId(
+    requestedId: string | undefined,
+    name: string,
+  ): Promise<string> {
     const baseCandidate = requestedId
       ? this.normalizePublicId(requestedId)
       : this.normalizePublicId(`EVT-${name}`);
@@ -965,7 +996,9 @@ export class EventsRuntimeService {
     return result.rows[0]?.exists ?? false;
   }
 
-  private async resolveEventInternalId(identifier: string | undefined): Promise<string | null> {
+  private async resolveEventInternalId(
+    identifier: string | undefined,
+  ): Promise<string | null> {
     const trimmed = identifier?.trim();
     if (!trimmed) {
       return null;
@@ -977,7 +1010,9 @@ export class EventsRuntimeService {
     return result.rows[0]?.internalId ?? null;
   }
 
-  private async resolveRequiredEventInternalId(identifier: string): Promise<string> {
+  private async resolveRequiredEventInternalId(
+    identifier: string,
+  ): Promise<string> {
     const internalId = await this.resolveEventInternalId(identifier);
     if (!internalId) {
       throw new NotFoundException(`Event ${identifier} not found`);
@@ -999,7 +1034,9 @@ export class EventsRuntimeService {
     return result.rows[0]?.code ?? trimmed;
   }
 
-  private async resolveTagRecord(identifier: string): Promise<AccessTagRow & { id: string }> {
+  private async resolveTagRecord(
+    identifier: string,
+  ): Promise<AccessTagRow & { id: string }> {
     const trimmed = identifier.trim();
     const result = await this.db.query<AccessTagRow>(
       `

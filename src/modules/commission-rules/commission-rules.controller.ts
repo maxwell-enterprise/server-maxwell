@@ -1,11 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Param,
-  Put,
-} from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Put } from '@nestjs/common';
 import { CommissionRulesService } from './commission-rules.service';
 
 @Controller('commission-rules')
@@ -18,10 +11,7 @@ export class CommissionRulesController {
   }
 
   @Put(':id')
-  upsert(
-    @Param('id') id: string,
-    @Body() body: Record<string, unknown>,
-  ) {
+  upsert(@Param('id') id: string, @Body() body: Record<string, unknown>) {
     return this.commissionRules.upsert(decodeURIComponent(id), body ?? {});
   }
 

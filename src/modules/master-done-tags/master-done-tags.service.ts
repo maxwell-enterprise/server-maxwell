@@ -65,7 +65,10 @@ export class MasterDoneTagsService {
     return result.rows;
   }
 
-  async update(id: string, dto: UpdateMasterDoneTagDto): Promise<MasterDoneTag> {
+  async update(
+    id: string,
+    dto: UpdateMasterDoneTagDto,
+  ): Promise<MasterDoneTag> {
     const fields: string[] = [];
     const params: unknown[] = [];
 
@@ -117,6 +120,8 @@ export class MasterDoneTagsService {
   }
 
   async remove(id: string): Promise<void> {
-    await this.db.query('delete from master_done_tags where id::text = $1', [id]);
+    await this.db.query('delete from master_done_tags where id::text = $1', [
+      id,
+    ]);
   }
 }

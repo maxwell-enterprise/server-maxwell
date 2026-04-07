@@ -31,7 +31,9 @@ export class ContractsController {
   @Post('clauses/bulk')
   bulkUpsertClauses(
     @Body(new ZodValidationPipe(BulkClausesDtoSchema))
-    body: { items: ClauseItemDto[] },
+    body: {
+      items: ClauseItemDto[];
+    },
   ) {
     return this.service.upsertClauseItems(body.items);
   }

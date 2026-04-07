@@ -1103,8 +1103,9 @@ export class WalletService {
    * Get or create membership card
    */
   async getMembershipCard(userId: string): Promise<MembershipCard> {
-    const result = await this.db.query<MembershipCard>(
-      `
+    const result = await this.db
+      .query<MembershipCard>(
+        `
       select
         id,
         user_id as "userId",
@@ -1125,8 +1126,9 @@ export class WalletService {
       from membership_cards
       where user_id = $1
       `,
-      [userId],
-    ).catch(() => ({ rows: [] as MembershipCard[] }));
+        [userId],
+      )
+      .catch(() => ({ rows: [] as MembershipCard[] }));
 
     if (result.rows[0]) return result.rows[0];
 

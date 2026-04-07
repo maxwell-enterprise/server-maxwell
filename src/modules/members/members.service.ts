@@ -7,7 +7,12 @@ import {
 import { MemberLifecycleStage } from '../../schemas/enums.schema';
 import { DbService } from '../../common/db.service';
 import { CreateMemberDto, MemberQueryDto, UpdateMemberDto } from './dto';
-import { Member, MemberAddress, MemberEngagement, SocialProfile } from './entities';
+import {
+  Member,
+  MemberAddress,
+  MemberEngagement,
+  SocialProfile,
+} from './entities';
 
 interface MemberRow {
   internalId: string;
@@ -510,7 +515,9 @@ export class MembersService {
     const result = await this.db.query<{ internalId: string }>(sql, params);
 
     if (result.rows[0]) {
-      throw new ConflictException(`Member email ${email} is already registered`);
+      throw new ConflictException(
+        `Member email ${email} is already registered`,
+      );
     }
   }
 

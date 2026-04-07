@@ -289,7 +289,9 @@ export class CampaignsService {
     const targetProductId = this.normalizeNullable(dto.targetProductId);
     const linkedDiscountCode = this.normalizeNullable(dto.linkedDiscountCode);
     return {
-      id: String(dto.id ?? `CMP-${Date.now()}-${Math.floor(Math.random() * 1000)}`),
+      id: String(
+        dto.id ?? `CMP-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      ),
       name: String(dto.name ?? 'Untitled Campaign').trim(),
       sourceCode,
       category: String(dto.category ?? 'OTHER'),
@@ -297,7 +299,11 @@ export class CampaignsService {
       linkedDiscountCode,
       generatedLink:
         dto.generatedLink?.trim() ||
-        this.buildGeneratedLink(sourceCode, targetProductId, linkedDiscountCode),
+        this.buildGeneratedLink(
+          sourceCode,
+          targetProductId,
+          linkedDiscountCode,
+        ),
       createdAt: String(dto.createdAt ?? new Date().toISOString()),
       clicks: Number(dto.clicks ?? 0),
       conversions: Number(dto.conversions ?? 0),
@@ -327,7 +333,11 @@ export class CampaignsService {
       linkedDiscountCode,
       generatedLink:
         dto.generatedLink?.trim() ||
-        this.buildGeneratedLink(sourceCode, targetProductId, linkedDiscountCode),
+        this.buildGeneratedLink(
+          sourceCode,
+          targetProductId,
+          linkedDiscountCode,
+        ),
       clicks:
         dto.clicks !== undefined ? Number(dto.clicks) : Number(existing.clicks),
       conversions:
@@ -335,7 +345,9 @@ export class CampaignsService {
           ? Number(dto.conversions)
           : Number(existing.conversions),
       revenue:
-        dto.revenue !== undefined ? Number(dto.revenue) : Number(existing.revenue),
+        dto.revenue !== undefined
+          ? Number(dto.revenue)
+          : Number(existing.revenue),
     };
   }
 

@@ -54,4 +54,3 @@ export class MasterTiersController {
     return this.service.remove(id);
   }
 }
-

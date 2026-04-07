@@ -2,7 +2,16 @@
  * MAXWELL ERP - Wallet Controller
  */
 
-import { Body, Controller, Delete, Get, Param, Post, Put, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import {
   ClaimGiftDtoSchema,
@@ -65,7 +74,10 @@ export class WalletController {
     query: WalletItemsAdminQueryDto,
   ) {
     if (query.userId) {
-      return this.walletService.getWalletItemsForUser(query.userId, query.status);
+      return this.walletService.getWalletItemsForUser(
+        query.userId,
+        query.status,
+      );
     }
 
     return this.walletService.getAllWalletItems();

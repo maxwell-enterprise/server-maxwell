@@ -63,7 +63,10 @@ export class StoreSupportController {
     @Param('sku') sku: string,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.storeSupport.upsertInventory(decodeURIComponent(sku), body ?? {});
+    return this.storeSupport.upsertInventory(
+      decodeURIComponent(sku),
+      body ?? {},
+    );
   }
 
   @Get('inventory-transactions')
@@ -89,7 +92,10 @@ export class StoreSupportController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.storeSupport.upsertOpsTemplate(decodeURIComponent(id), body ?? {});
+    return this.storeSupport.upsertOpsTemplate(
+      decodeURIComponent(id),
+      body ?? {},
+    );
   }
 
   @Delete('ops-templates/:id')
@@ -112,7 +118,73 @@ export class StoreSupportController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    return this.storeSupport.upsertOpsChecklist(decodeURIComponent(id), body ?? {});
+    return this.storeSupport.upsertOpsChecklist(
+      decodeURIComponent(id),
+      body ?? {},
+    );
+  }
+
+  @Patch('ops-checklists/:id/tasks/:taskId/status')
+  patchOpsTaskStatus(
+    @Param('id') id: string,
+    @Param('taskId') taskId: string,
+    @Body()
+    body: {
+      status?: string;
+      actorRole?: string;
+      note?: string;
+    },
+  ) {
+    return this.storeSupport.updateOpsTaskStatus(
+      decodeURIComponent(id),
+      decodeURIComponent(taskId),
+      {
+        status: body?.status,
+        actorRole: body?.actorRole,
+        note: body?.note,
+      },
+    );
+  }
+
+  @Get('support-tickets')
+  listSupportTickets(
+    @Query('assignedRole') assignedRole?: string,
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.storeSupport.listSupportTickets({
+      assignedRole,
+      status,
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+    });
+  }
+
+  @Post('support-tickets')
+  createSupportTicket(@Body() body: Record<string, unknown>) {
+    return this.storeSupport.createSupportTicket(body ?? {});
+  }
+
+  @Patch('support-tickets/:id')
+  patchSupportTicket(
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.storeSupport.updateSupportTicket(
+      decodeURIComponent(id),
+      body ?? {},
+    );
+  }
+
+  @Post('support-tickets/:id/resolve')
+  resolveSupportTicket(
+    @Param('id') id: string,
+    @Body() body: { resolution?: string },
+  ) {
+    return this.storeSupport.resolveSupportTicket(decodeURIComponent(id), {
+      resolution: body?.resolution,
+    });
   }
 
   @Get('finance-forecast')

@@ -1,4 +1,13 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { EventsRuntimeService } from './events.runtime.service';
 import {
   CreateAccessRuleDto,
@@ -25,7 +34,9 @@ export class EventsController {
   constructor(private readonly eventsService: EventsRuntimeService) {}
 
   @Post()
-  create(@Body(new ZodValidationPipe(CreateEventDtoSchema)) dto: CreateEventDto) {
+  create(
+    @Body(new ZodValidationPipe(CreateEventDtoSchema)) dto: CreateEventDto,
+  ) {
     return this.eventsService.create(dto);
   }
 

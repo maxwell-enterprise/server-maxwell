@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  BadRequestException,
+} from '@nestjs/common';
 import crypto from 'crypto';
 import * as midtransClient from 'midtrans-client';
 
@@ -97,7 +101,9 @@ export class MidtransService {
           customer_details,
         });
 
-        const vaNumbers = resp?.va_numbers as Array<{ va_number: string }> | undefined;
+        const vaNumbers = resp?.va_numbers as
+          | Array<{ va_number: string }>
+          | undefined;
         const vaNumber = vaNumbers?.[0]?.va_number;
         if (!vaNumber) {
           throw new BadRequestException('Midtrans did not return VA number');
@@ -223,4 +229,3 @@ export class MidtransService {
     };
   }
 }
-

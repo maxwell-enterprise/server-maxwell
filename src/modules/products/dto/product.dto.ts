@@ -121,7 +121,9 @@ export const ProductQueryDtoSchema = z.object({
   category: ProductCategoryEnum.optional(),
   isActive: z.coerce.boolean().optional(),
   hasVariants: z.coerce.boolean().optional(),
-  sortBy: z.enum(['title', 'priceIdr', 'category', 'createdAt']).default('title'),
+  sortBy: z
+    .enum(['title', 'priceIdr', 'category', 'createdAt'])
+    .default('title'),
   sortOrder: z.enum(['asc', 'desc']).default('asc'),
 });
 

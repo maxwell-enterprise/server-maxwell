@@ -129,7 +129,11 @@ export class CheckinController {
     @Body(new ZodValidationPipe(ManualCheckinDtoSchema))
     dto: ManualCheckinDto,
   ) {
-    return this.checkinService.manualCheckin(dto.memberId, dto.eventId, dto.method);
+    return this.checkinService.manualCheckin(
+      dto.memberId,
+      dto.eventId,
+      dto.method,
+    );
   }
 
   /**

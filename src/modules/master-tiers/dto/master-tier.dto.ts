@@ -9,8 +9,7 @@ export const CreateMasterTierDtoSchema = z.object({
 
 export type CreateMasterTierDto = z.infer<typeof CreateMasterTierDtoSchema>;
 
-export const UpdateMasterTierDtoSchema =
-  CreateMasterTierDtoSchema.partial();
+export const UpdateMasterTierDtoSchema = CreateMasterTierDtoSchema.partial();
 
 export type UpdateMasterTierDto = z.infer<typeof UpdateMasterTierDtoSchema>;
 
@@ -19,4 +18,3 @@ export const MasterTierQueryDtoSchema = z.object({
 });
 
 export type MasterTierQueryDto = z.infer<typeof MasterTierQueryDtoSchema>;
-

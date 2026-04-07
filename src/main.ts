@@ -27,7 +27,10 @@ async function bootstrap() {
         callback(null, true);
         return;
       }
-      callback(new Error(`Origin ${origin ?? 'unknown'} is not allowed by CORS`), false);
+      callback(
+        new Error(`Origin ${origin ?? 'unknown'} is not allowed by CORS`),
+        false,
+      );
     },
     credentials: true,
   });
