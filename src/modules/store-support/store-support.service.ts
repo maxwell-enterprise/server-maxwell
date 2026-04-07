@@ -1187,4 +1187,148 @@ export class StoreSupportService {
       resolvedAt: new Date().toISOString(),
     });
   }
+
+  // ---------------------------------------------------------------------------
+  // DEV/QA ONLY — entire block + StoreDevSeedController easy to delete after QA
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Creates one ops checklist (3 pending tasks) + three support tickets for Action Center QA.
+   * IDs are prefixed with DEV-SEED- so clearActionCenterDevSeed can safely target them.
+   */
+  async seedActionCenterDev(roleParam?: string): Promise<{
+    checklistId: string;
+    ticketIds: string[];
+    assignedRole: string;
+    note: string;
+  }> {
+    const assignedRole = String(roleParam ?? 'Operations').trim() || 'Operations';
+    const stamp = Date.now();
+    const checklistId = `DEV-SEED-CHK-${stamp}`;
+    const nowIso = new Date().toISOString();
+
+    const tasks: Record<string, unknown>[] = [
+      {
+        id: `${checklistId}-T1`,
+        templateItemId: 'dev-seed-1',
+        title: '[DEV SEED] Verify shipping address',
+        description:
+          'QA seed — delete via POST /fe/store/dev/clear-action-center-seed',
+        type: 'MANUAL',
+        scope: 'USER_LEVEL',
+        status: 'PENDING',
+        assignedRole,
+        initiatedAt: nowIso,
+        logs: [],
+      },
+      {
+        id: `${checklistId}-T2`,
+        templateItemId: 'dev-seed-2',
+        title: '[DEV SEED] Pack order',
+        description:
+          'QA seed — delete via POST /fe/store/dev/clear-action-center-seed',
+        type: 'MANUAL',
+        scope: 'PRODUCT_LEVEL',
+        status: 'PENDING',
+        assignedRole,
+        initiatedAt: nowIso,
+        logs: [],
+      },
+      {
+        id: `${checklistId}-T3`,
+        templateItemId: 'dev-seed-3',
+        title: '[DEV SEED] Upload AWB / tracking',
+        description:
+          'QA seed — delete via POST /fe/store/dev/clear-action-center-seed',
+        type: 'MANUAL',
+        scope: 'PRODUCT_LEVEL',
+        status: 'PENDING',
+        assignedRole,
+        initiatedAt: nowIso,
+        logs: [],
+      },
+    ];
+
+    await this.upsertOpsChecklist(checklistId, {
+      id: checklistId,
+      templateId: 'DEV-SEED-TPL',
+      transactionId: `TRX-DEV-SEED-${stamp}`,
+      memberId: 'M-DEV-SEED',
+      memberName: 'QA Dev Seed Member',
+      productName: 'QA Dev Seed Product',
+      status: 'ACTIVE',
+      progress: 0,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      tasks,
+    });
+
+    const ticketIds: string[] = [];
+    const subjects = [
+      '[DEV SEED] Login issue',
+      '[DEV SEED] Payment not reflecting',
+      '[DEV SEED] Event registration question',
+    ];
+    for (let i = 0; i < 3; i++) {
+      const id = `DEV-SEED-TKT-${stamp}-${i + 1}`;
+      await this.createSupportTicket({
+        id,
+        memberId: 'M-DEV-SEED',
+        memberName: 'QA Dev Seed Member',
+        subject: subjects[i],
+        description: `QA support ticket ${i + 1}. Remove with clear endpoint.`,
+        priority: i === 0 ? 'HIGH' : 'MEDIUM',
+        status: 'NEW',
+        assignedRole,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+      ticketIds.push(id);
+    }
+
+    return {
+      checklistId,
+      ticketIds,
+      assignedRole,
+      note: 'Use POST /fe/store/dev/clear-action-center-seed with this payload to remove.',
+    };
+  }
+
+  async clearActionCenterDevSeed(body: {
+    checklistId: string;
+    ticketIds: string[];
+  }): Promise<{ ok: true; deletedChecklist: boolean; deletedTickets: number }> {
+    const checklistId = String(body?.checklistId ?? '').trim();
+    const ticketIds = Array.isArray(body?.ticketIds) ? body.ticketIds : [];
+
+    if (!checklistId.startsWith('DEV-SEED-CHK-')) {
+      throw new BadRequestException(
+        'checklistId must start with DEV-SEED-CHK- (only dev seed rows can be cleared)',
+      );
+    }
+    for (const t of ticketIds) {
+      if (!String(t).startsWith('DEV-SEED-TKT-')) {
+        throw new BadRequestException(
+          'Each ticket id must start with DEV-SEED-TKT- (only dev seed rows can be cleared)',
+        );
+      }
+    }
+
+    const chk = await this.db.query(
+      `DELETE FROM ops_checklists WHERE tasks->>'feId' = $1`,
+      [checklistId],
+    );
+    const deletedChecklist = (chk.rowCount ?? 0) > 0;
+
+    let deletedTickets = 0;
+    for (const feId of ticketIds) {
+      const r = await this.db.query(
+        `DELETE FROM support_tickets WHERE "feId" = $1`,
+        [String(feId)],
+      );
+      deletedTickets += r.rowCount ?? 0;
+    }
+
+    return { ok: true, deletedChecklist, deletedTickets };
+  }
 }
