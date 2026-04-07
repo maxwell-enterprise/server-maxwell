@@ -47,10 +47,65 @@ function toIso(v: unknown): string {
   return Number.isNaN(d.getTime()) ? String(v) : d.toISOString();
 }
 
+const OPS_SYSTEM_TRIGGERS = [
+  {
+    id: 'PAYMENT_SUCCESS',
+    label: 'Payment Received (Full)',
+    category: 'FINANCE',
+    description: 'Triggered when Payment Gateway sends settlement status.',
+  },
+  {
+    id: 'INVOICE_SENT',
+    label: 'Invoice Email Sent',
+    category: 'FINANCE',
+    description: 'Triggered after invoice dispatch via communication engine.',
+  },
+  {
+    id: 'TICKET_ISSUED',
+    label: 'Ticket Issued',
+    category: 'EVENT',
+    description: 'Triggered when wallet ticket/QR is generated for member.',
+  },
+  {
+    id: 'EVENT_CHECK_IN',
+    label: 'Event Attendance (QR Scan)',
+    category: 'EVENT',
+    description: 'Triggered when member check-in is validated.',
+  },
+  {
+    id: 'SHIPPING_UPDATED',
+    label: 'Tracking Number Added',
+    category: 'LOGISTICS',
+    description: 'Triggered when AWB/resi is recorded.',
+  },
+  {
+    id: 'EMAIL_WELCOME_SENT',
+    label: 'Welcome Email Sent',
+    category: 'SYSTEM',
+    description: 'Triggered when onboarding email sequence starts.',
+  },
+  {
+    id: 'CONTRACT_SIGNED',
+    label: 'Digital Contract Signed',
+    category: 'SYSTEM',
+    description: 'Triggered when e-sign completes successfully.',
+  },
+  {
+    id: 'ACCOUNT_ACTIVATED',
+    label: 'Account Activated',
+    category: 'SYSTEM',
+    description: 'Triggered when user activates account for the first time.',
+  },
+] as const;
+
 /** Ledger + store support: pricing_rules, discounts, inventory, transactions (finance ledger). */
 @Injectable()
 export class StoreSupportService {
   constructor(private readonly db: DatabaseService) {}
+
+  listOpsSystemTriggers(): unknown[] {
+    return OPS_SYSTEM_TRIGGERS.map((item) => ({ ...item }));
+  }
 
   // --- pricing_rules: full PricingRule JSON in conditions + feRuleId ---
 

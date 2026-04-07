@@ -103,6 +103,11 @@ export class StoreSupportController {
     return this.storeSupport.deleteOpsTemplate(decodeURIComponent(id));
   }
 
+  @Get('ops-system-triggers')
+  listOpsSystemTriggers() {
+    return this.storeSupport.listOpsSystemTriggers();
+  }
+
   @Get('ops-checklists')
   listOpsChecklists() {
     return this.storeSupport.listOpsChecklists();
