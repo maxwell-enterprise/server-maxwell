@@ -50,6 +50,17 @@ create table if not exists sys_internal_users (
   "updatedAt" timestamptz default now()
 );
 
+create table if not exists user_notification_preferences (
+  "userId" text primary key,
+  "emailTransactional" boolean not null default false,
+  "emailMarketing" boolean not null default false,
+  "smsAlerts" boolean not null default false,
+  "updatedAt" timestamptz not null default now()
+);
+
+create index if not exists idx_user_notification_preferences_updated
+  on user_notification_preferences ("updatedAt" desc);
+
 -- ============================================
 -- 2) EVENTS, INVITATIONS, ATTENDANCE & TIERS
 -- ============================================
@@ -463,6 +474,33 @@ create table if not exists ai_usage_logs (
   "costUSD" numeric(18,6) not null,
   "costIDR" numeric(18,2) not null
 );
+
+-- Schema optimization history (AI Database / Blueprint) — Nest /fe/system/database/schema-optimizations
+create table if not exists schema_optimizations (
+  id text primary key,
+  version integer not null default 1,
+  summary text,
+  "timestamp" timestamptz not null default now(),
+  result jsonb not null default '{}'::jsonb
+);
+
+create index if not exists idx_schema_optimizations_ts on schema_optimizations ("timestamp" desc);
+
+-- Automation trigger catalog (admin Select Trigger) — Nest GET /fe/system/automation-triggers
+create table if not exists automation_trigger_definitions (
+  id text primary key,
+  label text not null,
+  description text not null,
+  category text not null,
+  icon_name text not null default 'Zap',
+  variables jsonb not null default '[]'::jsonb,
+  is_active boolean not null default true,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_automation_trigger_definitions_active_sort
+  on automation_trigger_definitions (is_active, sort_order, id);
 
 -- ============================================
 -- 9) TRIBE, RESEARCH, ROUND TABLE, SCOUT

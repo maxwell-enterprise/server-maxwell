@@ -5,6 +5,7 @@
 import { Module } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { MidtransModule } from '../midtrans/midtrans.module';
+import { AuthModule } from '../auth/auth.module';
 import {
   TransactionsController,
   WebhooksController,
@@ -12,7 +13,7 @@ import {
 // import { WalletModule } from '../wallet/wallet.module';
 
 @Module({
-  imports: [MidtransModule],
+  imports: [MidtransModule, AuthModule],
   controllers: [TransactionsController, WebhooksController],
   providers: [TransactionsService],
   exports: [TransactionsService],

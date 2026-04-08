@@ -32,6 +32,12 @@ export class AppConfigService {
     return this.env.PAYMENT_PPN_RATE_PERCENT;
   }
 
+  /** Server-to-server member bootstrap from Next.js (optional; see InternalMembersController). */
+  get internalMemberSyncKey(): string | undefined {
+    const k = this.env.INTERNAL_MEMBER_SYNC_KEY?.trim();
+    return k || undefined;
+  }
+
   get app() {
     return {
       name: this.env.APP_NAME,

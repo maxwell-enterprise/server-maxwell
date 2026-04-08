@@ -105,7 +105,17 @@ export class ContractsService {
     );
   }
 
-  async findAllInstances(): Promise<Record<string, unknown>[]> {
+  async findAllInstances(memberId?: string): Promise<Record<string, unknown>[]> {
+    const mid = memberId?.trim();
+    if (mid) {
+      const result = await this.db.query<{ document: Record<string, unknown> }>(
+        `select document from contract_instance_documents
+         where document->>'memberId' = $1
+         order by "updatedAt" desc`,
+        [mid],
+      );
+      return result.rows.map((r) => r.document);
+    }
     const result = await this.db.query<{ document: Record<string, unknown> }>(
       `select document from contract_instance_documents order by "updatedAt" desc`,
     );

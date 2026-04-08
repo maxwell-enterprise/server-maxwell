@@ -1,71 +1,53 @@
-import { Body, Controller, Get, Param, Patch, Post } from '@nestjs/common';
-import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
-import { CampaignsService } from './campaigns.service';
 import {
-  BulkCampaignsDto,
-  BulkCampaignsDtoSchema,
-  CreateCampaignDto,
-  CreateCampaignDtoSchema,
-  TrackClickDto,
-  TrackClickDtoSchema,
-  TrackConversionDto,
-  TrackConversionDtoSchema,
-  UpdateCampaignDto,
-  UpdateCampaignDtoSchema,
-} from './dto';
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
+import { CampaignsService } from './campaigns.service';
+import { RateLimit } from '../../common/security/rate-limit.decorator';
 
 @Controller('campaigns')
 export class CampaignsController {
-  constructor(private readonly campaignsService: CampaignsService) {}
+  constructor(private readonly campaigns: CampaignsService) {}
 
   @Get()
-  findAll() {
-    return this.campaignsService.findAll();
-  }
-
-  @Post('track-click')
-  trackClick(
-    @Body(new ZodValidationPipe(TrackClickDtoSchema))
-    dto: TrackClickDto,
-  ) {
-    return this.campaignsService.trackClick(dto);
-  }
-
-  @Post('track-conversion')
-  trackConversion(
-    @Body(new ZodValidationPipe(TrackConversionDtoSchema))
-    dto: TrackConversionDto,
-  ) {
-    return this.campaignsService.trackConversion(dto);
-  }
-
-  @Post('bulk')
-  bulkUpsert(
-    @Body(new ZodValidationPipe(BulkCampaignsDtoSchema))
-    dto: BulkCampaignsDto,
-  ) {
-    return this.campaignsService.bulkUpsert(dto);
+  list() {
+    return this.campaigns.list();
   }
 
   @Post()
-  create(
-    @Body(new ZodValidationPipe(CreateCampaignDtoSchema))
-    dto: CreateCampaignDto,
-  ) {
-    return this.campaignsService.create(dto);
-  }
-
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.campaignsService.findOne(id);
+  create(@Body() body: Record<string, unknown>) {
+    return this.campaigns.create(body ?? {});
   }
 
   @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body(new ZodValidationPipe(UpdateCampaignDtoSchema))
-    dto: UpdateCampaignDto,
+  update(@Param('id') id: string, @Body() body: Record<string, unknown>) {
+    return this.campaigns.update(decodeURIComponent(id), body ?? {});
+  }
+
+  @Post('track-click')
+  @RateLimit({ limit: 120, windowMs: 60_000, keyBy: 'sourceCode' })
+  trackClick(@Body() body: { sourceCode?: string }) {
+    return this.campaigns.trackClick(String(body?.sourceCode ?? ''));
+  }
+
+  @Post('track-conversion')
+  @RateLimit({ limit: 40, windowMs: 60_000, keyBy: 'sourceCode' })
+  trackConversion(
+    @Body() body: { sourceCode?: string; amount?: number },
   ) {
-    return this.campaignsService.update(id, dto);
+    return this.campaigns.trackConversion(
+      String(body?.sourceCode ?? ''),
+      Number(body?.amount),
+    );
+  }
+
+  @Post('bulk')
+  bulk(@Body() body: { mode?: string; items?: Record<string, unknown>[] }) {
+    const items = Array.isArray(body?.items) ? body.items : [];
+    return this.campaigns.bulkUpsert(items);
   }
 }

@@ -281,4 +281,35 @@ export class StoreSupportController {
     );
     return { ok: true };
   }
+
+  @Get('support-tickets')
+  listSupportTickets() {
+    return this.storeSupport.listSupportTickets();
+  }
+
+  @Post('support-tickets')
+  createSupportTicket(@Body() body: Record<string, unknown>) {
+    return this.storeSupport.createSupportTicket(body ?? {});
+  }
+
+  @Patch('support-tickets/:id')
+  async patchSupportTicket(
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    await this.storeSupport.updateSupportTicket(decodeURIComponent(id), body ?? {});
+    return { ok: true };
+  }
+
+  @Post('support-tickets/:id/resolve')
+  async resolveSupportTicket(
+    @Param('id') id: string,
+    @Body() body: { resolution?: string },
+  ) {
+    await this.storeSupport.resolveSupportTicket(
+      decodeURIComponent(id),
+      String(body?.resolution ?? ''),
+    );
+    return { ok: true };
+  }
 }

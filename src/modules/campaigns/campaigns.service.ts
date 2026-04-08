@@ -1,412 +1,222 @@
 import {
-  ConflictException,
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PoolClient } from 'pg';
+import { randomUUID } from 'crypto';
 import { DatabaseService } from '../../common/database/database.service';
-import {
-  BulkCampaignsDto,
-  CreateCampaignDto,
-  TrackClickDto,
-  TrackConversionDto,
-  UpdateCampaignDto,
-} from './dto';
 
-type CampaignRow = {
-  id: string;
-  name: string;
-  sourceCode: string;
-  category: string;
-  targetProductId: string | null;
-  linkedDiscountCode: string | null;
-  generatedLink: string;
-  createdAt: Date | string;
-  clicks: number | string;
-  conversions: number | string;
-  revenue: number | string;
-};
+const SOURCE_CODE_REGEX = /^[a-z0-9_]{2,120}$/;
+
+function toIso(v: unknown): string {
+  if (v == null) return new Date().toISOString();
+  if (v instanceof Date) return v.toISOString();
+  const d = new Date(String(v));
+  return Number.isNaN(d.getTime()) ? String(v) : d.toISOString();
+}
+
+function rowToCampaign(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    sourceCode: String(row.sourceCode),
+    category: String(row.category),
+    targetProductId: row.targetProductId
+      ? String(row.targetProductId)
+      : undefined,
+    linkedDiscountCode: row.linkedDiscountCode
+      ? String(row.linkedDiscountCode)
+      : undefined,
+    generatedLink: String(row.generatedLink),
+    createdAt: toIso(row.createdAt),
+    clicks: Number(row.clicks ?? 0),
+    conversions: Number(row.conversions ?? 0),
+    revenue: Number(row.revenue ?? 0),
+  };
+}
 
 @Injectable()
 export class CampaignsService {
   constructor(private readonly db: DatabaseService) {}
 
-  async findAll() {
-    const result = await this.db.query<CampaignRow>(
-      `SELECT id, name, "sourceCode", category, "targetProductId",
-              "linkedDiscountCode", "generatedLink", "createdAt",
-              clicks, conversions, revenue
+  private normalizeSourceCode(input: unknown): string {
+    const normalized = String(input ?? '').trim().toLowerCase();
+    if (!SOURCE_CODE_REGEX.test(normalized)) {
+      throw new BadRequestException(
+        'sourceCode must be lowercase alphanumeric with underscore (2-120 chars)',
+      );
+    }
+    return normalized;
+  }
+
+  async list(): Promise<unknown[]> {
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT id, name, "sourceCode", category, "targetProductId", "linkedDiscountCode",
+              "generatedLink", "createdAt", clicks, conversions, revenue
        FROM campaigns
-       ORDER BY "createdAt" DESC, id DESC`,
+       ORDER BY "createdAt" DESC`,
     );
-
-    return result.rows.map((row) => this.mapRow(row));
+    return result.rows.map((r) => rowToCampaign(r));
   }
 
-  async findOne(id: string) {
-    const row = await this.findById(id);
-    if (!row) {
-      throw new NotFoundException(`Campaign ${id} not found`);
+  async create(body: Record<string, unknown>): Promise<unknown> {
+    const id = typeof body.id === 'string' && body.id ? body.id : randomUUID();
+    const name = String(body.name ?? '');
+    const sourceCode = this.normalizeSourceCode(body.sourceCode);
+    if (!name.trim() || !sourceCode.trim()) {
+      throw new BadRequestException('name and sourceCode are required');
     }
-    return this.mapRow(row);
-  }
+    const category = String(body.category ?? 'OTHER');
+    const generatedLink = String(body.generatedLink ?? '/');
+    const createdAt = body.createdAt ? new Date(String(body.createdAt)) : new Date();
 
-  async create(dto: CreateCampaignDto) {
-    const payload = this.normalizeCreate(dto);
-
-    try {
-      await this.db.query(
-        `INSERT INTO campaigns (
-          id, name, "sourceCode", category, "targetProductId",
-          "linkedDiscountCode", "generatedLink", "createdAt",
-          clicks, conversions, revenue
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9,$10,$11)`,
-        [
-          payload.id,
-          payload.name,
-          payload.sourceCode,
-          payload.category,
-          payload.targetProductId,
-          payload.linkedDiscountCode,
-          payload.generatedLink,
-          payload.createdAt,
-          payload.clicks,
-          payload.conversions,
-          payload.revenue,
-        ],
-      );
-    } catch (error) {
-      this.rethrowDatabaseError(error, payload.sourceCode);
-    }
-
-    return this.findOne(payload.id);
-  }
-
-  async update(id: string, dto: UpdateCampaignDto) {
-    const existing = await this.findById(id);
-    if (!existing) {
-      throw new NotFoundException(`Campaign ${id} not found`);
-    }
-
-    const merged = this.normalizeUpdate(existing, dto);
-
-    try {
-      await this.db.query(
-        `UPDATE campaigns
-         SET name = $2,
-             "sourceCode" = $3,
-             category = $4,
-             "targetProductId" = $5,
-             "linkedDiscountCode" = $6,
-             "generatedLink" = $7,
-             clicks = $8,
-             conversions = $9,
-             revenue = $10
-         WHERE id = $1`,
-        [
-          id,
-          merged.name,
-          merged.sourceCode,
-          merged.category,
-          merged.targetProductId,
-          merged.linkedDiscountCode,
-          merged.generatedLink,
-          merged.clicks,
-          merged.conversions,
-          merged.revenue,
-        ],
-      );
-    } catch (error) {
-      this.rethrowDatabaseError(error, merged.sourceCode);
-    }
-
-    return this.findOne(id);
-  }
-
-  async trackClick(dto: TrackClickDto) {
-    const result = await this.db.query(
-      `UPDATE campaigns
-       SET clicks = clicks + 1
-       WHERE "sourceCode" = $1`,
-      [dto.sourceCode],
+    const result = await this.db.query<Record<string, unknown>>(
+      `INSERT INTO campaigns (
+        id, name, "sourceCode", category, "targetProductId", "linkedDiscountCode",
+        "generatedLink", "createdAt", clicks, conversions, revenue
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, 0, 0, 0)
+      RETURNING id, name, "sourceCode", category, "targetProductId", "linkedDiscountCode",
+                "generatedLink", "createdAt", clicks, conversions, revenue`,
+      [
+        id,
+        name,
+        sourceCode,
+        category,
+        body.targetProductId ?? null,
+        body.linkedDiscountCode ?? null,
+        generatedLink,
+        createdAt,
+      ],
     );
+    const row = result.rows[0];
+    if (!row) throw new BadRequestException('Insert failed');
+    return rowToCampaign(row);
+  }
 
-    if (result.rowCount === 0) {
-      throw new NotFoundException(
-        `Campaign with sourceCode ${dto.sourceCode} not found`,
-      );
+  async update(id: string, body: Record<string, unknown>): Promise<unknown> {
+    const existing = await this.db.query<Record<string, unknown>>(
+      `SELECT id, name, "sourceCode", category, "targetProductId", "linkedDiscountCode",
+              "generatedLink", "createdAt", clicks, conversions, revenue
+       FROM campaigns WHERE id = $1`,
+      [id],
+    );
+    const row0 = existing.rows[0];
+    if (!row0) throw new NotFoundException('Campaign not found');
+
+    const name = body.name != null ? String(body.name) : String(row0.name);
+    const sourceCode =
+      body.sourceCode != null
+        ? this.normalizeSourceCode(body.sourceCode)
+        : String(row0.sourceCode);
+    const category =
+      body.category != null ? String(body.category) : String(row0.category);
+    const generatedLink =
+      body.generatedLink != null
+        ? String(body.generatedLink)
+        : String(row0.generatedLink);
+    const targetProductId =
+      body.targetProductId !== undefined
+        ? body.targetProductId
+        : row0.targetProductId;
+    const linkedDiscountCode =
+      body.linkedDiscountCode !== undefined
+        ? body.linkedDiscountCode
+        : row0.linkedDiscountCode;
+
+    const result = await this.db.query<Record<string, unknown>>(
+      `UPDATE campaigns SET
+        name = $2,
+        "sourceCode" = $3,
+        category = $4,
+        "targetProductId" = $5,
+        "linkedDiscountCode" = $6,
+        "generatedLink" = $7
+       WHERE id = $1
+       RETURNING id, name, "sourceCode", category, "targetProductId", "linkedDiscountCode",
+                 "generatedLink", "createdAt", clicks, conversions, revenue`,
+      [
+        id,
+        name,
+        sourceCode,
+        category,
+        targetProductId ?? null,
+        linkedDiscountCode ?? null,
+        generatedLink,
+      ],
+    );
+    const row = result.rows[0];
+    if (!row) throw new NotFoundException('Campaign not found');
+    return rowToCampaign(row);
+  }
+
+  async trackClick(sourceCode: string): Promise<{ success: boolean }> {
+    const normalizedSourceCode = this.normalizeSourceCode(sourceCode);
+    const r = await this.db.query(
+      `UPDATE campaigns SET clicks = clicks + 1 WHERE "sourceCode" = $1`,
+      [normalizedSourceCode],
+    );
+    if (r.rowCount === 0) {
+      throw new NotFoundException('Campaign source not found');
     }
-
     return { success: true };
   }
 
-  async trackConversion(dto: TrackConversionDto) {
-    const result = await this.db.query(
+  async trackConversion(sourceCode: string, amount: number): Promise<{ success: boolean }> {
+    const normalizedSourceCode = this.normalizeSourceCode(sourceCode);
+    if (!Number.isFinite(amount) || amount < 0) {
+      throw new BadRequestException('amount must be a non-negative number');
+    }
+    const r = await this.db.query(
       `UPDATE campaigns
        SET conversions = conversions + 1,
            revenue = revenue + $2
        WHERE "sourceCode" = $1`,
-      [dto.sourceCode, dto.amount],
+      [normalizedSourceCode, amount],
     );
-
-    if (result.rowCount === 0) {
-      throw new NotFoundException(
-        `Campaign with sourceCode ${dto.sourceCode} not found`,
-      );
+    if (r.rowCount === 0) {
+      throw new NotFoundException('Campaign source not found');
     }
-
     return { success: true };
   }
 
-  async bulkUpsert(dto: BulkCampaignsDto) {
+  async bulkUpsert(
+    items: Record<string, unknown>[],
+  ): Promise<{ inserted: number; updated: number; total: number }> {
     let inserted = 0;
     let updated = 0;
 
-    await this.db.withTransaction(async (client) => {
-      for (const item of dto.items) {
-        const existing = await this.findExistingForBulk(client, item);
-        if (existing) {
-          const merged = this.normalizeUpdate(existing, item);
+    for (const raw of items) {
+      const sourceCode = String(raw.sourceCode ?? '').trim();
+      if (!sourceCode) continue;
 
-          try {
-            await client.query(
-              `UPDATE campaigns
-               SET name = $2,
-                   "sourceCode" = $3,
-                   category = $4,
-                   "targetProductId" = $5,
-                   "linkedDiscountCode" = $6,
-                   "generatedLink" = $7,
-                   clicks = $8,
-                   conversions = $9,
-                   revenue = $10
-               WHERE id = $1`,
-              [
-                existing.id,
-                merged.name,
-                merged.sourceCode,
-                merged.category,
-                merged.targetProductId,
-                merged.linkedDiscountCode,
-                merged.generatedLink,
-                merged.clicks,
-                merged.conversions,
-                merged.revenue,
-              ],
-            );
-          } catch (error) {
-            this.rethrowDatabaseError(error, merged.sourceCode);
-          }
+      const idHint =
+        typeof raw.id === 'string' && raw.id.trim() ? String(raw.id) : null;
 
-          updated += 1;
-          continue;
-        }
-
-        const payload = this.normalizeCreate(item);
-        try {
-          await client.query(
-            `INSERT INTO campaigns (
-              id, name, "sourceCode", category, "targetProductId",
-              "linkedDiscountCode", "generatedLink", "createdAt",
-              clicks, conversions, revenue
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::timestamptz,$9,$10,$11)`,
-            [
-              payload.id,
-              payload.name,
-              payload.sourceCode,
-              payload.category,
-              payload.targetProductId,
-              payload.linkedDiscountCode,
-              payload.generatedLink,
-              payload.createdAt,
-              payload.clicks,
-              payload.conversions,
-              payload.revenue,
-            ],
-          );
-        } catch (error) {
-          this.rethrowDatabaseError(error, payload.sourceCode);
-        }
-
-        inserted += 1;
+      let existingId: string | undefined;
+      if (idHint) {
+        const byId = await this.db.query<{ id: string }>(
+          `SELECT id FROM campaigns WHERE id = $1`,
+          [idHint],
+        );
+        existingId = byId.rows[0]?.id;
       }
-    });
+      if (!existingId) {
+        const bySource = await this.db.query<{ id: string }>(
+          `SELECT id FROM campaigns WHERE "sourceCode" = $1`,
+          [sourceCode],
+        );
+        existingId = bySource.rows[0]?.id;
+      }
 
-    return {
-      inserted,
-      updated,
-      total: dto.items.length,
-    };
-  }
-
-  private async findById(id: string): Promise<CampaignRow | undefined> {
-    const result = await this.db.query<CampaignRow>(
-      `SELECT id, name, "sourceCode", category, "targetProductId",
-              "linkedDiscountCode", "generatedLink", "createdAt",
-              clicks, conversions, revenue
-       FROM campaigns
-       WHERE id = $1`,
-      [id],
-    );
-    return result.rows[0];
-  }
-
-  private async findExistingForBulk(
-    client: PoolClient,
-    item: Partial<CreateCampaignDto>,
-  ): Promise<CampaignRow | undefined> {
-    if (item.id) {
-      const byId = await client.query<CampaignRow>(
-        `SELECT id, name, "sourceCode", category, "targetProductId",
-                "linkedDiscountCode", "generatedLink", "createdAt",
-                clicks, conversions, revenue
-         FROM campaigns
-         WHERE id = $1`,
-        [item.id],
-      );
-      if (byId.rows[0]) {
-        return byId.rows[0];
+      if (existingId) {
+        await this.update(existingId, raw);
+        updated++;
+      } else {
+        await this.create(raw);
+        inserted++;
       }
     }
 
-    if (item.sourceCode) {
-      const bySource = await client.query<CampaignRow>(
-        `SELECT id, name, "sourceCode", category, "targetProductId",
-                "linkedDiscountCode", "generatedLink", "createdAt",
-                clicks, conversions, revenue
-         FROM campaigns
-         WHERE "sourceCode" = $1`,
-        [item.sourceCode],
-      );
-      return bySource.rows[0];
-    }
-
-    return undefined;
-  }
-
-  private normalizeCreate(dto: Partial<CreateCampaignDto>) {
-    const sourceCode = String(dto.sourceCode ?? '').trim();
-    const targetProductId = this.normalizeNullable(dto.targetProductId);
-    const linkedDiscountCode = this.normalizeNullable(dto.linkedDiscountCode);
-    return {
-      id: String(
-        dto.id ?? `CMP-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      ),
-      name: String(dto.name ?? 'Untitled Campaign').trim(),
-      sourceCode,
-      category: String(dto.category ?? 'OTHER'),
-      targetProductId,
-      linkedDiscountCode,
-      generatedLink:
-        dto.generatedLink?.trim() ||
-        this.buildGeneratedLink(
-          sourceCode,
-          targetProductId,
-          linkedDiscountCode,
-        ),
-      createdAt: String(dto.createdAt ?? new Date().toISOString()),
-      clicks: Number(dto.clicks ?? 0),
-      conversions: Number(dto.conversions ?? 0),
-      revenue: Number(dto.revenue ?? 0),
-    };
-  }
-
-  private normalizeUpdate(
-    existing: CampaignRow,
-    dto: Partial<CreateCampaignDto> | UpdateCampaignDto,
-  ) {
-    const sourceCode = String(dto.sourceCode ?? existing.sourceCode).trim();
-    const targetProductId =
-      dto.targetProductId === undefined
-        ? existing.targetProductId
-        : this.normalizeNullable(dto.targetProductId);
-    const linkedDiscountCode =
-      dto.linkedDiscountCode === undefined
-        ? existing.linkedDiscountCode
-        : this.normalizeNullable(dto.linkedDiscountCode);
-
-    return {
-      name: String(dto.name ?? existing.name).trim(),
-      sourceCode,
-      category: String(dto.category ?? existing.category),
-      targetProductId,
-      linkedDiscountCode,
-      generatedLink:
-        dto.generatedLink?.trim() ||
-        this.buildGeneratedLink(
-          sourceCode,
-          targetProductId,
-          linkedDiscountCode,
-        ),
-      clicks:
-        dto.clicks !== undefined ? Number(dto.clicks) : Number(existing.clicks),
-      conversions:
-        dto.conversions !== undefined
-          ? Number(dto.conversions)
-          : Number(existing.conversions),
-      revenue:
-        dto.revenue !== undefined
-          ? Number(dto.revenue)
-          : Number(existing.revenue),
-    };
-  }
-
-  private buildGeneratedLink(
-    sourceCode: string,
-    targetProductId: string | null,
-    linkedDiscountCode: string | null,
-  ): string {
-    const params = new URLSearchParams();
-    params.set('view', 'store');
-    if (targetProductId) {
-      params.set('product', targetProductId);
-    }
-    params.set('source', sourceCode);
-    if (linkedDiscountCode) {
-      params.set('discount', linkedDiscountCode);
-    }
-    return `/?${params.toString()}`;
-  }
-
-  private normalizeNullable(value: string | null | undefined): string | null {
-    if (value === undefined || value === null) {
-      return null;
-    }
-    const trimmed = String(value).trim();
-    return trimmed ? trimmed : null;
-  }
-
-  private mapRow(row: CampaignRow) {
-    return {
-      id: row.id,
-      name: row.name,
-      sourceCode: row.sourceCode,
-      category: row.category,
-      targetProductId: row.targetProductId ?? undefined,
-      linkedDiscountCode: row.linkedDiscountCode ?? undefined,
-      generatedLink: row.generatedLink,
-      createdAt:
-        row.createdAt instanceof Date
-          ? row.createdAt.toISOString()
-          : String(row.createdAt),
-      clicks: Number(row.clicks ?? 0),
-      conversions: Number(row.conversions ?? 0),
-      revenue: Number(row.revenue ?? 0),
-    };
-  }
-
-  private rethrowDatabaseError(error: unknown, sourceCode: string): never {
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      error.code === '23505'
-    ) {
-      throw new ConflictException(
-        `Campaign with sourceCode ${sourceCode} already exists`,
-      );
-    }
-
-    throw error;
+    return { inserted, updated, total: items.length };
   }
 }

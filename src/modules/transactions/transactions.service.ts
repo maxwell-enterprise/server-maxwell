@@ -8,6 +8,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import type { PoolClient } from 'pg';
 import { Transaction, TransactionItem, Refund } from './entities';
 import {
   CheckoutDto,
@@ -31,12 +33,61 @@ export class TransactionsService {
   // CHECKOUT & PAYMENT
   // ==========================================================================
 
+  private normalizeIdempotencyKey(key?: string): string | null {
+    const normalized = String(key ?? '').trim();
+    if (!normalized) return null;
+    if (!/^[a-zA-Z0-9:_-]{8,120}$/.test(normalized)) {
+      throw new BadRequestException(
+        'Invalid idempotency key format (8-120 chars, alphanumeric/:-_)',
+      );
+    }
+    return normalized;
+  }
+
+  private buildIdempotentOrderId(
+    purpose: 'checkout' | 'snap',
+    customerEmail: string,
+    idempotencyKey: string,
+  ): string {
+    const digest = createHash('sha256')
+      .update(`${purpose}:${customerEmail.toLowerCase()}:${idempotencyKey}`)
+      .digest('hex')
+      .slice(0, 24)
+      .toUpperCase();
+    return `ORD-${purpose.toUpperCase()}-${digest}`;
+  }
+
+  private async appendSecurityLog(
+    action: string,
+    context: Record<string, unknown>,
+    actorUserId?: string | null,
+  ): Promise<void> {
+    await this.db.query(
+      `INSERT INTO system_security_logs (id, "userId", action, context)
+       VALUES (gen_random_uuid(), $1, $2, $3::jsonb)`,
+      [actorUserId ?? null, action, JSON.stringify(context)],
+    );
+  }
+
+  private async resolveAttributionSource(
+    rawSource: string | undefined,
+  ): Promise<string | null> {
+    const normalized = String(rawSource ?? '').trim().toLowerCase();
+    if (!normalized) return null;
+    const found = await this.db.query<{ sourceCode: string }>(
+      `select "sourceCode" from campaigns where lower("sourceCode") = $1 limit 1`,
+      [normalized],
+    );
+    return found.rows[0]?.sourceCode ?? null;
+  }
+
   /**
    * Process checkout and create transaction
    */
   async checkout(
     userId: string | null,
     dto: CheckoutDto,
+    idempotencyKey?: string,
   ): Promise<{
     transaction: Transaction;
     paymentUrl?: string;
@@ -101,14 +152,9 @@ export class TransactionsService {
         throw new BadRequestException(`Product ${item.productId} not found`);
       }
       if (!prod.isActive) {
-        throw new BadRequestException(
-          `Product ${item.productId} is not active`,
-        );
+        throw new BadRequestException(`Product ${item.productId} is not active`);
       }
-      if (
-        !Number.isFinite(Number(prod.priceIdr)) ||
-        Number(prod.priceIdr) <= 0
-      ) {
+      if (!Number.isFinite(Number(prod.priceIdr)) || Number(prod.priceIdr) <= 0) {
         throw new BadRequestException('Product price must be > 0');
       }
 
@@ -116,12 +162,7 @@ export class TransactionsService {
     });
 
     const subtotal = Math.round(subtotalRaw);
-    const pricing = await this.calculatePricing(
-      dto,
-      products,
-      subtotal,
-      userId,
-    );
+    const pricing = await this.calculatePricing(dto, products, subtotal, userId);
 
     const discountAmount = pricing.discountAmount;
     const taxAmount = pricing.taxAmount;
@@ -144,10 +185,17 @@ export class TransactionsService {
       );
     }
 
+    const attributionSource = await this.resolveAttributionSource(
+      dto.attributionSource,
+    );
+
     // 4. Insert ke payment_transactions
     const now = new Date();
     const expiry = new Date(now.getTime() + 2 * 60 * 60 * 1000); // +2 jam
-    const orderId = `ORD-${now.getTime()}`;
+    const normalizedIdempotencyKey = this.normalizeIdempotencyKey(idempotencyKey);
+    const orderId = normalizedIdempotencyKey
+      ? this.buildIdempotentOrderId('checkout', customerEmail, normalizedIdempotencyKey)
+      : `ORD-${now.getTime()}`;
 
     const paymentRes = await this.db.query<{
       id: string;
@@ -198,12 +246,12 @@ export class TransactionsService {
         $6,
         $7,
         $8,
+        $9,
         null,
         null,
         null,
         null,
-        null,
-        $9::jsonb
+        $10::jsonb
       )
       returning id, "orderId", "totalAmount", status, method, "createdAt", "customerEmail"
       `,
@@ -216,6 +264,7 @@ export class TransactionsService {
         now.toISOString(),
         expiry.toISOString(),
         customerEmail,
+        attributionSource,
         JSON.stringify(
           dto.items.map((i) => ({
             productId: i.productId,
@@ -288,9 +337,7 @@ export class TransactionsService {
       [
         midtransCharge.vaNumber ?? null,
         midtransCharge.qrisUrl ?? null,
-        midtransCharge.bankDetails
-          ? JSON.stringify(midtransCharge.bankDetails)
-          : null,
+        midtransCharge.bankDetails ? JSON.stringify(midtransCharge.bankDetails) : null,
         payment.id,
       ],
     );
@@ -312,6 +359,7 @@ export class TransactionsService {
   async createMidtransSnap(
     userId: string | null,
     dto: CheckoutDto,
+    idempotencyKey?: string,
   ): Promise<{
     transaction: Transaction;
     snapToken: string;
@@ -374,22 +422,14 @@ export class TransactionsService {
           `Product ${item.productId} is not active`,
         );
       }
-      if (
-        !Number.isFinite(Number(prod.priceIdr)) ||
-        Number(prod.priceIdr) <= 0
-      ) {
+      if (!Number.isFinite(Number(prod.priceIdr)) || Number(prod.priceIdr) <= 0) {
         throw new BadRequestException('Product price must be > 0');
       }
       subtotalRaw += Number(prod.priceIdr) * item.quantity;
     });
 
     const subtotal = Math.round(subtotalRaw);
-    const pricing = await this.calculatePricing(
-      dto,
-      products,
-      subtotal,
-      userId,
-    );
+    const pricing = await this.calculatePricing(dto, products, subtotal, userId);
 
     const discountAmount = pricing.discountAmount;
     const taxAmount = pricing.taxAmount;
@@ -412,10 +452,62 @@ export class TransactionsService {
       );
     }
 
+    const attributionSource = await this.resolveAttributionSource(
+      dto.attributionSource,
+    );
+
     // 4) Persist payment row first so webhook can correlate.
     const now = new Date();
     const expiry = new Date(now.getTime() + 2 * 60 * 60 * 1000); // +2 hours
-    const orderId = `ORD-${now.getTime()}`;
+    const normalizedIdempotencyKey = this.normalizeIdempotencyKey(idempotencyKey);
+    const orderId = normalizedIdempotencyKey
+      ? this.buildIdempotentOrderId('snap', customerEmail, normalizedIdempotencyKey)
+      : `ORD-${now.getTime()}`;
+
+    if (normalizedIdempotencyKey) {
+      const existing = await this.db.query<{
+        id: string;
+        orderId: string;
+        totalAmount: number;
+        amount: number;
+        discountAmount: number | null;
+        status: string;
+        method: string;
+        paidAmount: number;
+        expiryTime: string;
+        virtualAccountNumber: string | null;
+        qrisUrl: string | null;
+        bankDetails: any;
+        createdAt: string;
+        customerEmail: string;
+        itemsSnapshot: any[] | null;
+      }>(
+        `select *
+         from payment_transactions
+         where "orderId" = $1
+         limit 1`,
+        [orderId],
+      );
+      const row = existing.rows[0];
+      if (row) {
+        if (String(row.status).toUpperCase() === 'PAID') {
+          throw new BadRequestException(
+            'Transaction for this idempotency key is already paid',
+          );
+        }
+        const existingTx = this.mapPaymentRowToTransaction(row);
+        const snap = await this.midtrans.createSnapToken({
+          orderId: row.orderId,
+          grossAmount: Math.round(Number(row.totalAmount)),
+          customerEmail: row.customerEmail,
+        });
+        return {
+          transaction: existingTx,
+          snapToken: snap.token,
+          redirectUrl: snap.redirect_url,
+        };
+      }
+    }
 
     const paymentRes = await this.db.query<{
       id: string;
@@ -466,12 +558,12 @@ export class TransactionsService {
         $6,
         $7,
         $8,
+        $9,
         null,
         null,
         null,
         null,
-        null,
-        $9::jsonb
+        $10::jsonb
       )
       returning id, "orderId", "totalAmount", status, method, "createdAt", "customerEmail"
       `,
@@ -484,6 +576,7 @@ export class TransactionsService {
         now.toISOString(),
         expiry.toISOString(),
         customerEmail,
+        attributionSource,
         JSON.stringify(
           dto.items.map((i) => ({
             productId: i.productId,
@@ -568,6 +661,7 @@ export class TransactionsService {
     // 2. Find transaction by Midtrans order_id
     const tx = await this.findByMidtransOrderId(dto.order_id);
     if (!tx) return;
+    const currentStatus = String(tx.paymentStatus ?? '').toUpperCase();
 
     // 3. Anti-tamper: webhook gross_amount must match what we created.
     const webhookGross = Math.round(parseFloat(dto.gross_amount));
@@ -589,7 +683,10 @@ export class TransactionsService {
       dto.transaction_status === 'settlement' ||
       dto.transaction_status === 'capture'
     ) {
-      await this.db.query(
+      const paid = await this.db.query<{
+        attributionSource: string | null;
+        totalAmount: number;
+      }>(
         `
         update payment_transactions
         set
@@ -597,13 +694,35 @@ export class TransactionsService {
           "paidAmount" = "totalAmount",
           "balanceDue" = 0
         where "orderId" = $1
+          and status <> 'PAID'
+        returning "attributionSource", "totalAmount"
         `,
         [dto.order_id],
       );
+
+      const paidRow = paid.rows[0];
+      if (paidRow?.attributionSource) {
+        await this.db.query(
+          `
+          update campaigns
+          set
+            conversions = conversions + 1,
+            revenue = revenue + $2
+          where "sourceCode" = $1
+          `,
+          [paidRow.attributionSource, Number(paidRow.totalAmount) || 0],
+        );
+      }
+      await this.appendSecurityLog('PAYMENT_WEBHOOK_PAID', {
+        orderId: dto.order_id,
+        transactionStatus: dto.transaction_status,
+        paymentType: dto.payment_type,
+      });
       return;
     }
 
     if (dto.transaction_status === 'expire') {
+      if (currentStatus === 'PAID') return;
       await this.db.query(
         `
         update payment_transactions
@@ -612,13 +731,19 @@ export class TransactionsService {
           "paidAmount" = 0,
           "balanceDue" = "totalAmount"
         where "orderId" = $1
+          and status <> 'PAID'
         `,
         [dto.order_id],
       );
+      await this.appendSecurityLog('PAYMENT_WEBHOOK_EXPIRED', {
+        orderId: dto.order_id,
+        transactionStatus: dto.transaction_status,
+      });
       return;
     }
 
     if (dto.transaction_status === 'cancel') {
+      if (currentStatus === 'PAID') return;
       await this.db.query(
         `
         update payment_transactions
@@ -627,16 +752,19 @@ export class TransactionsService {
           "paidAmount" = 0,
           "balanceDue" = "totalAmount"
         where "orderId" = $1
+          and status <> 'PAID'
         `,
         [dto.order_id],
       );
+      await this.appendSecurityLog('PAYMENT_WEBHOOK_CANCELLED', {
+        orderId: dto.order_id,
+        transactionStatus: dto.transaction_status,
+      });
       return;
     }
 
-    if (
-      dto.transaction_status === 'deny' ||
-      dto.transaction_status === 'failure'
-    ) {
+    if (dto.transaction_status === 'deny' || dto.transaction_status === 'failure') {
+      if (currentStatus === 'PAID') return;
       await this.db.query(
         `
         update payment_transactions
@@ -645,9 +773,14 @@ export class TransactionsService {
           "paidAmount" = 0,
           "balanceDue" = "totalAmount"
         where "orderId" = $1
+          and status <> 'PAID'
         `,
         [dto.order_id],
       );
+      await this.appendSecurityLog('PAYMENT_WEBHOOK_FAILED', {
+        orderId: dto.order_id,
+        transactionStatus: dto.transaction_status,
+      });
       return;
     }
 
@@ -719,22 +852,14 @@ export class TransactionsService {
     }>,
     subtotal: number,
     userId: string | null,
-  ): Promise<{
-    discountAmount: number;
-    taxAmount: number;
-    totalAmount: number;
-  }> {
+  ): Promise<{ discountAmount: number; taxAmount: number; totalAmount: number }> {
     // NOTE: userId currently unused for voucher scopes in this first implementation.
     // The goal is to ensure totals sent to Midtrans always come from BE calculations.
     let discountAmount = 0;
 
     if (dto.voucherCode) {
       const code = dto.voucherCode.trim().toUpperCase();
-      discountAmount = await this.calculateDiscountAmount(
-        code,
-        dto.items,
-        products,
-      );
+      discountAmount = await this.calculateDiscountAmount(code, dto.items, products);
     }
 
     const taxableAmount = Math.max(0, subtotal - Math.round(discountAmount));
@@ -742,11 +867,7 @@ export class TransactionsService {
     const taxAmount = Math.round(taxableAmount * ppnRate);
     const totalAmount = taxableAmount + taxAmount;
 
-    return {
-      discountAmount: Math.round(discountAmount),
-      taxAmount,
-      totalAmount,
-    };
+    return { discountAmount: Math.round(discountAmount), taxAmount, totalAmount };
   }
 
   private async calculateDiscountAmount(
@@ -799,16 +920,8 @@ export class TransactionsService {
     const now = new Date();
     if (discount.validFrom && discount.validFrom > now) return 0;
     if (discount.validUntil && discount.validUntil < now) return 0;
-    if (
-      discount.maxUsageLimit !== null &&
-      discount.currentUsageCount >= discount.maxUsageLimit
-    )
-      return 0;
-    if (
-      discount.maxBudgetLimit !== null &&
-      discount.currentBudgetBurned >= discount.maxBudgetLimit
-    )
-      return 0;
+    if (discount.maxUsageLimit !== null && discount.currentUsageCount >= discount.maxUsageLimit) return 0;
+    if (discount.maxBudgetLimit !== null && discount.currentBudgetBurned >= discount.maxBudgetLimit) return 0;
 
     let totalDiscount = 0;
 
@@ -821,14 +934,12 @@ export class TransactionsService {
       if (qty <= 0) continue;
 
       const productMatchesLookup = (targetId: string | undefined | null) =>
-        !!targetId &&
-        (targetId === product.id || targetId === product.lookupId);
+        !!targetId && (targetId === product.id || targetId === product.lookupId);
 
       const applicable =
         discount.scope === 'GLOBAL' ||
         discount.scope === 'ABAC_COMPLEX' ||
-        (discount.scope === 'CATEGORY_SPECIFIC' &&
-          discount.targetIds?.includes(product.category)) ||
+        (discount.scope === 'CATEGORY_SPECIFIC' && discount.targetIds?.includes(product.category)) ||
         (discount.scope === 'Product_SPECIFIC' &&
           discount.targetIds?.some((tid) => productMatchesLookup(tid))) ||
         (discount.scope === 'EVENT_SPECIFIC' &&
@@ -837,11 +948,7 @@ export class TransactionsService {
       if (!applicable) continue;
 
       // BUNDLE_VOLUME: only apply when qty >= minQty (when provided)
-      if (
-        discount.type === 'BUNDLE_VOLUME' &&
-        discount.minQty !== null &&
-        qty < discount.minQty
-      ) {
+      if (discount.type === 'BUNDLE_VOLUME' && discount.minQty !== null && qty < discount.minQty) {
         continue;
       }
 
@@ -871,23 +978,29 @@ export class TransactionsService {
    */
   async findMyTransactions(
     userId: string,
+    role: string,
     query: TransactionQueryDto,
   ): Promise<{ data: Transaction[]; total: number }> {
     const email = await this.findMemberEmail(userId);
     if (!email) {
       return { data: [], total: 0 };
     }
-
-    return this.queryPaymentsByEmail(email, query);
+    return this.db.withRlsContext(userId, role, async (client) =>
+      this.queryPaymentsByEmailWithClient(client, email, query),
+    );
   }
 
   /**
    * Get all transactions (Admin)
    */
   async findAll(
+    actorUserId: string,
+    actorRole: string,
     query: TransactionQueryDto,
   ): Promise<{ data: Transaction[]; total: number }> {
-    return this.queryPaymentsByEmail(null, query);
+    return this.db.withRlsContext(actorUserId, actorRole, async (client) =>
+      this.queryPaymentsByEmailWithClient(client, null, query),
+    );
   }
 
   /**
@@ -896,6 +1009,92 @@ export class TransactionsService {
   async findOne(
     id: string,
   ): Promise<Transaction & { items: TransactionItem[] }> {
+    const row = await this.getPaymentRowById(id);
+    if (!row) {
+      throw new NotFoundException(`Transaction ${id} not found`);
+    }
+
+    const tx = this.mapPaymentRowToTransaction(row);
+    const items: TransactionItem[] =
+      (row.itemsSnapshot as any[] | null)?.map((i, idx) => ({
+        id: `${row.id}-ITEM-${idx}`,
+        transactionId: row.id,
+        productId: i.productId,
+        productName: i.productId,
+        productType: 'UNKNOWN',
+        quantity: i.quantity,
+        unitPrice: row.totalAmount,
+        discountAmount: 0,
+        totalPrice: row.totalAmount,
+        pricingTierId: null,
+        pricingTierName: null,
+        entitlementProcessed: false,
+        createdAt: new Date(row.createdAt),
+      })) ?? [];
+
+    return { ...tx, items };
+  }
+
+  async findOneForUser(
+    id: string,
+    userId: string,
+    role: string,
+  ): Promise<Transaction & { items: TransactionItem[] }> {
+    const normalizedRole = String(role ?? '').trim();
+    const isPrivileged =
+      normalizedRole === 'Finance' || normalizedRole === 'Super Admin';
+    if (isPrivileged) {
+      return this.findOne(id);
+    }
+
+    const email = await this.findMemberEmail(userId);
+    if (!email) {
+      throw new NotFoundException(`Transaction ${id} not found`);
+    }
+
+    const row = await this.getPaymentRowById(id);
+    if (!row || String(row.customerEmail).toLowerCase() !== email.toLowerCase()) {
+      throw new NotFoundException(`Transaction ${id} not found`);
+    }
+
+    const tx = this.mapPaymentRowToTransaction(row);
+    const items: TransactionItem[] =
+      (row.itemsSnapshot as any[] | null)?.map((i, idx) => ({
+        id: `${row.id}-ITEM-${idx}`,
+        transactionId: row.id,
+        productId: i.productId,
+        productName: i.productId,
+        productType: 'UNKNOWN',
+        quantity: i.quantity,
+        unitPrice: row.totalAmount,
+        discountAmount: 0,
+        totalPrice: row.totalAmount,
+        pricingTierId: null,
+        pricingTierName: null,
+        entitlementProcessed: false,
+        createdAt: new Date(row.createdAt),
+      })) ?? [];
+
+    return { ...tx, items };
+  }
+
+  private async getPaymentRowById(id: string): Promise<{
+    id: string;
+    orderId: string;
+    totalAmount: number;
+    amount: number;
+    discountAmount: number | null;
+    status: string;
+    method: string;
+    paidAmount: number;
+    expiryTime: string;
+    virtualAccountNumber: string | null;
+    qrisUrl: string | null;
+    bankDetails: any;
+    createdAt: string;
+    customerEmail: string;
+    itemsSnapshot: any[] | null;
+  } | null> {
     const paymentsRes = await this.db.query<{
       id: string;
       orderId: string;
@@ -921,30 +1120,7 @@ export class TransactionsService {
       [id],
     );
 
-    const row = paymentsRes.rows[0];
-    if (!row) {
-      throw new NotFoundException(`Transaction ${id} not found`);
-    }
-
-    const tx = this.mapPaymentRowToTransaction(row);
-    const items: TransactionItem[] =
-      (row.itemsSnapshot as any[] | null)?.map((i, idx) => ({
-        id: `${row.id}-ITEM-${idx}`,
-        transactionId: row.id,
-        productId: i.productId,
-        productName: i.productId,
-        productType: 'UNKNOWN',
-        quantity: i.quantity,
-        unitPrice: row.totalAmount,
-        discountAmount: 0,
-        totalPrice: row.totalAmount,
-        pricingTierId: null,
-        pricingTierName: null,
-        entitlementProcessed: false,
-        createdAt: new Date(row.createdAt),
-      })) ?? [];
-
-    return { ...tx, items };
+    return paymentsRes.rows[0] ?? null;
   }
 
   /**
@@ -980,6 +1156,31 @@ export class TransactionsService {
     return this.mapPaymentRowToTransaction(row);
   }
 
+  async getPublicPaymentStatus(
+    transactionId: string,
+    customerEmail: string,
+  ): Promise<{ paymentStatus: string; totalAmount: number }> {
+    const email = String(customerEmail ?? '').trim().toLowerCase();
+    const res = await this.db.query<{
+      status: string;
+      totalAmount: number;
+    }>(
+      `
+      select status, "totalAmount"
+      from payment_transactions
+      where id = $1
+        and lower("customerEmail") = $2
+      limit 1
+      `,
+      [transactionId, email],
+    );
+    const row = res.rows[0];
+    if (!row) {
+      throw new NotFoundException(`Transaction ${transactionId} not found`);
+    }
+    return { paymentStatus: row.status, totalAmount: Number(row.totalAmount) || 0 };
+  }
+
   // ==========================================================================
   // REFUNDS
   // ==========================================================================
@@ -987,10 +1188,18 @@ export class TransactionsService {
   /**
    * Create refund request
    */
-  async createRefund(dto: CreateRefundDto): Promise<Refund> {
+  async createRefund(
+    dto: CreateRefundDto,
+    actorUserId: string,
+  ): Promise<Refund> {
     // 1. Verify transaction exists and is PAID
     // 2. Verify refund amount <= transaction total
     // 3. Create refund record
+    await this.appendSecurityLog(
+      'REFUND_REQUEST_ATTEMPT',
+      { transactionId: dto.transactionId, refundAmount: dto.refundAmount },
+      actorUserId,
+    );
     throw new Error('Not implemented - needs database');
   }
 
@@ -999,13 +1208,18 @@ export class TransactionsService {
    */
   async approveRefund(refundId: string, approvedBy: string): Promise<Refund> {
     // TODO: Update refund status to APPROVED
+    await this.appendSecurityLog(
+      'REFUND_APPROVE_ATTEMPT',
+      { refundId },
+      approvedBy,
+    );
     throw new Error('Not implemented - needs database');
   }
 
   /**
    * Process refund (Finance)
    */
-  async processRefund(refundId: string): Promise<Refund> {
+  async processRefund(refundId: string, actorUserId: string): Promise<Refund> {
     // TODO: Begin atomic transaction
 
     // 1. Update refund status to PROCESSED
@@ -1014,6 +1228,11 @@ export class TransactionsService {
     // 4. Update transaction status
 
     // TODO: Commit transaction
+    await this.appendSecurityLog(
+      'REFUND_PROCESS_ATTEMPT',
+      { refundId },
+      actorUserId,
+    );
     throw new Error('Not implemented - needs database');
   }
 
@@ -1045,8 +1264,14 @@ export class TransactionsService {
   /**
    * Get sales summary
    */
-  async getSalesSummary(startDate: Date, endDate: Date) {
-    const res = await this.db.query<{
+  async getSalesSummary(
+    actorUserId: string,
+    actorRole: string,
+    startDate: Date,
+    endDate: Date,
+  ) {
+    const res = await this.db.withRlsContext(actorUserId, actorRole, async (client) =>
+      client.query<{
       totalAmount: string | null;
       count: string;
     }>(
@@ -1059,7 +1284,7 @@ export class TransactionsService {
         and status in ('PENDING', 'PAID')
       `,
       [startDate.toISOString(), endDate.toISOString()],
-    );
+    ));
 
     const row = res.rows[0];
     return {
@@ -1072,7 +1297,8 @@ export class TransactionsService {
   // INTERNAL HELPERS
   // ==========================================================================
 
-  private async queryPaymentsByEmail(
+  private async queryPaymentsByEmailWithClient(
+    client: PoolClient,
     email: string | null,
     query: TransactionQueryDto,
   ): Promise<{ data: Transaction[]; total: number }> {
@@ -1106,7 +1332,22 @@ export class TransactionsService {
       order by pt."createdAt" desc
     `;
 
-    const { rows, total } = await this.db.paginatedQuery<{
+    const offset = (page - 1) * limit;
+    const wrapped = `
+      with base as (
+        ${baseSql}
+      )
+      select jsonb_build_object(
+        'data', (select coalesce(jsonb_agg(b), '[]'::jsonb) from (select * from base limit $${params.length + 2} offset $${params.length + 1}) b),
+        'total', (select count(*) from base)
+      ) as result
+    `;
+    const result = await client.query<{ result: { data: any[]; total: string } }>(
+      wrapped,
+      [...params, offset, limit],
+    );
+    const payload = result.rows[0]?.result ?? { data: [], total: '0' };
+    const rows = payload.data as Array<{
       id: string;
       orderId: string;
       totalAmount: number;
@@ -1122,7 +1363,8 @@ export class TransactionsService {
       createdAt: string;
       customerEmail: string;
       itemsSnapshot: any[] | null;
-    }>(baseSql, params, page, limit);
+    }>;
+    const total = parseInt(payload.total, 10) || 0;
 
     return {
       data: rows.map((r) => this.mapPaymentRowToTransaction(r)),
