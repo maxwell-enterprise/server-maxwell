@@ -18,6 +18,7 @@ export interface DatabaseHealth extends DatabaseRuntimeConfig {
 @Injectable()
 export class DatabaseService implements OnModuleDestroy {
   private readonly pool: Pool;
+  private static readonly NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
   constructor(private readonly config: AppConfigService) {
     this.pool = new Pool(this.config.database);
@@ -90,6 +91,33 @@ export class DatabaseService implements OnModuleDestroy {
     } finally {
       client.release();
     }
+  }
+
+  async withRlsContext<T>(
+    userId: string | null | undefined,
+    role: string | null | undefined,
+    callback: (client: PoolClient) => Promise<T>,
+  ): Promise<T> {
+    const normalizedUserId =
+      typeof userId === 'string' &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        userId.trim(),
+      )
+        ? userId.trim()
+        : DatabaseService.NIL_UUID;
+    const normalizedRole = String(role ?? 'Guest').trim() || 'Guest';
+
+    return this.withTransaction(async (client) => {
+      await client.query(
+        `
+        select
+          set_config('app.current_user_id', $1, true),
+          set_config('app.user_role', $2, true)
+        `,
+        [normalizedUserId, normalizedRole],
+      );
+      return callback(client);
+    });
   }
 
   /**

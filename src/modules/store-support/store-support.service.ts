@@ -881,4 +881,103 @@ export class StoreSupportService {
       [rowId, name, description, JSON.stringify(tasksPayload), createdAt],
     );
   }
+
+  // --- support_tickets (FE: GET/POST/PATCH /fe/store/support-tickets) ---
+
+  private rowToSupportTicket(row: Record<string, unknown>): Record<string, unknown> {
+    return {
+      id: String(row.id),
+      memberId: String(row.memberId ?? row.memberid),
+      memberName: String(row.memberName ?? row.membername),
+      subject: String(row.subject),
+      description: String(row.description),
+      priority: String(row.priority),
+      status: String(row.status),
+      assignedRole: String(row.assignedRole ?? row.assignedrole),
+      createdAt: toIso(row.createdAt ?? row.createdat),
+      updatedAt: toIso(row.updatedAt ?? row.updatedat),
+    };
+  }
+
+  async listSupportTickets(): Promise<unknown[]> {
+    const result = await this.db.query<Record<string, unknown>>(
+      `SELECT id::text AS id, "memberId", "memberName", subject, description, priority, status,
+              "assignedRole", "createdAt", "updatedAt"
+       FROM support_tickets
+       ORDER BY "updatedAt" DESC`,
+    );
+    return result.rows.map((r) => this.rowToSupportTicket(r));
+  }
+
+  async createSupportTicket(body: Record<string, unknown>): Promise<unknown> {
+    const memberId = String(body.memberId ?? '');
+    const memberName = String(body.memberName ?? '');
+    const subject = String(body.subject ?? '');
+    const description = String(body.description ?? '');
+    const priority = String(body.priority ?? 'MEDIUM');
+    const status = String(body.status ?? 'NEW');
+    const assignedRole = String(body.assignedRole ?? 'OPERATIONS');
+
+    const result = await this.db.query<Record<string, unknown>>(
+      `INSERT INTO support_tickets (
+        "memberId", "memberName", subject, description, priority, status, "assignedRole", "createdAt", "updatedAt"
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+      RETURNING id::text AS id, "memberId", "memberName", subject, description, priority, status,
+                "assignedRole", "createdAt", "updatedAt"`,
+      [memberId, memberName, subject, description, priority, status, assignedRole],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new NotFoundException('Failed to create support ticket');
+    }
+    return this.rowToSupportTicket(row);
+  }
+
+  async updateSupportTicket(id: string, body: Record<string, unknown>): Promise<void> {
+    const pairs: Array<[string, unknown]> = [];
+    if (body.memberId !== undefined) pairs.push(['memberId', body.memberId]);
+    if (body.memberName !== undefined) pairs.push(['memberName', body.memberName]);
+    if (body.subject !== undefined) pairs.push(['subject', body.subject]);
+    if (body.description !== undefined) pairs.push(['description', body.description]);
+    if (body.priority !== undefined) pairs.push(['priority', body.priority]);
+    if (body.status !== undefined) pairs.push(['status', body.status]);
+    if (body.assignedRole !== undefined) pairs.push(['assignedRole', body.assignedRole]);
+
+    if (pairs.length === 0) return;
+
+    const setClauses = pairs
+      .map(([col], i) => `"${col}" = $${i + 1}`)
+      .concat(['"updatedAt" = NOW()']);
+    const values = pairs.map(([, v]) => v);
+    const idParam = values.length + 1;
+    values.push(id);
+
+    await this.db.query(
+      `UPDATE support_tickets SET ${setClauses.join(', ')} WHERE id = $${idParam}::uuid`,
+      values,
+    );
+  }
+
+  async resolveSupportTicket(id: string, resolution: string): Promise<void> {
+    const found = await this.db.query<{ description: string }>(
+      `SELECT description FROM support_tickets WHERE id = $1::uuid`,
+      [id],
+    );
+    const row = found.rows[0];
+    if (!row) {
+      throw new NotFoundException('Support ticket not found');
+    }
+    const prev = String(row.description ?? '');
+    const next =
+      resolution && resolution.trim().length > 0
+        ? `${prev}\n\n--- Resolution ---\n${resolution.trim()}`
+        : prev;
+
+    await this.db.query(
+      `UPDATE support_tickets
+       SET description = $2, status = 'RESOLVED', "updatedAt" = NOW()
+       WHERE id = $1::uuid`,
+      [id, next],
+    );
+  }
 }

@@ -63,6 +63,31 @@ export interface PublicTableMeta {
   rowEstimate: number;
 }
 
+export interface SecurityRoleDto {
+  id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+  policies: Record<string, unknown>;
+  isSystemRole: boolean;
+  sodViolations: string[];
+}
+
+export interface DatabaseTableColumnDto {
+  name: string;
+  type: string;
+  isPk: boolean;
+  isFk: boolean;
+  fkTarget?: string;
+  isMandatory: boolean;
+}
+
+export interface DatabaseTableDefinitionDto {
+  tableName: string;
+  rowCount: number;
+  columns: DatabaseTableColumnDto[];
+}
+
 /** Subset of pg_stat_activity for admin debugging (not full query text). */
 export interface PgActivityRow {
   pid: number;
@@ -166,6 +191,134 @@ export class SystemAdminService implements OnModuleInit {
        LIMIT 500`,
     );
     return res.rows.map((r) => this.rowToSecurityLog(r));
+  }
+
+  // --- Security roles (auth_roles) ---
+
+  async listSecurityRoles(): Promise<SecurityRoleDto[]> {
+    const res = await this.db.query<{
+      id: string;
+      name: string;
+      description: string | null;
+      permissions: unknown;
+    }>(
+      `SELECT id, name, description, permissions
+       FROM auth_roles
+       ORDER BY id ASC`,
+    );
+    return res.rows.map((row) => this.rowToSecurityRole(row));
+  }
+
+  async upsertSecurityRole(
+    id: string,
+    body: Record<string, unknown>,
+  ): Promise<SecurityRoleDto> {
+    const payload = this.normalizeSecurityRolePayload(id, body);
+    await this.db.query(
+      `INSERT INTO auth_roles (id, name, description, permissions, "createdAt")
+       VALUES ($1, $2, $3, $4::jsonb, now())
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         permissions = EXCLUDED.permissions`,
+      [
+        payload.id,
+        payload.name,
+        payload.description,
+        JSON.stringify({
+          permissions: payload.permissions,
+          policies: payload.policies,
+          isSystemRole: payload.isSystemRole,
+          sodViolations: payload.sodViolations,
+        }),
+      ],
+    );
+    return payload;
+  }
+
+  private rowToSecurityRole(row: {
+    id: string;
+    name: string;
+    description: string | null;
+    permissions: unknown;
+  }): SecurityRoleDto {
+    let permissions: string[] = [];
+    let policies: Record<string, unknown> = {};
+    let isSystemRole = row.id.startsWith('ROLE_');
+    let sodViolations: string[] = [];
+
+    if (Array.isArray(row.permissions)) {
+      permissions = row.permissions
+        .map((p) => String(p))
+        .filter((p) => p.trim().length > 0);
+    } else if (
+      row.permissions &&
+      typeof row.permissions === 'object' &&
+      row.permissions !== null
+    ) {
+      const asObj = row.permissions as Record<string, unknown>;
+      const list = asObj.permissions;
+      if (Array.isArray(list)) {
+        permissions = list
+          .map((p) => String(p))
+          .filter((p) => p.trim().length > 0);
+      }
+      if (asObj.policies && typeof asObj.policies === 'object') {
+        policies = asObj.policies as Record<string, unknown>;
+      }
+      if (typeof asObj.isSystemRole === 'boolean') {
+        isSystemRole = asObj.isSystemRole;
+      }
+      if (Array.isArray(asObj.sodViolations)) {
+        sodViolations = asObj.sodViolations.map((v) => String(v));
+      }
+    }
+
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description ?? '',
+      permissions,
+      policies,
+      isSystemRole,
+      sodViolations,
+    };
+  }
+
+  private normalizeSecurityRolePayload(
+    id: string,
+    body: Record<string, unknown>,
+  ): SecurityRoleDto {
+    const roleId = String(id ?? '').trim();
+    const name = String(body.name ?? '').trim();
+    if (!roleId || !name) {
+      throw new BadRequestException('id and name are required');
+    }
+
+    const permissionList = Array.isArray(body.permissions)
+      ? body.permissions.map((p) => String(p)).filter(Boolean)
+      : [];
+    const policies =
+      body.policies && typeof body.policies === 'object'
+        ? (body.policies as Record<string, unknown>)
+        : {};
+    const sodViolations = Array.isArray(body.sodViolations)
+      ? body.sodViolations.map((v) => String(v))
+      : [];
+    const isSystemRole =
+      typeof body.isSystemRole === 'boolean'
+        ? body.isSystemRole
+        : roleId.startsWith('ROLE_');
+
+    return {
+      id: roleId,
+      name,
+      description: String(body.description ?? ''),
+      permissions: permissionList,
+      policies,
+      isSystemRole,
+      sodViolations,
+    };
   }
 
   async appendSecurityLog(body: {
@@ -555,6 +708,116 @@ export class SystemAdminService implements OnModuleInit {
       name: r.name,
       rowEstimate: parseInt(r.row_estimate, 10) || 0,
     }));
+  }
+
+  async listDatabaseTableDefinitions(): Promise<DatabaseTableDefinitionDto[]> {
+    const tables = await this.listPublicTablesMeta();
+    const result: DatabaseTableDefinitionDto[] = [];
+    for (const table of tables) {
+      const columns = await this.getTableColumns(table.name);
+      result.push({
+        tableName: table.name,
+        rowCount: table.rowEstimate,
+        columns,
+      });
+    }
+    return result;
+  }
+
+  async listDatabaseTableRows(tableName: string): Promise<unknown[]> {
+    const normalized = this.assertSafeTableName(tableName);
+    const exists = await this.db.query<{ exists: boolean }>(
+      `SELECT EXISTS(
+         SELECT 1
+         FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = $1
+       ) AS exists`,
+      [normalized],
+    );
+    if (!exists.rows[0]?.exists) {
+      throw new NotFoundException(`Table ${normalized} not found`);
+    }
+    const sql = `SELECT * FROM public."${normalized}" LIMIT 50`;
+    const rows = await this.db.query<Record<string, unknown>>(sql);
+    return rows.rows;
+  }
+
+  private async getTableColumns(
+    tableName: string,
+  ): Promise<DatabaseTableColumnDto[]> {
+    const table = this.assertSafeTableName(tableName);
+    const res = await this.db.query<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+      is_pk: boolean;
+      fk_table: string | null;
+      fk_column: string | null;
+    }>(
+      `
+      SELECT
+        c.column_name,
+        c.data_type,
+        c.is_nullable,
+        EXISTS (
+          SELECT 1
+          FROM information_schema.table_constraints tc
+          JOIN information_schema.key_column_usage kcu
+            ON tc.constraint_name = kcu.constraint_name
+           AND tc.table_schema = kcu.table_schema
+          WHERE tc.constraint_type = 'PRIMARY KEY'
+            AND tc.table_schema = c.table_schema
+            AND tc.table_name = c.table_name
+            AND kcu.column_name = c.column_name
+        ) AS is_pk,
+        fk.target_table AS fk_table,
+        fk.target_column AS fk_column
+      FROM information_schema.columns c
+      LEFT JOIN (
+        SELECT
+          kcu.table_schema,
+          kcu.table_name,
+          kcu.column_name,
+          ccu.table_name AS target_table,
+          ccu.column_name AS target_column
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+          ON tc.constraint_name = ccu.constraint_name
+         AND tc.table_schema = ccu.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+      ) fk
+        ON fk.table_schema = c.table_schema
+       AND fk.table_name = c.table_name
+       AND fk.column_name = c.column_name
+      WHERE c.table_schema = 'public'
+        AND c.table_name = $1
+      ORDER BY c.ordinal_position ASC
+      `,
+      [table],
+    );
+
+    return res.rows.map((row) => ({
+      name: row.column_name,
+      type: row.data_type || 'text',
+      isPk: !!row.is_pk,
+      isFk: !!row.fk_table,
+      fkTarget:
+        row.fk_table && row.fk_column
+          ? `${row.fk_table}.${row.fk_column}`
+          : undefined,
+      isMandatory: row.is_nullable === 'NO',
+    }));
+  }
+
+  private assertSafeTableName(tableName: string): string {
+    const normalized = String(tableName ?? '').trim();
+    if (!/^[a-zA-Z0-9_]+$/.test(normalized)) {
+      throw new BadRequestException('Invalid table name');
+    }
+    return normalized;
   }
 
   /**

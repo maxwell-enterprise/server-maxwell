@@ -3,6 +3,7 @@
  */
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { parseAppEnv } from './common/config/env.schema';
 
 const appEnv = parseAppEnv(process.env);
@@ -37,9 +38,12 @@ import { YouthImpactModule } from './modules/youth-impact/youth-impact.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
 import { CommunicationModule } from './modules/communication/communication.module';
 import { SystemAdminModule } from './modules/system-admin/system-admin.module';
-
-// TODO: Add these modules when ready
-// import { AuthModule } from './modules/auth/auth.module';
+import { CampaignsModule } from './modules/campaigns/campaigns.module';
+import { CmsModule } from './modules/cms/cms.module';
+import { AccountSettingsModule } from './modules/account-settings/account-settings.module';
+import { PrismaModule } from './prisma/prisma.module';
+import { AuthModule } from './modules/auth/auth.module';
+import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard';
 // import { AutomationModule } from './modules/automation/automation.module';
 // import { FinanceModule } from './modules/finance/finance.module';
 
@@ -64,8 +68,12 @@ import { SystemAdminModule } from './modules/system-admin/system-admin.module';
     }),
     AppConfigModule,
 
+    PrismaModule,
+
     // Database
     DatabaseModule,
+
+    AuthModule,
 
     // Core Modules
     UsersModule,
@@ -87,8 +95,17 @@ import { SystemAdminModule } from './modules/system-admin/system-admin.module';
     GamificationModule,
     CommunicationModule,
     SystemAdminModule,
+    CampaignsModule,
+    CmsModule,
+    AccountSettingsModule,
   ],
   controllers: [RootController, AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_GUARD,
+      useClass: SimpleRateLimitGuard,
+    },
+  ],
 })
 export class AppModule {}

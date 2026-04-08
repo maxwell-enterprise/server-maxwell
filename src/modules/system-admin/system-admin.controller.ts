@@ -63,10 +63,33 @@ export class SystemAdminController {
     });
   }
 
+  @Get('security/roles')
+  listSecurityRoles() {
+    return this.systemAdmin.listSecurityRoles();
+  }
+
+  @Put('security/roles/:id')
+  upsertSecurityRole(
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.systemAdmin.upsertSecurityRole(decodeURIComponent(id), body);
+  }
+
   // --- Database (meta + schema AI history) ---
   @Get('database/tables')
   listPublicTables() {
     return this.systemAdmin.listPublicTablesMeta();
+  }
+
+  @Get('database/table-definitions')
+  listTableDefinitions() {
+    return this.systemAdmin.listDatabaseTableDefinitions();
+  }
+
+  @Get('database/tables/:name/rows')
+  listTableRows(@Param('name') name: string) {
+    return this.systemAdmin.listDatabaseTableRows(decodeURIComponent(name));
   }
 
   /** Truncated active queries (debug). */

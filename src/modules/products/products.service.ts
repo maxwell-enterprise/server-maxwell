@@ -4,6 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { createClient } from '@supabase/supabase-js';
+import { randomUUID } from 'crypto';
 import { DbService } from '../../common/db.service';
 import {
   CreateProductDto,
@@ -29,9 +31,56 @@ interface ProductRow {
   isActive: boolean;
 }
 
+type UploadedImageFile = {
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+};
+
 @Injectable()
 export class ProductsService {
   constructor(private readonly db: DbService) {}
+
+  async uploadImage(file: UploadedImageFile): Promise<{ url: string; path: string }> {
+    const allowedMime = new Set(['image/jpeg', 'image/png', 'image/webp']);
+    if (!allowedMime.has(file.mimetype)) {
+      throw new BadRequestException('Only JPG, PNG, or WEBP images are allowed');
+    }
+
+    const maxBytes = 2 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      throw new BadRequestException('Image size exceeds 2MB limit');
+    }
+
+    const supabaseUrl = process.env.SUPABASE_URL?.trim();
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || 'app-images';
+    if (!supabaseUrl || !serviceRoleKey) {
+      throw new BadRequestException('Supabase Storage is not configured on backend');
+    }
+
+    const ext =
+      file.mimetype === 'image/png'
+        ? 'png'
+        : file.mimetype === 'image/webp'
+          ? 'webp'
+          : 'jpg';
+    const objectPath = `products/${Date.now()}-${randomUUID()}.${ext}`;
+
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    const { error } = await supabase.storage
+      .from(bucket)
+      .upload(objectPath, file.buffer, { contentType: file.mimetype, upsert: false });
+    if (error) {
+      throw new BadRequestException(`Storage upload failed: ${error.message}`);
+    }
+
+    const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);
+    return { url: data.publicUrl, path: objectPath };
+  }
 
   async create(dto: CreateProductDto): Promise<Product> {
     this.assertBusinessRules(dto);

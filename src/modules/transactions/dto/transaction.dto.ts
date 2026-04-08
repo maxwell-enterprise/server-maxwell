@@ -25,6 +25,7 @@ export const CheckoutDtoSchema = z.object({
   voucherCode: z.string().optional(),
   paymentMethod: PaymentMethodEnum,
   customerNotes: z.string().max(500).optional(),
+  attributionSource: z.string().trim().min(1).max(120).optional(),
   // Guest checkout
   guestEmail: z.string().email().optional(),
   guestName: z.string().max(255).optional(),
@@ -93,3 +94,16 @@ export const MidtransWebhookDtoSchema = z.object({
 });
 
 export type MidtransWebhookDto = z.infer<typeof MidtransWebhookDtoSchema>;
+
+// =============================================================================
+// PUBLIC STATUS CHECK DTO (guest-safe polling)
+// =============================================================================
+
+export const PublicTransactionStatusDtoSchema = z.object({
+  transactionId: z.string().uuid(),
+  customerEmail: z.string().email(),
+});
+
+export type PublicTransactionStatusDto = z.infer<
+  typeof PublicTransactionStatusDtoSchema
+>;

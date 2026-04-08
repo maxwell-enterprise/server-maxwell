@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,7 +8,10 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ProductsService } from './products.service';
 import {
   CreateProductDto,
@@ -19,6 +23,12 @@ import {
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 
+type UploadedImageFile = {
+  mimetype: string;
+  size: number;
+  buffer: Buffer;
+};
+
 @Controller('products')
 export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
@@ -29,6 +39,15 @@ export class ProductsController {
     dto: CreateProductDto,
   ) {
     return this.productsService.create(dto);
+  }
+
+  @Post('upload-image')
+  @UseInterceptors(FileInterceptor('file'))
+  uploadImage(@UploadedFile() file: UploadedImageFile | undefined) {
+    if (!file) {
+      throw new BadRequestException('Image file is required');
+    }
+    return this.productsService.uploadImage(file);
   }
 
   @Get()

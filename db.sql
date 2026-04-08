@@ -50,6 +50,17 @@ create table if not exists sys_internal_users (
   "updatedAt" timestamptz default now()
 );
 
+create table if not exists user_notification_preferences (
+  "userId" text primary key,
+  "emailTransactional" boolean not null default false,
+  "emailMarketing" boolean not null default false,
+  "smsAlerts" boolean not null default false,
+  "updatedAt" timestamptz not null default now()
+);
+
+create index if not exists idx_user_notification_preferences_updated
+  on user_notification_preferences ("updatedAt" desc);
+
 -- ============================================
 -- 2) EVENTS, INVITATIONS, ATTENDANCE & TIERS
 -- ============================================
