@@ -28,17 +28,6 @@ export class AppConfigService {
     return this.env.NODE_ENV === 'production';
   }
 
-  /**
-   * Dev/QA only: POST /fe/store/dev/seed-action-center and clear endpoint.
-   * Allowed in development/test always; in production only if ENABLE_DEV_ACTION_CENTER_SEED=true.
-   */
-  get allowActionCenterDevSeed(): boolean {
-    if (this.env.NODE_ENV === 'development' || this.env.NODE_ENV === 'test') {
-      return true;
-    }
-    return this.env.ENABLE_DEV_ACTION_CENTER_SEED === true;
-  }
-
   get paymentPpnRatePercent() {
     return this.env.PAYMENT_PPN_RATE_PERCENT;
   }

@@ -56,13 +56,6 @@ export const AppEnvSchema = z
     // PPN/VAT rate used for backend pricing calculation (percent).
     // IMPORTANT: FE is not authoritative; BE is the source of truth for Midtrans gross_amount.
     PAYMENT_PPN_RATE_PERCENT: z.coerce.number().min(0).max(100).default(0),
-
-    // QA: allow Action Center seed endpoints when NODE_ENV=production (e.g. staging).
-    // In development/test, seed is allowed without this flag.
-    ENABLE_DEV_ACTION_CENTER_SEED: z.preprocess(
-      (v) => parseBoolean(v) === true,
-      z.boolean(),
-    ),
   })
   .superRefine((env, ctx) => {
     if (env.DATABASE_URL) {
