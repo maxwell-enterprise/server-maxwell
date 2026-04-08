@@ -23,6 +23,7 @@ Ada dua jalur schema di repo ini:
    - `013_create_members_table.sql`
    - `014_align_events_runtime_and_create_invitations.sql`
    - `015_align_wallet_runtime_schema.sql`
+   - `023_system_schema_optimizations.sql` (AI schema optimization history — `schema_optimizations`)
 2. Snapshot schema:
    - `011_full_schema_maxwellv3.sql`
 

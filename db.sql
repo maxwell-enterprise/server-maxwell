@@ -464,6 +464,33 @@ create table if not exists ai_usage_logs (
   "costIDR" numeric(18,2) not null
 );
 
+-- Schema optimization history (AI Database / Blueprint) — Nest /fe/system/database/schema-optimizations
+create table if not exists schema_optimizations (
+  id text primary key,
+  version integer not null default 1,
+  summary text,
+  "timestamp" timestamptz not null default now(),
+  result jsonb not null default '{}'::jsonb
+);
+
+create index if not exists idx_schema_optimizations_ts on schema_optimizations ("timestamp" desc);
+
+-- Automation trigger catalog (admin Select Trigger) — Nest GET /fe/system/automation-triggers
+create table if not exists automation_trigger_definitions (
+  id text primary key,
+  label text not null,
+  description text not null,
+  category text not null,
+  icon_name text not null default 'Zap',
+  variables jsonb not null default '[]'::jsonb,
+  is_active boolean not null default true,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists idx_automation_trigger_definitions_active_sort
+  on automation_trigger_definitions (is_active, sort_order, id);
+
 -- ============================================
 -- 9) TRIBE, RESEARCH, ROUND TABLE, SCOUT
 -- ============================================

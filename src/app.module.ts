@@ -36,6 +36,7 @@ import { CommissionRulesModule } from './modules/commission-rules/commission-rul
 import { YouthImpactModule } from './modules/youth-impact/youth-impact.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
 import { CommunicationModule } from './modules/communication/communication.module';
+import { SystemAdminModule } from './modules/system-admin/system-admin.module';
 
 // TODO: Add these modules when ready
 // import { AuthModule } from './modules/auth/auth.module';
@@ -85,6 +86,7 @@ import { CommunicationModule } from './modules/communication/communication.modul
     YouthImpactModule,
     GamificationModule,
     CommunicationModule,
+    SystemAdminModule,
   ],
   controllers: [RootController, AppController],
   providers: [AppService],

@@ -7,6 +7,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
 } from '@nestjs/common';
 import { ContractsService } from './contracts.service';
 import {
@@ -61,8 +62,8 @@ export class ContractsController {
   }
 
   @Get('instances')
-  listInstances() {
-    return this.service.findAllInstances();
+  listInstances(@Query('memberId') memberId?: string) {
+    return this.service.findAllInstances(memberId);
   }
 
   @Post('instances')
