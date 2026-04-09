@@ -14,6 +14,7 @@ export const CreateCertificationRuleDtoSchema = z.object({
   logic: CertificationLogicEnum,
   requiredTags: z.array(z.string()).default([]),
   minCountValue: z.coerce.number().int().positive().optional(),
+  tagWeights: z.record(z.string(), z.coerce.number().positive()).optional(),
   badgeUrl: z.string().max(2000).optional().nullable(),
   isActive: z.coerce.boolean().default(true),
   validityPeriodMonths: z.coerce.number().int().nonnegative().optional(),

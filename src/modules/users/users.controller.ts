@@ -12,6 +12,8 @@ import {
   Delete,
   Query,
   ParseUUIDPipe,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import {
@@ -27,6 +29,9 @@ import type {
   UpdateUserRoleDto,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtUserPayload } from '../auth/auth.service';
+import { assertSuperAdminOnly } from '../../common/security/access-policy';
 
 @Controller('users')
 export class UsersController {
@@ -37,10 +42,13 @@ export class UsersController {
    * POST /users
    */
   @Post()
+  @UseGuards(JwtAuthGuard)
   create(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(CreateUserDtoSchema))
     createUserDto: CreateUserDto,
   ) {
+    assertSuperAdminOnly(req.user, 'User creation');
     return this.usersService.create(createUserDto);
   }
 
@@ -78,11 +86,14 @@ export class UsersController {
    * PATCH /users/:id
    */
   @Patch(':id')
+  @UseGuards(JwtAuthGuard)
   update(
+    @Req() req: { user: JwtUserPayload },
     @Param('id', ParseUUIDPipe) id: string,
     @Body(new ZodValidationPipe(UpdateUserDtoSchema))
     updateUserDto: UpdateUserDto,
   ) {
+    assertSuperAdminOnly(req.user, 'User update');
     return this.usersService.update(id, updateUserDto);
   }
 
@@ -91,11 +102,14 @@ export class UsersController {
    * PATCH /users/:id/role
    */
   @Patch(':id/role')
+  @UseGuards(JwtAuthGuard)
   updateRole(
+    @Req() req: { user: JwtUserPayload },
     @Param('id', ParseUUIDPipe) id: string,
     @Body(new ZodValidationPipe(UpdateUserRoleDtoSchema))
     updateRoleDto: UpdateUserRoleDto,
   ) {
+    assertSuperAdminOnly(req.user, 'User role update');
     return this.usersService.updateRole(id, updateRoleDto);
   }
 
@@ -104,7 +118,12 @@ export class UsersController {
    * DELETE /users/:id
    */
   @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
+  @UseGuards(JwtAuthGuard)
+  remove(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    assertSuperAdminOnly(req.user, 'User deletion');
     return this.usersService.remove(id);
   }
 

@@ -11,6 +11,8 @@ import {
   Post,
   Put,
   Query,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { WalletService } from './wallet.service';
 import {
@@ -46,6 +48,12 @@ import type {
   WalletTransactionLogDto,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtUserPayload } from '../auth/auth.service';
+import {
+  assertOperationsOnly,
+  assertFinanceControllerOnly,
+} from '../../common/security/access-policy';
 
 @Controller('wallet')
 export class WalletController {
@@ -57,11 +65,14 @@ export class WalletController {
   }
 
   @Put('entitlements/:userId')
+  @UseGuards(JwtAuthGuard)
   upsertUserEntitlements(
+    @Req() req: { user: JwtUserPayload },
     @Param('userId') userId: string,
     @Body(new ZodValidationPipe(UserEntitlementsDtoSchema))
     dto: UserEntitlementsDto,
   ) {
+    assertOperationsOnly(req.user, 'Wallet entitlement upsert');
     return this.walletService.upsertUserEntitlements({
       ...dto,
       userId,
@@ -89,19 +100,25 @@ export class WalletController {
   }
 
   @Put('items/bulk')
+  @UseGuards(JwtAuthGuard)
   upsertWalletItems(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(UpsertWalletItemsBatchDtoSchema))
     dto: UpsertWalletItemsBatchDto,
   ) {
+    assertOperationsOnly(req.user, 'Wallet items bulk upsert');
     return this.walletService.upsertWalletItems(dto.items);
   }
 
   @Put('items/:id')
+  @UseGuards(JwtAuthGuard)
   upsertWalletItem(
+    @Req() req: { user: JwtUserPayload },
     @Param('id') id: string,
     @Body(new ZodValidationPipe(WalletItemContractDtoSchema))
     dto: WalletItemContractDto,
   ) {
+    assertOperationsOnly(req.user, 'Wallet item upsert');
     return this.walletService.upsertWalletItem({
       ...dto,
       id,
@@ -117,10 +134,13 @@ export class WalletController {
   }
 
   @Post('history')
+  @UseGuards(JwtAuthGuard)
   logWalletHistory(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(WalletTransactionLogDtoSchema))
     dto: WalletTransactionLogDto,
   ) {
+    assertFinanceControllerOnly(req.user, 'Wallet history write');
     return this.walletService.logWalletHistory(dto);
   }
 
@@ -130,11 +150,14 @@ export class WalletController {
   }
 
   @Put('gift-allocations/:id')
+  @UseGuards(JwtAuthGuard)
   upsertGiftAllocation(
+    @Req() req: { user: JwtUserPayload },
     @Param('id') id: string,
     @Body(new ZodValidationPipe(GiftAllocationDtoSchema))
     dto: GiftAllocationDto,
   ) {
+    assertOperationsOnly(req.user, 'Gift allocation upsert');
     return this.walletService.upsertGiftAllocation({
       ...dto,
       id,
@@ -150,11 +173,14 @@ export class WalletController {
   }
 
   @Put('team-members/:id')
+  @UseGuards(JwtAuthGuard)
   upsertTeamMember(
+    @Req() req: { user: JwtUserPayload },
     @Param('id') id: string,
     @Body(new ZodValidationPipe(TeamMemberDtoSchema))
     dto: TeamMemberDto,
   ) {
+    assertOperationsOnly(req.user, 'Team member upsert');
     return this.walletService.upsertTeamMember({
       ...dto,
       id,
@@ -162,73 +188,92 @@ export class WalletController {
   }
 
   @Delete('team-members/:id')
-  deleteTeamMember(@Param('id') id: string) {
+  @UseGuards(JwtAuthGuard)
+  deleteTeamMember(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+  ) {
+    assertOperationsOnly(req.user, 'Team member deletion');
     return this.walletService.deleteTeamMember(id);
   }
 
   @Get('history')
+  @UseGuards(JwtAuthGuard)
   getHistory(
+    @Req() req: { user: JwtUserPayload },
     @Query(new ZodValidationPipe(WalletHistoryQueryDtoSchema))
     query: WalletHistoryQueryDto,
   ) {
-    const userId = 'temp-user-id';
+    const userId = String(req.user.sub);
     return this.walletService.getHistory(userId, query);
   }
 
   @Get('card')
-  getMembershipCard() {
-    const userId = 'temp-user-id';
+  @UseGuards(JwtAuthGuard)
+  getMembershipCard(@Req() req: { user: JwtUserPayload }) {
+    const userId = String(req.user.sub);
     return this.walletService.getMembershipCard(userId);
   }
 
   @Post('gifts')
+  @UseGuards(JwtAuthGuard)
   createGift(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(CreateGiftDtoSchema)) dto: CreateGiftDto,
   ) {
-    const userId = 'temp-user-id';
+    const userId = String(req.user.sub);
     return this.walletService.createGift(userId, dto);
   }
 
   @Post('gifts/claim')
+  @UseGuards(JwtAuthGuard)
   claimGift(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(ClaimGiftDtoSchema)) dto: ClaimGiftDto,
   ) {
-    const userId = 'temp-user-id';
+    const userId = String(req.user.sub);
     return this.walletService.claimGift(userId, dto);
   }
 
   @Delete('gifts/:id')
+  @UseGuards(JwtAuthGuard)
   revokeGift(
+    @Req() req: { user: JwtUserPayload },
     @Param('id') id: string,
     @Body(new ZodValidationPipe(RevokeGiftDtoSchema)) dto: RevokeGiftDto,
   ) {
-    const userId = 'temp-user-id';
+    const userId = String(req.user.sub);
     return this.walletService.revokeGift(userId, id, dto);
   }
 
   @Get('gifts/sent')
-  getSentGifts() {
-    const userId = 'temp-user-id';
+  @UseGuards(JwtAuthGuard)
+  getSentGifts(@Req() req: { user: JwtUserPayload }) {
+    const userId = String(req.user.sub);
     return this.walletService.getSentGifts(userId);
   }
 
   @Get('gifts/received')
-  getReceivedGifts() {
-    const userId = 'temp-user-id';
+  @UseGuards(JwtAuthGuard)
+  getReceivedGifts(@Req() req: { user: JwtUserPayload }) {
+    const userId = String(req.user.sub);
     return this.walletService.getReceivedGifts(userId);
   }
 
   @Get()
+  @UseGuards(JwtAuthGuard)
   getMyWallet(
+    @Req() req: { user: JwtUserPayload },
     @Query(new ZodValidationPipe(WalletQueryDtoSchema)) query: WalletQueryDto,
   ) {
-    const userId = 'temp-user-id';
+    const userId = String(req.user.sub);
     return this.walletService.getMyWallet(userId, query);
   }
 
   @Get(':id')
-  getWalletItem(@Param('id') id: string) {
-    const userId = 'temp-user-id';
+  @UseGuards(JwtAuthGuard)
+  getWalletItem(@Req() req: { user: JwtUserPayload }, @Param('id') id: string) {
+    const userId = String(req.user.sub);
     return this.walletService.getWalletItem(id, userId);
   }
 }

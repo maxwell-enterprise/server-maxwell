@@ -8,6 +8,7 @@ export interface CertificationRuleRow {
   logic: CertificationLogic;
   requiredTags: string[];
   minCountValue?: number;
+  tagWeights?: Record<string, number>;
   badgeUrl?: string | null;
   isActive: boolean;
   validityPeriodMonths?: number;
@@ -18,6 +19,7 @@ interface CriteriaJson {
   logic: CertificationLogic;
   requiredTags: string[];
   minCountValue?: number;
+  tagWeights?: Record<string, number>;
   badgeUrl?: string | null;
   isActive: boolean;
   validityPeriodMonths?: number;
@@ -46,6 +48,7 @@ export function rowToRule(row: {
     logic: criteria.logic,
     requiredTags: criteria.requiredTags ?? [],
     minCountValue: criteria.minCountValue,
+    tagWeights: criteria.tagWeights,
     badgeUrl: criteria.badgeUrl ?? undefined,
     isActive: criteria.isActive ?? true,
     validityPeriodMonths: criteria.validityPeriodMonths,
@@ -58,6 +61,7 @@ export function buildCriteriaPayload(
     logic: CertificationLogic;
     requiredTags: string[];
     minCountValue?: number;
+    tagWeights?: Record<string, number>;
     badgeUrl?: string | null;
     isActive: boolean;
     validityPeriodMonths?: number;
@@ -67,6 +71,7 @@ export function buildCriteriaPayload(
     logic: dto.logic ?? 'REQUIRE_ALL',
     requiredTags: dto.requiredTags ?? [],
     minCountValue: dto.minCountValue,
+    tagWeights: dto.tagWeights,
     badgeUrl: dto.badgeUrl ?? null,
     isActive: dto.isActive ?? true,
     validityPeriodMonths: dto.validityPeriodMonths,

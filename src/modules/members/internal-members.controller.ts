@@ -10,6 +10,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { AppConfigService } from '../../common/config/app-config.service';
 import { CreateMemberDto, CreateMemberDtoSchema } from './dto';
 import { MembersService } from './members.service';
+import { RateLimit } from '../../common/security/rate-limit.decorator';
 
 /**
  * Trusted server-to-server member creation (e.g. NextAuth sign-in → CRM row).
@@ -23,6 +24,7 @@ export class InternalMembersController {
   ) {}
 
   @Post('sync')
+  @RateLimit({ limit: 30, windowMs: 60_000, keyBy: 'email' })
   syncFromTrustedServer(
     @Headers('x-internal-key') key: string | undefined,
     @Body(new ZodValidationPipe(CreateMemberDtoSchema)) dto: CreateMemberDto,

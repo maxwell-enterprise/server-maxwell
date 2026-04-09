@@ -8,6 +8,8 @@ import {
   Post,
   Put,
   Query,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { ContractsService } from './contracts.service';
 import {
@@ -19,6 +21,9 @@ import {
   PatchContractInstanceSchema,
 } from './dto/contracts.dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtUserPayload } from '../auth/auth.service';
+import { assertOperationsOnly } from '../../common/security/access-policy';
 
 @Controller('contracts')
 export class ContractsController {
@@ -30,12 +35,15 @@ export class ContractsController {
   }
 
   @Post('clauses/bulk')
+  @UseGuards(JwtAuthGuard)
   bulkUpsertClauses(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(BulkClausesDtoSchema))
     body: {
       items: ClauseItemDto[];
     },
   ) {
+    assertOperationsOnly(req.user, 'Contract clause bulk upsert');
     return this.service.upsertClauseItems(body.items);
   }
 
@@ -54,11 +62,14 @@ export class ContractsController {
   }
 
   @Put('templates/:id')
+  @UseGuards(JwtAuthGuard)
   upsertTemplate(
+    @Req() req: { user: JwtUserPayload },
     @Param('id') id: string,
     @Body(new ZodValidationPipe(ContractTemplateDocSchema))
     body: Record<string, unknown>,
   ) {
+    assertOperationsOnly(req.user, 'Contract template upsert');
     const merged = body.id === id ? body : { ...body, id };
     return this.service.upsertTemplate(merged);
   }
@@ -69,19 +80,25 @@ export class ContractsController {
   }
 
   @Post('instances')
+  @UseGuards(JwtAuthGuard)
   createInstance(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(ContractInstanceDocSchema))
     body: Record<string, unknown>,
   ) {
+    assertOperationsOnly(req.user, 'Contract instance creation');
     return this.service.upsertInstance(body);
   }
 
   @Patch('instances/:id')
+  @UseGuards(JwtAuthGuard)
   patchInstance(
+    @Req() req: { user: JwtUserPayload },
     @Param('id') id: string,
     @Body(new ZodValidationPipe(PatchContractInstanceSchema))
     body: PatchContractInstanceDto,
   ) {
+    assertOperationsOnly(req.user, 'Contract instance update');
     return this.service.patchInstance(id, body);
   }
 }

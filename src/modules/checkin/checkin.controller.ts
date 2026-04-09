@@ -10,6 +10,8 @@ import {
   Param,
   Query,
   Delete,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { CheckinRuntimeService } from './checkin.runtime.service';
 import {
@@ -27,6 +29,9 @@ import type {
   ManualCheckinDto,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtUserPayload } from '../auth/auth.service';
+import { assertOpsOrGateKeeper } from '../../common/security/access-policy';
 
 @Controller('checkin')
 export class CheckinController {
@@ -37,8 +42,13 @@ export class CheckinController {
    * POST /checkin/scan
    */
   @Post('scan')
-  scanQr(@Body(new ZodValidationPipe(ScanQrDtoSchema)) dto: ScanQrDto) {
-    const scannedByUserId = undefined; // TODO: Get from auth
+  @UseGuards(JwtAuthGuard)
+  scanQr(
+    @Req() req: { user: JwtUserPayload },
+    @Body(new ZodValidationPipe(ScanQrDtoSchema)) dto: ScanQrDto,
+  ) {
+    assertOpsOrGateKeeper(req.user, 'Check-in scan');
+    const scannedByUserId = String(req.user.sub);
     return this.checkinService.scanQr(dto, scannedByUserId);
   }
 
@@ -67,7 +77,9 @@ export class CheckinController {
    * POST /checkin/:id/checkout
    */
   @Post(':id/checkout')
-  checkout(@Param('id') id: string) {
+  @UseGuards(JwtAuthGuard)
+  checkout(@Req() req: { user: JwtUserPayload }, @Param('id') id: string) {
+    assertOpsOrGateKeeper(req.user, 'Check-out');
     return this.checkinService.checkout(id);
   }
 
@@ -80,10 +92,13 @@ export class CheckinController {
    * POST /checkin/devices
    */
   @Post('devices')
+  @UseGuards(JwtAuthGuard)
   registerDevice(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(RegisterDeviceDtoSchema))
     dto: RegisterDeviceDto,
   ) {
+    assertOpsOrGateKeeper(req.user, 'Device registration');
     return this.checkinService.registerDevice(dto);
   }
 
@@ -101,7 +116,12 @@ export class CheckinController {
    * DELETE /checkin/devices/:deviceId
    */
   @Delete('devices/:deviceId')
-  deactivateDevice(@Param('deviceId') deviceId: string) {
+  @UseGuards(JwtAuthGuard)
+  deactivateDevice(
+    @Req() req: { user: JwtUserPayload },
+    @Param('deviceId') deviceId: string,
+  ) {
+    assertOpsOrGateKeeper(req.user, 'Device deactivation');
     return this.checkinService.deactivateDevice(deviceId);
   }
 
@@ -114,10 +134,13 @@ export class CheckinController {
    * POST /checkin/sync
    */
   @Post('sync')
+  @UseGuards(JwtAuthGuard)
   syncOfflineCheckins(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(OfflineSyncBatchDtoSchema))
     dto: OfflineSyncBatchDto,
   ) {
+    assertOpsOrGateKeeper(req.user, 'Offline check-in sync');
     return this.checkinService.syncOfflineCheckins(dto);
   }
 
@@ -125,10 +148,13 @@ export class CheckinController {
    * Manual attendance recording (e.g. mobile self-check)
    */
   @Post('manual')
+  @UseGuards(JwtAuthGuard)
   manualCheckin(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(ManualCheckinDtoSchema))
     dto: ManualCheckinDto,
   ) {
+    assertOpsOrGateKeeper(req.user, 'Manual check-in');
     return this.checkinService.manualCheckin(
       dto.memberId,
       dto.eventId,

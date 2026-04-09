@@ -6,9 +6,11 @@ import { CommunicationWhatsappController } from './communication-whatsapp.contro
 import { CommunicationWhatsappService } from './communication-whatsapp.service';
 import { CommunicationPdfController } from './communication-pdf.controller';
 import { CommunicationPdfService } from './communication-pdf.service';
+import { AuthModule } from '../auth/auth.module';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Module({
-  imports: [DatabaseModule],
+  imports: [DatabaseModule, AuthModule],
   controllers: [
     CommunicationEmailController,
     CommunicationWhatsappController,
@@ -18,6 +20,7 @@ import { CommunicationPdfService } from './communication-pdf.service';
     CommunicationEmailService,
     CommunicationWhatsappService,
     CommunicationPdfService,
+    JwtAuthGuard,
   ],
 })
 export class CommunicationModule {}

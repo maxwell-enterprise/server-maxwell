@@ -1,5 +1,16 @@
-import { Body, Controller, Get, Param, Put } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Put,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { GamificationService } from './gamification.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtUserPayload } from '../auth/auth.service';
+import { assertOperationsOnly } from '../../common/security/access-policy';
 
 @Controller('gamification')
 export class GamificationController {
@@ -11,7 +22,13 @@ export class GamificationController {
   }
 
   @Put('badges/:id')
-  upsertBadge(@Param('id') id: string, @Body() body: Record<string, unknown>) {
+  @UseGuards(JwtAuthGuard)
+  upsertBadge(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    assertOperationsOnly(req.user, 'Badge update');
     return this.gamification.upsertBadge(decodeURIComponent(id), body ?? {});
   }
 
@@ -21,7 +38,13 @@ export class GamificationController {
   }
 
   @Put('rules/:id')
-  upsertRule(@Param('id') id: string, @Body() body: Record<string, unknown>) {
+  @UseGuards(JwtAuthGuard)
+  upsertRule(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    assertOperationsOnly(req.user, 'Gamification rule update');
     return this.gamification.upsertRule(decodeURIComponent(id), body ?? {});
   }
 
@@ -36,10 +59,13 @@ export class GamificationController {
   }
 
   @Put('profiles/:userId')
+  @UseGuards(JwtAuthGuard)
   upsertProfile(
+    @Req() req: { user: JwtUserPayload },
     @Param('userId') userId: string,
     @Body() body: Record<string, unknown>,
   ) {
+    assertOperationsOnly(req.user, 'Gamification profile update');
     return this.gamification.upsertProfile(
       decodeURIComponent(userId),
       body ?? {},

@@ -21,6 +21,11 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
+function buildDefaultAvatarUrl(nameOrEmail: string): string {
+  const seed = encodeURIComponent((nameOrEmail || 'User').trim());
+  return `https://ui-avatars.com/api/?name=${seed}&background=0f172a&color=fff&bold=true`;
+}
+
 /** Decoded JWT payload (workspace session). */
 export interface JwtUserPayload {
   sub: string;
@@ -340,13 +345,11 @@ export class AuthService {
     const brandRaw =
       process.env.EMAIL_BRAND_NAME?.trim() || 'Maxwell Leadership Enterprise';
     const brandEsc = escapeHtml(brandRaw);
-    const logoUrl =
-      process.env.EMAIL_LOGO_URL?.trim() ||
-      'https://avatars.githubusercontent.com/u/265919671?s=200&v=4';
     const fe = this.getFrontendBaseUrl();
     const siteUrl = (
       process.env.EMAIL_PUBLIC_BASE_URL?.trim() || fe
     ).replace(/\/+$/, '');
+    const logoUrl = process.env.EMAIL_LOGO_URL?.trim() || `${siteUrl}/mxwel.png`;
     const emailSubject =
       process.env.EMAIL_SUBJECT?.trim() ||
       'Account access verification — Maxwell Leadership Enterprise';
@@ -457,18 +460,24 @@ export class AuthService {
     });
 
     if (!user) {
+      const defaultName = normalized.split('@')[0];
       user = await this.prisma.user.create({
         data: {
           email: normalized,
-          name: normalized.split('@')[0],
+          name: defaultName,
+          image: buildDefaultAvatarUrl(defaultName),
           emailVerified: new Date(),
           appRole: USER_ROLE.MEMBER,
         },
       });
     } else {
+      const fallbackName = user.name?.trim() || normalized.split('@')[0];
       user = await this.prisma.user.update({
         where: { id: user.id },
-        data: { emailVerified: new Date() },
+        data: {
+          emailVerified: new Date(),
+          image: user.image ?? buildDefaultAvatarUrl(fallbackName),
+        },
       });
     }
 

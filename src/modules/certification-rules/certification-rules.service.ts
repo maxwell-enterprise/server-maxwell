@@ -95,6 +95,7 @@ export class CertificationRulesService {
       logic: dto.logic,
       requiredTags: dto.requiredTags,
       minCountValue: dto.minCountValue,
+      tagWeights: dto.tagWeights,
       badgeUrl: dto.badgeUrl,
       isActive: dto.isActive,
       validityPeriodMonths: dto.validityPeriodMonths,
@@ -136,6 +137,7 @@ export class CertificationRulesService {
       logic: dto.logic ?? existing.logic,
       requiredTags: dto.requiredTags ?? existing.requiredTags,
       minCountValue: dto.minCountValue ?? existing.minCountValue,
+      tagWeights: dto.tagWeights ?? existing.tagWeights,
       badgeUrl: dto.badgeUrl !== undefined ? dto.badgeUrl : existing.badgeUrl,
       isActive: dto.isActive ?? existing.isActive,
       validityPeriodMonths:

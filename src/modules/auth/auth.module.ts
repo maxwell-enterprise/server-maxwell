@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { MembersModule } from '../members/members.module';
 import { WorkspaceIdentityModule } from '../workspace-identity/workspace-identity.module';
@@ -10,7 +10,7 @@ import { WorkspaceMeController } from './workspace-me.controller';
 
 @Module({
   imports: [
-    MembersModule,
+    forwardRef(() => MembersModule),
     WorkspaceIdentityModule,
     JwtModule.register({
       secret:

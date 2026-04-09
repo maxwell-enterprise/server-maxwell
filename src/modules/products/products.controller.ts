@@ -8,7 +8,9 @@ import {
   Patch,
   Post,
   Query,
+  Req,
   UploadedFile,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -22,6 +24,9 @@ import {
   UpdateProductDtoSchema,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtUserPayload } from '../auth/auth.service';
+import { assertOperationsOnly } from '../../common/security/access-policy';
 
 type UploadedImageFile = {
   mimetype: string;
@@ -34,16 +39,24 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @Post()
+  @UseGuards(JwtAuthGuard)
   create(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(CreateProductDtoSchema))
     dto: CreateProductDto,
   ) {
+    assertOperationsOnly(req.user, 'Product creation');
     return this.productsService.create(dto);
   }
 
   @Post('upload-image')
+  @UseGuards(JwtAuthGuard)
   @UseInterceptors(FileInterceptor('file'))
-  uploadImage(@UploadedFile() file: UploadedImageFile | undefined) {
+  uploadImage(
+    @Req() req: { user: JwtUserPayload },
+    @UploadedFile() file: UploadedImageFile | undefined,
+  ) {
+    assertOperationsOnly(req.user, 'Product image upload');
     if (!file) {
       throw new BadRequestException('Image file is required');
     }
@@ -64,16 +77,24 @@ export class ProductsController {
   }
 
   @Patch(':identifier')
+  @UseGuards(JwtAuthGuard)
   update(
+    @Req() req: { user: JwtUserPayload },
     @Param('identifier') identifier: string,
     @Body(new ZodValidationPipe(UpdateProductDtoSchema))
     dto: UpdateProductDto,
   ) {
+    assertOperationsOnly(req.user, 'Product update');
     return this.productsService.update(identifier, dto);
   }
 
   @Delete(':identifier')
-  remove(@Param('identifier') identifier: string) {
+  @UseGuards(JwtAuthGuard)
+  remove(
+    @Req() req: { user: JwtUserPayload },
+    @Param('identifier') identifier: string,
+  ) {
+    assertOperationsOnly(req.user, 'Product deletion');
     return this.productsService.remove(identifier);
   }
 }

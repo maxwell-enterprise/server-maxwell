@@ -1,5 +1,15 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { CommunicationEmailService } from './communication-email.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtUserPayload } from '../auth/auth.service';
+import { assertMarketingOnly } from '../../common/security/access-policy';
 
 @Controller('communication/email')
 export class CommunicationEmailController {
@@ -16,7 +26,12 @@ export class CommunicationEmailController {
   }
 
   @Post('campaigns')
-  createCampaign(@Body() body: Record<string, unknown>) {
+  @UseGuards(JwtAuthGuard)
+  createCampaign(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: Record<string, unknown>,
+  ) {
+    assertMarketingOnly(req.user, 'Email campaign creation');
     return this.email.createCampaign(body ?? {});
   }
 
@@ -26,7 +41,12 @@ export class CommunicationEmailController {
   }
 
   @Post('logs')
-  createLog(@Body() body: Record<string, unknown>) {
+  @UseGuards(JwtAuthGuard)
+  createLog(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: Record<string, unknown>,
+  ) {
+    assertMarketingOnly(req.user, 'Email log creation');
     return this.email.createLog(body ?? {});
   }
 }

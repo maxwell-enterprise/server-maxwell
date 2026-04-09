@@ -6,6 +6,8 @@ import {
   Patch,
   Post,
   Query,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import {
@@ -21,6 +23,9 @@ import {
   UpdateInvitationDtoSchema,
 } from './dto';
 import { InvitationsService } from './invitations.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import type { JwtUserPayload } from '../auth/auth.service';
+import { assertSalesOnly } from '../../common/security/access-policy';
 
 @Controller('invitations')
 export class InvitationsController {
@@ -45,10 +50,13 @@ export class InvitationsController {
   }
 
   @Post('bulk')
+  @UseGuards(JwtAuthGuard)
   createMany(
+    @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(CreateInvitationsBatchDtoSchema))
     dto: CreateInvitationsBatchDto,
   ) {
+    assertSalesOnly(req.user, 'Bulk invitation creation');
     return this.invitationsService.createMany(dto.invitations);
   }
 
@@ -71,11 +79,14 @@ export class InvitationsController {
   }
 
   @Patch(':identifier')
+  @UseGuards(JwtAuthGuard)
   update(
+    @Req() req: { user: JwtUserPayload },
     @Param('identifier') identifier: string,
     @Body(new ZodValidationPipe(UpdateInvitationDtoSchema))
     dto: UpdateInvitationDto,
   ) {
+    assertSalesOnly(req.user, 'Invitation update');
     return this.invitationsService.update(identifier, dto);
   }
 }

@@ -13,7 +13,6 @@ import {
   Headers,
   Req,
   UseGuards,
-  ForbiddenException,
 } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import {
@@ -34,13 +33,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import { RateLimit } from '../../common/security/rate-limit.decorator';
-
-function assertFinanceOrSuperAdmin(user: JwtUserPayload): void {
-  const role = String(user?.role ?? '').trim();
-  if (role !== 'Finance' && role !== 'Super Admin') {
-    throw new ForbiddenException('Finance or Super Admin role is required');
-  }
-}
+import { assertFinanceControllerOnly } from '../../common/security/access-policy';
 
 @Controller('transactions')
 export class TransactionsController {
@@ -123,7 +116,7 @@ export class TransactionsController {
     @Query(new ZodValidationPipe(TransactionQueryDtoSchema))
     query: TransactionQueryDto,
   ) {
-    assertFinanceOrSuperAdmin(req.user);
+    assertFinanceControllerOnly(req.user, 'Transaction listing');
     return this.transactionsService.findAll(
       String(req.user.sub),
       String(req.user.role),
@@ -158,7 +151,7 @@ export class TransactionsController {
     @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(CreateRefundDtoSchema)) dto: CreateRefundDto,
   ) {
-    assertFinanceOrSuperAdmin(req.user);
+    assertFinanceControllerOnly(req.user, 'Refund creation');
     return this.transactionsService.createRefund(dto, String(req.user.sub));
   }
 
@@ -172,7 +165,7 @@ export class TransactionsController {
     @Req() req: { user: JwtUserPayload },
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    assertFinanceOrSuperAdmin(req.user);
+    assertFinanceControllerOnly(req.user, 'Refund approval');
     const approvedBy = String(req.user.sub);
     return this.transactionsService.approveRefund(id, approvedBy);
   }
@@ -187,7 +180,7 @@ export class TransactionsController {
     @Req() req: { user: JwtUserPayload },
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    assertFinanceOrSuperAdmin(req.user);
+    assertFinanceControllerOnly(req.user, 'Refund processing');
     return this.transactionsService.processRefund(id, String(req.user.sub));
   }
 
@@ -202,7 +195,7 @@ export class TransactionsController {
     @Query('startDate') startDate: string,
     @Query('endDate') endDate: string,
   ) {
-    assertFinanceOrSuperAdmin(req.user);
+    assertFinanceControllerOnly(req.user, 'Sales summary report');
     return this.transactionsService.getSalesSummary(
       String(req.user.sub),
       String(req.user.role),
