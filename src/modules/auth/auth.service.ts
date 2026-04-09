@@ -53,7 +53,16 @@ export class AuthService {
    */
   getAuthBackendOrigin(): string {
     const explicit = process.env.AUTH_BACKEND_ORIGIN?.trim();
-    if (explicit) return explicit.replace(/\/+$/, '');
+    if (explicit) {
+      // Defensive: allow operators to paste full URLs (with path) and still behave correctly.
+      // We only need the origin for building /fe/auth/* links.
+      try {
+        const u = new URL(explicit);
+        return `${u.protocol}//${u.host}`;
+      } catch {
+        return explicit.replace(/\/+$/, '');
+      }
+    }
     return this.getFrontendBaseUrl();
   }
 
@@ -397,12 +406,6 @@ export class AuthService {
                 </table>
                 <p style="margin:0 0 18px 0;font-size:12px;color:#475569;text-align:center;">
                   This link is valid for <strong>${ttlMinutes} minutes</strong>.
-                </p>
-                <p style="margin:0;font-size:12px;color:#64748b;">
-                  If the button doesn’t work, copy and paste this URL into your browser:
-                </p>
-                <p style="margin:8px 0 0 0;font-size:12px;word-break:break-all;">
-                  <a href="${verifyUrl}" style="color:#021A54;text-decoration:underline;">${verifyUrl}</a>
                 </p>
               </td>
             </tr>
