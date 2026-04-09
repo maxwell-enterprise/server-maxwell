@@ -355,4 +355,198 @@ export class WorkspaceIdentityService {
     });
     return result.count > 0;
   }
+
+  // --- Voucher persistence (per-user; stored in User.abacContext) ---
+
+  async getActiveVoucherForUser(userId: string): Promise<{
+    code: string;
+    productId?: string;
+    claimedAt: string;
+  } | null> {
+    const row = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { abacContext: true },
+    });
+    const ctx = (row?.abacContext ?? null) as any;
+    const v = ctx?.commerceVoucher;
+    if (!v || typeof v !== 'object') return null;
+    if (v.status && String(v.status).toUpperCase() !== 'ACTIVE') return null;
+    const code = typeof v.code === 'string' ? v.code.trim() : '';
+    if (!code) return null;
+    return {
+      code,
+      productId: typeof v.productId === 'string' ? v.productId : undefined,
+      claimedAt:
+        typeof v.claimedAt === 'string' && v.claimedAt
+          ? v.claimedAt
+          : new Date().toISOString(),
+    };
+  }
+
+  async claimVoucherForUser(params: {
+    userId: string;
+    code: string;
+    productId?: string;
+  }): Promise<{ ok: true; voucher: { code: string; productId?: string } }> {
+    const code = params.code.trim().toUpperCase();
+    if (!code) {
+      throw new BadRequestException('voucher code required');
+    }
+
+    const row = await this.prisma.user.findUnique({
+      where: { id: params.userId },
+      select: { abacContext: true, email: true },
+    });
+    if (!row) throw new NotFoundException('User not found');
+    const current = (row.abacContext ?? null) as any;
+    const next = {
+      ...(typeof current === 'object' && current ? current : {}),
+      commerceVoucher: {
+        code,
+        productId: params.productId?.trim() || undefined,
+        status: 'ACTIVE',
+        claimedAt: new Date().toISOString(),
+      },
+    };
+
+    await this.prisma.user.update({
+      where: { id: params.userId },
+      data: { abacContext: next },
+    });
+
+    await this.appendSecurityAudit(params.userId, 'VOUCHER_CLAIMED', {
+      code,
+      productId: params.productId ?? null,
+    });
+
+    return { ok: true, voucher: { code, productId: params.productId } };
+  }
+
+  async revokeVoucherAsSuperAdmin(params: {
+    actorUserId: string;
+    actorRole: string;
+    targetEmail: string;
+  }): Promise<{ ok: true }> {
+    if (parseAppRoleString(params.actorRole) !== USER_ROLE.SUPER_ADMIN) {
+      throw new ForbiddenException();
+    }
+    const email = params.targetEmail.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { id: true, abacContext: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    const current = (user.abacContext ?? null) as any;
+    const next =
+      typeof current === 'object' && current
+        ? { ...current, commerceVoucher: { ...(current.commerceVoucher ?? {}), status: 'REVOKED', revokedAt: new Date().toISOString() } }
+        : { commerceVoucher: { status: 'REVOKED', revokedAt: new Date().toISOString() } };
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { abacContext: next },
+    });
+    await this.appendSecurityAudit(params.actorUserId, 'VOUCHER_REVOKED', {
+      targetEmail: email,
+      targetUserId: user.id,
+    });
+    return { ok: true };
+  }
+
+  async updateMyProfile(
+    userId: string,
+    input: { fullName?: string; email?: string; image?: string | null },
+  ): Promise<{
+    ok: true;
+    profile: { id: string; fullName: string; email: string; avatarUrl: string | null };
+  }> {
+    const nextName = input.fullName?.trim();
+    const nextEmail = input.email?.trim().toLowerCase();
+    const nextImageRaw = input.image;
+
+    if (nextName !== undefined && nextName.length < 2) {
+      throw new BadRequestException('Full name must be at least 2 characters');
+    }
+    if (nextEmail !== undefined && !nextEmail.includes('@')) {
+      throw new BadRequestException('Invalid email address');
+    }
+
+    let nextImage: string | null | undefined = undefined;
+    if (nextImageRaw !== undefined) {
+      const normalized = typeof nextImageRaw === 'string' ? nextImageRaw.trim() : '';
+      if (!normalized) {
+        nextImage = null;
+      } else {
+        const isHttp = /^https?:\/\//i.test(normalized);
+        const isDataImage = /^data:image\/(png|jpe?g|webp);base64,/i.test(normalized);
+        if (!isHttp && !isDataImage) {
+          throw new BadRequestException('Image must be a valid URL or image file payload');
+        }
+        if (isDataImage && normalized.length > 1_500_000) {
+          throw new BadRequestException('Image file is too large');
+        }
+        nextImage = normalized;
+      }
+    }
+
+    try {
+      const row = await this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          ...(nextName !== undefined ? { name: nextName } : {}),
+          ...(nextEmail !== undefined ? { email: nextEmail } : {}),
+          ...(nextImage !== undefined ? { image: nextImage } : {}),
+        },
+        select: { id: true, email: true, name: true, image: true },
+      });
+
+      await this.appendSecurityAudit(userId, 'SELF_PROFILE_UPDATED', {
+        changed: {
+          fullName: nextName !== undefined,
+          email: nextEmail !== undefined,
+          image: nextImage !== undefined,
+        },
+      });
+
+      return {
+        ok: true,
+        profile: {
+          id: row.id,
+          fullName: row.name ?? (row.email?.split('@')[0] ?? 'User'),
+          email: row.email ?? '',
+          avatarUrl: row.image,
+        },
+      };
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new BadRequestException('Email already in use');
+      }
+      throw error;
+    }
+  }
+
+  async deleteMyAccount(userId: string, actorRole: string): Promise<{ ok: true }> {
+    if (parseAppRoleString(actorRole) === USER_ROLE.SUPER_ADMIN) {
+      throw new ForbiddenException('Super Admin account cannot be deleted');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, appRole: true },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    await this.appendSecurityAudit(userId, 'SELF_ACCOUNT_DELETE_REQUESTED', {
+      targetUserId: user.id,
+      targetEmail: user.email ?? null,
+      role: user.appRole,
+    });
+
+    await this.prisma.user.delete({ where: { id: userId } });
+    return { ok: true };
+  }
 }

@@ -48,4 +48,16 @@ export class AdminWorkspaceController {
     });
     return { ok: true };
   }
+
+  @Post('vouchers/revoke')
+  async revokeVoucher(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: { email?: string },
+  ) {
+    return this.workspace.revokeVoucherAsSuperAdmin({
+      actorUserId: req.user.sub,
+      actorRole: req.user.role,
+      targetEmail: String(body?.email ?? ''),
+    });
+  }
 }
