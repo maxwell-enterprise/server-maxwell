@@ -103,7 +103,10 @@ export class StoreSupportController {
     @Body() body: Record<string, unknown>,
   ) {
     this.assertOps(req, 'Inventory update');
-    return this.storeSupport.upsertInventory(decodeURIComponent(sku), body ?? {});
+    return this.storeSupport.upsertInventory(
+      decodeURIComponent(sku),
+      body ?? {},
+    );
   }
 
   @Get('inventory-transactions')
@@ -137,7 +140,10 @@ export class StoreSupportController {
     @Body() body: Record<string, unknown>,
   ) {
     this.assertOps(req, 'Ops template update');
-    return this.storeSupport.upsertOpsTemplate(decodeURIComponent(id), body ?? {});
+    return this.storeSupport.upsertOpsTemplate(
+      decodeURIComponent(id),
+      body ?? {},
+    );
   }
 
   @Delete('ops-templates/:id')
@@ -168,7 +174,10 @@ export class StoreSupportController {
     @Body() body: Record<string, unknown>,
   ) {
     this.assertOps(req, 'Ops checklist update');
-    return this.storeSupport.upsertOpsChecklist(decodeURIComponent(id), body ?? {});
+    return this.storeSupport.upsertOpsChecklist(
+      decodeURIComponent(id),
+      body ?? {},
+    );
   }
 
   @Get('finance-forecast')
@@ -303,7 +312,10 @@ export class StoreSupportController {
     @Body() body: Record<string, unknown>,
   ) {
     this.assertOps(req, 'Support ticket update');
-    await this.storeSupport.updateSupportTicket(decodeURIComponent(id), body ?? {});
+    await this.storeSupport.updateSupportTicket(
+      decodeURIComponent(id),
+      body ?? {},
+    );
     return { ok: true };
   }
 

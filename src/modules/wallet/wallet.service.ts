@@ -27,6 +27,7 @@ import {
   WalletHistoryQueryDto,
 } from './dto';
 import { DbService } from '../../common/db.service';
+import { MembersService } from '../members/members.service';
 
 type SqlExecutor = Pick<DbService, 'query'> | Pick<PoolClient, 'query'>;
 
@@ -67,7 +68,10 @@ interface TeamMemberRow extends CorporateTeamMemberContract {
 
 @Injectable()
 export class WalletService {
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly members: MembersService,
+  ) {}
   // ==========================================================================
   // WALLET ITEMS
   // ==========================================================================
@@ -375,6 +379,10 @@ export class WalletService {
     );
 
     const { internalId, ...walletItem } = created;
+    void this.members.promoteLifecycleAtLeastByMemberId(
+      data.userId,
+      'PARTICIPANT',
+    );
     return walletItem;
   }
 

@@ -4,9 +4,10 @@ import { StoreSupportController } from './store-support.controller';
 import { StoreSupportService } from './store-support.service';
 import { AuthModule } from '../auth/auth.module';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { MembersModule } from '../members/members.module';
 
 @Module({
-  imports: [DatabaseModule, AuthModule],
+  imports: [DatabaseModule, AuthModule, MembersModule],
   controllers: [StoreSupportController],
   providers: [StoreSupportService, JwtAuthGuard],
 })

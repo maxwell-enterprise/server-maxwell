@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import { DatabaseService } from '../../common/database/database.service';
+import { MembersService } from '../members/members.service';
 
 function parseJson<T>(value: unknown, fallback: T): T {
   if (value == null) return fallback;
@@ -26,8 +27,8 @@ function isUuid(s: string): boolean {
 function uuidFromFeId(kind: 'tpl' | 'chk', feId: string): string {
   const hash = createHash('sha256').update(`${kind}:${feId}`).digest();
   const buf = Buffer.from(hash.subarray(0, 16));
-  buf[6] = (buf[6]! & 0x0f) | 0x40;
-  buf[8] = (buf[8]! & 0x3f) | 0x80;
+  buf[6] = (buf[6] & 0x0f) | 0x40;
+  buf[8] = (buf[8] & 0x3f) | 0x80;
   const h = buf.toString('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
@@ -46,7 +47,10 @@ function toIso(v: unknown): string {
 /** Ledger + store support: pricing_rules, discounts, inventory, transactions (finance ledger). */
 @Injectable()
 export class StoreSupportService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly members: MembersService,
+  ) {}
 
   // --- pricing_rules: full PricingRule JSON in conditions + feRuleId ---
 
@@ -100,7 +104,10 @@ export class StoreSupportService {
     };
   }
 
-  async upsertPricingRule(feId: string, body: Record<string, unknown>): Promise<void> {
+  async upsertPricingRule(
+    feId: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const rule: Record<string, unknown> = { ...body, id: feId };
     const name = String(rule.name ?? 'Rule');
     const description = String(rule.description ?? '');
@@ -192,20 +199,30 @@ export class StoreSupportService {
         row.maxBudgetLimit != null ? Number(row.maxBudgetLimit) : undefined,
       currentBudgetBurned: Number(row.currentBudgetBurned ?? 0),
       isFeatured: Boolean(row.isFeatured),
-      conditions: row.conditions != null ? parseJson(row.conditions, undefined) : undefined,
+      conditions:
+        row.conditions != null
+          ? parseJson(row.conditions, undefined)
+          : undefined,
       minQty: row.minQty != null ? Number(row.minQty) : undefined,
     };
   }
 
-  async upsertDiscount(feId: string, body: Record<string, unknown>): Promise<void> {
+  async upsertDiscount(
+    feId: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const code = String(body.code ?? feId);
     const title = String(body.title ?? code);
     const description = String(body.description ?? '');
     const type = String(body.type ?? 'PERCENTAGE');
     const value = Number(body.value ?? 0);
     const scope = String(body.scope ?? 'GLOBAL');
-    const targetIds = Array.isArray(body.targetIds) ? (body.targetIds as string[]) : [];
-    const validFrom = body.validFrom ? String(body.validFrom) : new Date().toISOString();
+    const targetIds = Array.isArray(body.targetIds)
+      ? (body.targetIds as string[])
+      : [];
+    const validFrom = body.validFrom
+      ? String(body.validFrom)
+      : new Date().toISOString();
     const validUntil = body.validUntil
       ? String(body.validUntil)
       : new Date(Date.now() + 864e14).toISOString();
@@ -296,7 +313,10 @@ export class StoreSupportService {
     }));
   }
 
-  async upsertInventory(sku: string, body: Record<string, unknown>): Promise<void> {
+  async upsertInventory(
+    sku: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const name = String(body.name ?? sku);
     const category = String(body.category ?? 'General');
     const stock = Number(body.stock ?? 0);
@@ -338,7 +358,9 @@ export class StoreSupportService {
     }));
   }
 
-  async createInventoryTransaction(body: Record<string, unknown>): Promise<{ id: string }> {
+  async createInventoryTransaction(
+    body: Record<string, unknown>,
+  ): Promise<{ id: string }> {
     const rawId = body.id != null ? String(body.id) : null;
     const pk = rawId && isUuid(rawId) ? rawId : randomUUID();
     const feId = rawId && !isUuid(rawId) ? rawId : null;
@@ -433,9 +455,13 @@ export class StoreSupportService {
     };
   }
 
-  async createLedgerTransaction(body: Record<string, unknown>): Promise<{ id: string }> {
+  async createLedgerTransaction(
+    body: Record<string, unknown>,
+  ): Promise<{ id: string }> {
     const feId = body.id != null ? String(body.id) : null;
-    const dateRaw = body.date ? String(body.date) : new Date().toISOString().slice(0, 10);
+    const dateRaw = body.date
+      ? String(body.date)
+      : new Date().toISOString().slice(0, 10);
     const type = String(body.type ?? 'Expense');
     const description = String(body.description ?? '');
     const amount = Number(body.amount ?? 0);
@@ -525,14 +551,19 @@ export class StoreSupportService {
 
   /** Mark gateway payment as fully received (Finance AR settlement). */
   async settlePaymentTransaction(id: string): Promise<void> {
-    const res = await this.db.query(
+    const res = await this.db.query<{ customerEmail: string | null }>(
       `UPDATE payment_transactions
        SET status = 'PAID', "paidAmount" = "totalAmount", "balanceDue" = 0
-       WHERE id = $1::uuid`,
+       WHERE id = $1::uuid
+       RETURNING "customerEmail"`,
       [id],
     );
     if ((res.rowCount ?? 0) === 0) {
       throw new NotFoundException(`Payment transaction not found: ${id}`);
+    }
+    const email = res.rows[0]?.customerEmail?.trim();
+    if (email) {
+      void this.members.promoteLifecycleAtLeastByEmail(email, 'MEMBER');
     }
   }
 
@@ -884,7 +915,9 @@ export class StoreSupportService {
 
   // --- support_tickets (FE: GET/POST/PATCH /fe/store/support-tickets) ---
 
-  private rowToSupportTicket(row: Record<string, unknown>): Record<string, unknown> {
+  private rowToSupportTicket(
+    row: Record<string, unknown>,
+  ): Record<string, unknown> {
     return {
       id: String(row.id),
       memberId: String(row.memberId ?? row.memberid),
@@ -924,7 +957,15 @@ export class StoreSupportService {
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
       RETURNING id::text AS id, "memberId", "memberName", subject, description, priority, status,
                 "assignedRole", "createdAt", "updatedAt"`,
-      [memberId, memberName, subject, description, priority, status, assignedRole],
+      [
+        memberId,
+        memberName,
+        subject,
+        description,
+        priority,
+        status,
+        assignedRole,
+      ],
     );
     const row = result.rows[0];
     if (!row) {
@@ -933,15 +974,21 @@ export class StoreSupportService {
     return this.rowToSupportTicket(row);
   }
 
-  async updateSupportTicket(id: string, body: Record<string, unknown>): Promise<void> {
+  async updateSupportTicket(
+    id: string,
+    body: Record<string, unknown>,
+  ): Promise<void> {
     const pairs: Array<[string, unknown]> = [];
     if (body.memberId !== undefined) pairs.push(['memberId', body.memberId]);
-    if (body.memberName !== undefined) pairs.push(['memberName', body.memberName]);
+    if (body.memberName !== undefined)
+      pairs.push(['memberName', body.memberName]);
     if (body.subject !== undefined) pairs.push(['subject', body.subject]);
-    if (body.description !== undefined) pairs.push(['description', body.description]);
+    if (body.description !== undefined)
+      pairs.push(['description', body.description]);
     if (body.priority !== undefined) pairs.push(['priority', body.priority]);
     if (body.status !== undefined) pairs.push(['status', body.status]);
-    if (body.assignedRole !== undefined) pairs.push(['assignedRole', body.assignedRole]);
+    if (body.assignedRole !== undefined)
+      pairs.push(['assignedRole', body.assignedRole]);
 
     if (pairs.length === 0) return;
 

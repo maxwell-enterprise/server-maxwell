@@ -45,10 +45,7 @@ export class CommunicationWhatsappController {
 
   @Delete('queue/:id')
   @UseGuards(JwtAuthGuard)
-  deleteTask(
-    @Req() req: { user: JwtUserPayload },
-    @Param('id') id: string,
-  ) {
+  deleteTask(@Req() req: { user: JwtUserPayload }, @Param('id') id: string) {
     assertMarketingOnly(req.user, 'WhatsApp queue deletion');
     return this.wa.deleteTask(decodeURIComponent(id));
   }

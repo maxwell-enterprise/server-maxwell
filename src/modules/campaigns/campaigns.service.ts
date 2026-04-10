@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import { DatabaseService } from '../../common/database/database.service';
+import { CampaignMetricsBroadcastService } from './campaign-metrics-broadcast.service';
 
 const SOURCE_CODE_REGEX = /^[a-z0-9_]{2,120}$/;
 
@@ -35,25 +36,18 @@ function rowToCampaign(row: Record<string, unknown>) {
   };
 }
 
-function toPgErrorCode(error: unknown): string | undefined {
-  if (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    typeof (error as { code?: unknown }).code === 'string'
-  ) {
-    return (error as { code: string }).code;
-  }
-  return undefined;
-}
-
 @Injectable()
 export class CampaignsService {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly metricsBroadcast: CampaignMetricsBroadcastService,
+  ) {}
   private static readonly CLICK_DEDUPE_WINDOW_SECONDS = 20;
 
   private normalizeSourceCode(input: unknown): string {
-    const normalized = String(input ?? '').trim().toLowerCase();
+    const normalized = String(input ?? '')
+      .trim()
+      .toLowerCase();
     if (!SOURCE_CODE_REGEX.test(normalized)) {
       throw new BadRequestException(
         'sourceCode must be lowercase alphanumeric with underscore (2-120 chars)',
@@ -81,7 +75,9 @@ export class CampaignsService {
     }
     const category = String(body.category ?? 'OTHER');
     const generatedLink = String(body.generatedLink ?? '/');
-    const createdAt = body.createdAt ? new Date(String(body.createdAt)) : new Date();
+    const createdAt = body.createdAt
+      ? new Date(String(body.createdAt))
+      : new Date();
 
     const result = await this.db.query<Record<string, unknown>>(
       `INSERT INTO campaigns (
@@ -162,6 +158,15 @@ export class CampaignsService {
     return rowToCampaign(row);
   }
 
+  async remove(id: string): Promise<void> {
+    const result = await this.db.query(`DELETE FROM campaigns WHERE id = $1`, [
+      id,
+    ]);
+    if (!result.rowCount) {
+      throw new NotFoundException('Campaign not found');
+    }
+  }
+
   private buildClickFingerprint(
     sourceCode: string,
     ctx: { ip?: string; userAgent?: string },
@@ -179,23 +184,24 @@ export class CampaignsService {
     metrics: { clicks: number; conversions: number; revenue: number };
   }> {
     const normalizedSourceCode = this.normalizeSourceCode(sourceCode);
-    const campaignLookup = await this.db.query<Record<string, unknown>>(
-      `SELECT id, clicks, conversions, revenue
-       FROM campaigns
-       WHERE "sourceCode" = $1`,
-      [normalizedSourceCode],
-    );
-    const campaign = campaignLookup.rows[0];
-    if (!campaign) {
-      throw new NotFoundException('Campaign source not found');
-    }
 
-    const campaignId = String(campaign.id);
-    const fingerprint = this.buildClickFingerprint(normalizedSourceCode, ctx);
-    let shouldIncrement = true;
+    return await this.db.withTransaction(async (client) => {
+      const campaignLookup = await client.query<Record<string, unknown>>(
+        `SELECT id, clicks, conversions, revenue
+         FROM campaigns
+         WHERE "sourceCode" = $1`,
+        [normalizedSourceCode],
+      );
+      const campaign = campaignLookup.rows[0];
+      if (!campaign) {
+        throw new NotFoundException('Campaign source not found');
+      }
 
-    try {
-      const exists = await this.db.query<{ id: string }>(
+      const campaignId = String(campaign.id);
+      const fingerprint = this.buildClickFingerprint(normalizedSourceCode, ctx);
+      let shouldIncrement = true;
+
+      const exists = await client.query<{ id: string }>(
         `SELECT id
          FROM campaign_click_events
          WHERE campaign_id = $1
@@ -205,56 +211,69 @@ export class CampaignsService {
         [
           campaignId,
           fingerprint,
-          CampaignsService.CLICK_DEDUPE_WINDOW_SECONDS,
+          String(CampaignsService.CLICK_DEDUPE_WINDOW_SECONDS),
         ],
       );
       if (exists.rowCount && exists.rowCount > 0) {
         shouldIncrement = false;
       } else {
-        await this.db.query(
+        await client.query(
           `INSERT INTO campaign_click_events (
             id,
             campaign_id,
             source_code,
             click_fingerprint,
-            created_at
-          ) VALUES ($1, $2, $3, $4, NOW())`,
-          [randomUUID(), campaignId, normalizedSourceCode, fingerprint],
+            created_at,
+            ip,
+            user_agent
+          ) VALUES ($1, $2, $3, $4, NOW(), $5, $6)`,
+          [
+            randomUUID(),
+            campaignId,
+            normalizedSourceCode,
+            fingerprint,
+            ctx.ip ?? null,
+            ctx.userAgent ?? null,
+          ],
         );
       }
-    } catch (error) {
-      // Backward-compatible fallback if migration isn't applied yet.
-      if (toPgErrorCode(error) !== '42P01') {
-        throw error;
-      }
-      shouldIncrement = true;
-    }
 
-    const result = shouldIncrement
-      ? await this.db.query<Record<string, unknown>>(
-          `UPDATE campaigns
-           SET clicks = clicks + 1
-           WHERE id = $1
-           RETURNING clicks, conversions, revenue`,
-          [campaignId],
-        )
-      : await this.db.query<Record<string, unknown>>(
-          `SELECT clicks, conversions, revenue
-           FROM campaigns
-           WHERE id = $1`,
-          [campaignId],
-        );
+      const result = shouldIncrement
+        ? await client.query<Record<string, unknown>>(
+            `UPDATE campaigns
+             SET clicks = clicks + 1
+             WHERE id = $1
+             RETURNING clicks, conversions, revenue`,
+            [campaignId],
+          )
+        : await client.query<Record<string, unknown>>(
+            `SELECT clicks, conversions, revenue
+             FROM campaigns
+             WHERE id = $1`,
+            [campaignId],
+          );
 
-    const latest = result.rows[0] ?? campaign;
-    return {
-      success: true,
-      deduped: !shouldIncrement,
-      metrics: {
+      const latest = result.rows[0] ?? campaign;
+      const metrics = {
         clicks: Number(latest.clicks ?? 0),
         conversions: Number(latest.conversions ?? 0),
         revenue: Number(latest.revenue ?? 0),
-      },
-    };
+      };
+
+      if (shouldIncrement) {
+        this.metricsBroadcast.scheduleMetricsBroadcast({
+          campaignId,
+          sourceCode: normalizedSourceCode,
+          ...metrics,
+        });
+      }
+
+      return {
+        success: true,
+        deduped: !shouldIncrement,
+        metrics,
+      };
+    });
   }
 
   async trackConversion(
@@ -272,26 +291,27 @@ export class CampaignsService {
       `UPDATE campaigns
        SET conversions = conversions + 1,
            revenue = revenue + $2
-       WHERE "sourceCode" = $1`,
+       WHERE "sourceCode" = $1
+       RETURNING id, "sourceCode", clicks, conversions, revenue`,
       [normalizedSourceCode, amount],
     );
     if (r.rowCount === 0) {
       throw new NotFoundException('Campaign source not found');
     }
-    const latest = await this.db.query<Record<string, unknown>>(
-      `SELECT clicks, conversions, revenue
-       FROM campaigns
-       WHERE "sourceCode" = $1`,
-      [normalizedSourceCode],
-    );
-    const row = latest.rows[0];
+    const row = r.rows[0];
+    const metrics = {
+      clicks: Number(row?.clicks ?? 0),
+      conversions: Number(row?.conversions ?? 0),
+      revenue: Number(row?.revenue ?? 0),
+    };
+    this.metricsBroadcast.scheduleMetricsBroadcast({
+      campaignId: String(row?.id ?? ''),
+      sourceCode: String(row?.sourceCode ?? normalizedSourceCode),
+      ...metrics,
+    });
     return {
       success: true,
-      metrics: {
-        clicks: Number(row?.clicks ?? 0),
-        conversions: Number(row?.conversions ?? 0),
-        revenue: Number(row?.revenue ?? 0),
-      },
+      metrics,
     };
   }
 

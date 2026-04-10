@@ -44,11 +44,35 @@ export function assertOperationsOnly(
   assertRole(user, [USER_ROLE.OPERATIONS], actionLabel);
 }
 
+/**
+ * Store catalog (products): matches maxwell-refactor `Storefront` `isStoreAdmin`
+ * (Operations, Marketing, Super Admin). Narrower than `assertOperationsOnly` so
+ * Marketing can manage catalog UI without 403 on create/upload.
+ */
+export function assertStoreCatalogManager(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRole(
+    user,
+    [USER_ROLE.OPERATIONS, USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    actionLabel,
+  );
+}
+
 export function assertMarketingOnly(
   user: JwtUserPayload,
   actionLabel = 'Marketing configuration',
 ): void {
   assertRole(user, [USER_ROLE.MARKETING], actionLabel);
+}
+
+/** Marketing-owned surfaces; Super Admin may act for ops / break-glass. */
+export function assertMarketingOrSuperAdmin(
+  user: JwtUserPayload,
+  actionLabel = 'Marketing configuration',
+): void {
+  assertRole(user, [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN], actionLabel);
 }
 
 export function assertSalesOnly(

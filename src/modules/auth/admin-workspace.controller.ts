@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Patch,
   Post,
   Req,
@@ -58,6 +59,37 @@ export class AdminWorkspaceController {
       actorUserId: req.user.sub,
       actorRole: req.user.role,
       targetEmail: String(body?.email ?? ''),
+    });
+  }
+
+  @Get('account-deletion-requests')
+  listAccountDeletionRequests(@Req() req: { user: JwtUserPayload }) {
+    return this.workspace.listPendingAccountDeletionRequests(req.user.role);
+  }
+
+  @Post('account-deletion-requests/:id/approve')
+  approveAccountDeletion(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+  ) {
+    return this.workspace.approveAccountDeletionRequest({
+      actorUserId: req.user.sub,
+      actorRole: req.user.role,
+      requestId: id,
+    });
+  }
+
+  @Post('account-deletion-requests/:id/reject')
+  rejectAccountDeletion(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+    @Body() body: { reviewNote?: string },
+  ) {
+    return this.workspace.rejectAccountDeletionRequest({
+      actorUserId: req.user.sub,
+      actorRole: req.user.role,
+      requestId: id,
+      reviewNote: body?.reviewNote,
     });
   }
 }

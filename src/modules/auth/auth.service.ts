@@ -2,6 +2,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -24,6 +25,39 @@ function escapeHtml(text: string): string {
 function buildDefaultAvatarUrl(nameOrEmail: string): string {
   const seed = encodeURIComponent((nameOrEmail || 'User').trim());
   return `https://ui-avatars.com/api/?name=${seed}&background=0f172a&color=fff&bold=true`;
+}
+
+/**
+ * Node/undici `fetch` failures: DNS, firewall, offline, timeout.
+ * Message/cause shape varies by Node version — do not rely only on `message === 'fetch failed'`.
+ */
+function isOutboundNetworkFailure(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'AbortError') return true;
+  const msg = (err.message || '').toLowerCase();
+  if (msg.includes('fetch failed')) return true;
+  if (
+    /getaddrinfo|enotfound|eai_again|etimedout|econnrefused|enetunreach|econnreset/i.test(
+      msg,
+    )
+  ) {
+    return true;
+  }
+  const cause = (err as Error & { cause?: unknown }).cause;
+  if (cause && typeof cause === 'object') {
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (
+      code === 'ENOTFOUND' ||
+      code === 'EAI_AGAIN' ||
+      code === 'ETIMEDOUT' ||
+      code === 'ECONNRESET' ||
+      code === 'ECONNREFUSED' ||
+      code === 'ENETUNREACH'
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Decoded JWT payload (workspace session). */
@@ -103,11 +137,30 @@ export class AuthService {
       grant_type: 'authorization_code',
     });
 
-    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+    const tokenFetchOpts: RequestInit = {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
-    });
+      signal: AbortSignal.timeout(25_000),
+    };
+
+    let tokenRes: Response;
+    try {
+      tokenRes = await fetch(
+        'https://oauth2.googleapis.com/token',
+        tokenFetchOpts,
+      );
+    } catch (err) {
+      if (isOutboundNetworkFailure(err)) {
+        this.logger.warn(
+          `Google token exchange unreachable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw new ServiceUnavailableException(
+          'Sign-in could not reach Google (network or DNS). Ensure you are online and oauth2.googleapis.com resolves.',
+        );
+      }
+      throw err;
+    }
 
     if (!tokenRes.ok) {
       const t = await tokenRes.text();
@@ -120,10 +173,23 @@ export class AuthService {
       throw new UnauthorizedException('No access_token from Google');
     }
 
-    const userRes = await fetch(
-      'https://www.googleapis.com/oauth2/v3/userinfo',
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    );
+    let userRes: Response;
+    try {
+      userRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(20_000),
+      });
+    } catch (err) {
+      if (isOutboundNetworkFailure(err)) {
+        this.logger.warn(
+          `Google userinfo unreachable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw new ServiceUnavailableException(
+          'Cannot reach Google userinfo. Check your network connection.',
+        );
+      }
+      throw err;
+    }
     if (!userRes.ok) {
       throw new UnauthorizedException('Google userinfo failed');
     }
@@ -204,13 +270,23 @@ export class AuthService {
     });
 
     if (existingAccount) {
+      const u = existingAccount.user;
+      // Do not overwrite display name / uploaded avatar on every OAuth login — users edit these in Account Settings.
+      const data: {
+        emailVerified: Date;
+        name?: string;
+        image?: string | null;
+      } = { emailVerified: new Date() };
+      if (!u.name?.trim()) {
+        data.name = input.name;
+      }
+      const hasCustomDataAvatar = !!u.image?.startsWith('data:image/');
+      if (!hasCustomDataAvatar) {
+        data.image = input.image ?? undefined;
+      }
       return this.prisma.user.update({
         where: { id: existingAccount.userId },
-        data: {
-          name: input.name,
-          image: input.image ?? undefined,
-          emailVerified: new Date(),
-        },
+        data,
       });
     }
 
@@ -229,13 +305,21 @@ export class AuthService {
         },
       });
     } else {
+      const data: {
+        emailVerified: Date;
+        name?: string;
+        image?: string | null;
+      } = { emailVerified: new Date() };
+      if (!user.name?.trim()) {
+        data.name = input.name;
+      }
+      const hasCustomDataAvatar = !!user.image?.startsWith('data:image/');
+      if (!hasCustomDataAvatar) {
+        data.image = input.image ?? undefined;
+      }
       user = await this.prisma.user.update({
         where: { id: user.id },
-        data: {
-          name: input.name,
-          image: input.image ?? undefined,
-          emailVerified: new Date(),
-        },
+        data,
       });
     }
 
@@ -268,7 +352,7 @@ export class AuthService {
         email,
         phone: '',
         joinMonth,
-        lifecycleStage: 'GUEST',
+        lifecycleStage: 'IDENTIFIED',
       });
       await this.membersService.create(dto);
     } catch (e) {
@@ -293,6 +377,7 @@ export class AuthService {
     name: string | null;
     image: string | null;
     role: string;
+    phone: string | null;
     abacContext: unknown;
   } | null> {
     const row = await this.prisma.user.findUnique({
@@ -307,14 +392,25 @@ export class AuthService {
       },
     });
     if (!row?.email) return null;
+    const phone = AuthService.readSelfProfilePhone(row.abacContext);
     return {
       id: row.id,
       email: row.email,
       name: row.name,
       image: row.image,
       role: row.appRole,
+      phone,
       abacContext: row.abacContext,
     };
+  }
+
+  private static readSelfProfilePhone(abac: unknown): string | null {
+    if (!abac || typeof abac !== 'object' || Array.isArray(abac)) return null;
+    const sp = (abac as Record<string, unknown>).selfProfile;
+    if (!sp || typeof sp !== 'object' || Array.isArray(sp)) return null;
+    const p = (sp as Record<string, unknown>).phone;
+    if (typeof p !== 'string' || !p.trim()) return null;
+    return p.trim();
   }
 
   async sendMagicLinkEmail(rawEmail: string): Promise<void> {
@@ -346,10 +442,12 @@ export class AuthService {
       process.env.EMAIL_BRAND_NAME?.trim() || 'Maxwell Leadership Enterprise';
     const brandEsc = escapeHtml(brandRaw);
     const fe = this.getFrontendBaseUrl();
-    const siteUrl = (
-      process.env.EMAIL_PUBLIC_BASE_URL?.trim() || fe
-    ).replace(/\/+$/, '');
-    const logoUrl = process.env.EMAIL_LOGO_URL?.trim() || `${siteUrl}/mxwel.png`;
+    const siteUrl = (process.env.EMAIL_PUBLIC_BASE_URL?.trim() || fe).replace(
+      /\/+$/,
+      '',
+    );
+    const logoUrl =
+      process.env.EMAIL_LOGO_URL?.trim() || `${siteUrl}/mxwel.png`;
     const emailSubject =
       process.env.EMAIL_SUBJECT?.trim() ||
       'Account access verification — Maxwell Leadership Enterprise';
@@ -367,11 +465,13 @@ export class AuthService {
     const year = new Date().getFullYear();
 
     const resend = new Resend(resendKey);
-    const { error } = await resend.emails.send({
-      from,
-      to: email,
-      subject: emailSubject,
-      html: `<!doctype html>
+    let sendResult: Awaited<ReturnType<Resend['emails']['send']>>;
+    try {
+      sendResult = await resend.emails.send({
+        from,
+        to: email,
+        subject: emailSubject,
+        html: `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
@@ -436,7 +536,19 @@ export class AuthService {
     </table>
   </body>
 </html>`,
-    });
+      });
+    } catch (err) {
+      if (isOutboundNetworkFailure(err)) {
+        this.logger.warn(
+          `Magic link email send unreachable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw new ServiceUnavailableException(
+          'Could not reach the email service. Check your network and try again.',
+        );
+      }
+      throw err;
+    }
+    const { error } = sendResult;
     if (error) {
       throw new UnauthorizedException(error.message);
     }

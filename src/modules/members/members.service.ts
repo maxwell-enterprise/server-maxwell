@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { MemberLifecycleStage } from '../../schemas/enums.schema';
@@ -47,9 +48,104 @@ interface MemberRow {
   updatedAt: string | Date;
 }
 
+const LIFECYCLE_ORDER: MemberLifecycleStage[] = [
+  'GUEST',
+  'IDENTIFIED',
+  'PARTICIPANT',
+  'MEMBER',
+  'CERTIFIED',
+  'FACILITATOR',
+];
+
 @Injectable()
 export class MembersService {
+  private readonly logger = new Logger(MembersService.name);
+
   constructor(private readonly db: DbService) {}
+
+  /**
+   * Monotonic promotion: sets `lifecycleStage` to `minStage` only if the member is
+   * currently on a lower tier. No demotion. Safe when no `members` row exists.
+   */
+  async promoteLifecycleAtLeastByEmail(
+    rawEmail: string,
+    minStage: MemberLifecycleStage,
+  ): Promise<void> {
+    try {
+      const email = rawEmail.trim().toLowerCase();
+      if (!email) return;
+
+      const res = await this.db.query<{
+        internalId: string;
+        lifecycleStage: string;
+      }>(
+        `
+        select m.id::text as "internalId", m."lifecycleStage"::text as "lifecycleStage"
+        from members m
+        where lower(trim(m.email)) = $1
+        limit 1
+        `,
+        [email],
+      );
+      const row = res.rows[0];
+      if (!row) return;
+
+      if (
+        this.lifecycleRank(row.lifecycleStage) >= this.lifecycleRank(minStage)
+      ) {
+        return;
+      }
+
+      await this.update(row.internalId, { lifecycleStage: minStage });
+    } catch (err) {
+      this.logger.warn(
+        `promoteLifecycleAtLeastByEmail(${rawEmail}, ${minStage}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Same as {@link promoteLifecycleAtLeastByEmail} but keyed by `members.id` (UUID text).
+   * Used when the wallet owner id is the CRM member row id.
+   */
+  async promoteLifecycleAtLeastByMemberId(
+    memberIdText: string,
+    minStage: MemberLifecycleStage,
+  ): Promise<void> {
+    try {
+      const id = memberIdText.trim();
+      if (!id) return;
+
+      const res = await this.db.query<{ email: string }>(
+        `
+        select trim(lower(m.email)) as email
+        from members m
+        where m.id::text = $1
+        limit 1
+        `,
+        [id],
+      );
+      const email = res.rows[0]?.email;
+      if (!email) return;
+      await this.promoteLifecycleAtLeastByEmail(email, minStage);
+    } catch (err) {
+      this.logger.warn(
+        `promoteLifecycleAtLeastByMemberId(${memberIdText}, ${minStage}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  private lifecycleRank(stage: string): number {
+    const key = String(stage ?? '')
+      .trim()
+      .toUpperCase();
+    const idx = LIFECYCLE_ORDER.indexOf(key as MemberLifecycleStage);
+    return idx >= 0 ? idx : 0;
+  }
 
   async create(dto: CreateMemberDto): Promise<Member> {
     await this.assertEmailIsAvailable(dto.email);
@@ -338,7 +434,13 @@ export class MembersService {
       fields.push(`"regInUS" = $${params.length}`);
     }
     if (dto.lifecycleStage !== undefined) {
-      params.push(dto.lifecycleStage);
+      const emailForCoerce =
+        dto.email !== undefined ? dto.email : existing.email;
+      const coerced = this.coerceGuestLifecycleWhenEmailPresent(
+        dto.lifecycleStage,
+        emailForCoerce,
+      );
+      params.push(coerced);
       fields.push(`"lifecycleStage" = $${params.length}`);
     }
     if (dto.company !== undefined) {
@@ -559,12 +661,25 @@ export class MembersService {
     throw new ConflictException('Could not generate unique member ID');
   }
 
+  private coerceGuestLifecycleWhenEmailPresent(
+    stage: MemberLifecycleStage,
+    email: string,
+  ): MemberLifecycleStage {
+    const has = email.trim().length > 0;
+    if (stage === 'GUEST' && has) return 'IDENTIFIED';
+    return stage;
+  }
+
   private normalizeCreateInput(dto: CreateMemberDto) {
-    const lifecycleStage = dto.lifecycleStage;
+    const email = dto.email.trim().toLowerCase();
+    const lifecycleStage = this.coerceGuestLifecycleWhenEmailPresent(
+      dto.lifecycleStage,
+      email,
+    );
 
     return {
       name: dto.name.trim(),
-      email: dto.email.trim().toLowerCase(),
+      email,
       phone: dto.phone.trim(),
       category: dto.category.trim() || this.defaultCategory(lifecycleStage),
       scholarship: dto.scholarship,

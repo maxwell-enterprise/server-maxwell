@@ -11,4 +11,3 @@ export type RateLimitConfig = {
 export function RateLimit(config: RateLimitConfig) {
   return SetMetadata(RATE_LIMIT_METADATA_KEY, config);
 }
-

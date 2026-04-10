@@ -26,7 +26,7 @@ import {
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
-import { assertOperationsOnly } from '../../common/security/access-policy';
+import { assertStoreCatalogManager } from '../../common/security/access-policy';
 
 type UploadedImageFile = {
   mimetype: string;
@@ -45,7 +45,7 @@ export class ProductsController {
     @Body(new ZodValidationPipe(CreateProductDtoSchema))
     dto: CreateProductDto,
   ) {
-    assertOperationsOnly(req.user, 'Product creation');
+    assertStoreCatalogManager(req.user, 'Product creation');
     return this.productsService.create(dto);
   }
 
@@ -56,7 +56,7 @@ export class ProductsController {
     @Req() req: { user: JwtUserPayload },
     @UploadedFile() file: UploadedImageFile | undefined,
   ) {
-    assertOperationsOnly(req.user, 'Product image upload');
+    assertStoreCatalogManager(req.user, 'Product image upload');
     if (!file) {
       throw new BadRequestException('Image file is required');
     }
@@ -84,7 +84,7 @@ export class ProductsController {
     @Body(new ZodValidationPipe(UpdateProductDtoSchema))
     dto: UpdateProductDto,
   ) {
-    assertOperationsOnly(req.user, 'Product update');
+    assertStoreCatalogManager(req.user, 'Product update');
     return this.productsService.update(identifier, dto);
   }
 
@@ -94,7 +94,7 @@ export class ProductsController {
     @Req() req: { user: JwtUserPayload },
     @Param('identifier') identifier: string,
   ) {
-    assertOperationsOnly(req.user, 'Product deletion');
+    assertStoreCatalogManager(req.user, 'Product deletion');
     return this.productsService.remove(identifier);
   }
 }

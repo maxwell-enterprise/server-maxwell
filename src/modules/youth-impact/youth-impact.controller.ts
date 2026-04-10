@@ -40,10 +40,7 @@ export class YouthImpactController {
 
   @Delete('metrics/:id')
   @UseGuards(JwtAuthGuard)
-  deleteMetric(
-    @Req() req: { user: JwtUserPayload },
-    @Param('id') id: string,
-  ) {
+  deleteMetric(@Req() req: { user: JwtUserPayload }, @Param('id') id: string) {
     assertOperationsOnly(req.user, 'Youth impact metric deletion');
     return this.youthImpact.delete(decodeURIComponent(id));
   }

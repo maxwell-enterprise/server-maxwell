@@ -60,6 +60,15 @@ export const AppEnvSchema = z
     // IMPORTANT: FE is not authoritative; BE is the source of truth for Midtrans gross_amount.
     PAYMENT_PPN_RATE_PERCENT: z.coerce.number().min(0).max(100).default(0),
 
+    /**
+     * When true, `POST /transactions/simulate-settle` may mark a PENDING payment as PAID (testing only).
+     * Keep false in production unless you explicitly accept the risk.
+     */
+    ALLOW_PAYMENT_SIMULATION: z.preprocess(
+      (v) => parseBoolean(v) ?? false,
+      z.boolean(),
+    ),
+
     /** When set, `POST /fe/internal/members/sync` requires header `x-internal-key` with this value (server-to-server only). */
     INTERNAL_MEMBER_SYNC_KEY: z.string().optional(),
   })

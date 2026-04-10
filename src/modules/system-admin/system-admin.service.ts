@@ -424,9 +424,7 @@ export class SystemAdminService implements OnModuleInit {
     }
     const contextData = body.contextData ?? {};
     const status = String(body.status ?? 'PENDING');
-    const createdAt = body.createdAt
-      ? new Date(body.createdAt)
-      : new Date();
+    const createdAt = body.createdAt ? new Date(body.createdAt) : new Date();
     await this.db.query(
       `INSERT INTO automation_queue (id, "triggerType", "contextData", status, "createdAt", "processedAt", "errorLog", description)
        VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)
@@ -556,7 +554,9 @@ export class SystemAdminService implements OnModuleInit {
     }));
   }
 
-  async insertAiUsageLog(body: Record<string, unknown>): Promise<AiUsageLogDto> {
+  async insertAiUsageLog(
+    body: Record<string, unknown>,
+  ): Promise<AiUsageLogDto> {
     const userId = String(body.userId ?? '');
     const featureName = String(body.featureName ?? '');
     const model = String(body.model ?? '');
@@ -568,7 +568,9 @@ export class SystemAdminService implements OnModuleInit {
     const costUSD = Number(body.costUSD ?? 0);
     const costIDR = Number(body.costIDR ?? 0);
     if (!userId || !featureName || !model) {
-      throw new BadRequestException('userId, featureName, and model are required');
+      throw new BadRequestException(
+        'userId, featureName, and model are required',
+      );
     }
     const ins = await this.db.query<{
       id: string;
@@ -653,7 +655,9 @@ export class SystemAdminService implements OnModuleInit {
     }));
   }
 
-  async saveSchemaOptimization(body: Record<string, unknown>): Promise<SchemaOptimizationDto> {
+  async saveSchemaOptimization(
+    body: Record<string, unknown>,
+  ): Promise<SchemaOptimizationDto> {
     const id = String(body.id ?? `HIST-${Date.now()}`);
     const version = Number(body.version ?? 1);
     const summary = String(body.summary ?? '');

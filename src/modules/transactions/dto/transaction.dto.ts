@@ -17,6 +17,8 @@ export const CheckoutItemDtoSchema = z.object({
   // BE akan tetap menilai valid via query `coalesce(public_id, id::text)`.
   productId: z.string().trim().min(1),
   quantity: z.number().int().positive(),
+  /** When set, unit price is taken from `products.variants[]` (multi-tier products). */
+  variantId: z.string().trim().min(1).max(120).optional(),
   pricingTierId: z.string().uuid().optional(),
 });
 
@@ -106,4 +108,17 @@ export const PublicTransactionStatusDtoSchema = z.object({
 
 export type PublicTransactionStatusDto = z.infer<
   typeof PublicTransactionStatusDtoSchema
+>;
+
+// =============================================================================
+// SIMULATE SETTLE (testing; requires ALLOW_PAYMENT_SIMULATION on server)
+// =============================================================================
+
+export const SimulatePaymentSettleDtoSchema = z.object({
+  transactionId: z.string().uuid(),
+  customerEmail: z.string().email(),
+});
+
+export type SimulatePaymentSettleDto = z.infer<
+  typeof SimulatePaymentSettleDtoSchema
 >;

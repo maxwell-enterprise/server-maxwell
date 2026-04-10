@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { DbService } from '../../common/db.service';
 import { ActiveCartDto } from './dto';
 
@@ -18,11 +18,14 @@ interface CartRow {
 
 @Injectable()
 export class CartsService {
+  private readonly logger = new Logger(CartsService.name);
+
   constructor(private readonly db: DbService) {}
 
   async syncCart(dto: ActiveCartDto): Promise<void> {
-    await this.db.query(
-      `
+    try {
+      await this.db.query(
+        `
       insert into active_shopping_carts (
         "sessionId",
         "userId",
@@ -49,16 +52,36 @@ export class CartsService {
           "totalValue" = excluded."totalValue",
           status = excluded.status
       `,
-      [
-        dto.sessionId,
-        dto.userId ?? null,
-        dto.userEmail ?? null,
-        JSON.stringify(dto.items),
-        new Date(dto.lastUpdated).toISOString(),
-        dto.totalValue,
-        dto.status,
-      ],
-    );
+        [
+          dto.sessionId,
+          dto.userId ?? null,
+          dto.userEmail ?? null,
+          JSON.stringify(dto.items),
+          new Date(dto.lastUpdated).toISOString(),
+          dto.totalValue,
+          dto.status,
+        ],
+      );
+    } catch (err: unknown) {
+      const code =
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        typeof (err as { code: unknown }).code === 'string'
+          ? (err as { code: string }).code
+          : '';
+      const msg = err instanceof Error ? err.message : '';
+      if (
+        code === '42P01' ||
+        /relation ["']active_shopping_carts["'] does not exist/i.test(msg)
+      ) {
+        this.logger.warn(
+          'active_shopping_carts missing; apply DB schema (e.g. db.sql / migration 011). Cart sync skipped.',
+        );
+        return;
+      }
+      throw err;
+    }
   }
 
   async getCarts(): Promise<ActiveCartDto[]> {

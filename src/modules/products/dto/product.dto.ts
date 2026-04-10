@@ -6,6 +6,7 @@ export const ProductCategoryEnum = z.enum([
   'Upgrade',
   'Merchandise',
   'Digital',
+  'Token',
 ]);
 
 export const ProductItemTypeEnum = z.enum([

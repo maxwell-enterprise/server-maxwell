@@ -4,10 +4,13 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { Resend } from 'resend';
 import { PrismaService } from '../../prisma/prisma.service';
+import type { AccountDeletionRequestDelegate } from '../../prisma/prisma-account-deletion.types';
+import { AccountDeletionBroadcastService } from './account-deletion-broadcast.service';
 import {
   USER_ROLE,
   UserRoleString,
@@ -33,7 +36,26 @@ function isBootstrapAdminEmail(email: string): boolean {
 export class WorkspaceIdentityService {
   private readonly logger = new Logger(WorkspaceIdentityService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly accountDeletionBroadcast: AccountDeletionBroadcastService,
+  ) {}
+
+  private get accountDeletionRequestDelegate(): AccountDeletionRequestDelegate {
+    return (
+      this.prisma as unknown as {
+        accountDeletionRequest: AccountDeletionRequestDelegate;
+      }
+    ).accountDeletionRequest;
+  }
+
+  /** Prisma P2021: table not migrated (e.g. `028_account_deletion_requests.sql` not applied). */
+  private isAccountDeletionTableMissing(err: unknown): boolean {
+    return (
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2021'
+    );
+  }
 
   private getFrontendBaseUrl(): string {
     return (
@@ -71,16 +93,13 @@ export class WorkspaceIdentityService {
   }
 
   private isInvitableInternalRole(role: UserRoleString): boolean {
-    // Single-role model: business/internal roles only (exclude SUPER_ADMIN escalation).
+    // Security Admin: only core business roles + Member (revoke). No Guest / Gate Keeper / Facilitator via this endpoint.
     const allowed = new Set<UserRoleString>([
       USER_ROLE.FINANCE,
       USER_ROLE.OPERATIONS,
       USER_ROLE.MARKETING,
       USER_ROLE.SALES,
-      USER_ROLE.GATE_KEEPER,
-      USER_ROLE.FACILITATOR,
       USER_ROLE.MEMBER,
-      USER_ROLE.GUEST,
     ]);
     return allowed.has(role);
   }
@@ -287,8 +306,25 @@ export class WorkspaceIdentityService {
     );
   }
 
+  /**
+   * Security → User Access: tugasnya mengangkat orang ke role workspace (Promote + ubah role).
+   * Response **tidak** menyertakan Member — hanya yang sudah/akan dikelola sebagai staff (Guest+).
+   * Filter pakai `parseAppRoleString` (bukan SQL `IN` ketat) supaya nilai `appRole` di DB tetap ketangkap
+   * walau ada beda tipis; Member apa pun bentuk string-nya (setelah parse) tetap di-drop.
+   */
   async listInternalUsers(actorRole: string) {
-    if (parseAppRoleString(actorRole) !== USER_ROLE.SUPER_ADMIN) {
+    const r = parseAppRoleString(actorRole);
+    const canList = new Set<string>([
+      USER_ROLE.SUPER_ADMIN,
+      USER_ROLE.FINANCE,
+      USER_ROLE.OPERATIONS,
+      USER_ROLE.MARKETING,
+      USER_ROLE.SALES,
+      USER_ROLE.GATE_KEEPER,
+      USER_ROLE.FACILITATOR,
+      USER_ROLE.GUEST,
+    ]);
+    if (!canList.has(r)) {
       throw new ForbiddenException();
     }
 
@@ -303,14 +339,25 @@ export class WorkspaceIdentityService {
       orderBy: { email: 'asc' },
     });
 
-    return rows.map((r) => ({
-      id: r.id,
-      email: r.email ?? '',
-      fullName: r.name ?? (r.email?.split('@')[0] ?? 'Unknown User'),
-      role: r.appRole,
-      avatarUrl: r.image,
-      provider: 'email' as const,
-    }));
+    const list = rows
+      .map((row) => ({
+        id: row.id,
+        email: row.email ?? '',
+        fullName: row.name ?? row.email?.split('@')[0] ?? 'Unknown User',
+        role: parseAppRoleString(row.appRole ?? ''),
+        avatarUrl: row.image,
+        provider: 'email' as const,
+      }))
+      .filter((u) => u.role !== USER_ROLE.MEMBER);
+
+    list.sort((a, b) => {
+      const aSuper = a.role === USER_ROLE.SUPER_ADMIN ? 0 : 1;
+      const bSuper = b.role === USER_ROLE.SUPER_ADMIN ? 0 : 1;
+      if (aSuper !== bSuper) return aSuper - bSuper;
+      return a.email.localeCompare(b.email, undefined, { sensitivity: 'base' });
+    });
+
+    return list;
   }
 
   async getRbacTasksForUser(userId: string) {
@@ -439,8 +486,20 @@ export class WorkspaceIdentityService {
     const current = (user.abacContext ?? null) as any;
     const next =
       typeof current === 'object' && current
-        ? { ...current, commerceVoucher: { ...(current.commerceVoucher ?? {}), status: 'REVOKED', revokedAt: new Date().toISOString() } }
-        : { commerceVoucher: { status: 'REVOKED', revokedAt: new Date().toISOString() } };
+        ? {
+            ...current,
+            commerceVoucher: {
+              ...(current.commerceVoucher ?? {}),
+              status: 'REVOKED',
+              revokedAt: new Date().toISOString(),
+            },
+          }
+        : {
+            commerceVoucher: {
+              status: 'REVOKED',
+              revokedAt: new Date().toISOString(),
+            },
+          };
     await this.prisma.user.update({
       where: { id: user.id },
       data: { abacContext: next },
@@ -454,14 +513,27 @@ export class WorkspaceIdentityService {
 
   async updateMyProfile(
     userId: string,
-    input: { fullName?: string; email?: string; image?: string | null },
+    input: {
+      fullName?: string;
+      email?: string;
+      image?: string | null;
+      phone?: string;
+    },
   ): Promise<{
     ok: true;
-    profile: { id: string; fullName: string; email: string; avatarUrl: string | null };
+    profile: {
+      id: string;
+      fullName: string;
+      email: string;
+      avatarUrl: string | null;
+      phone: string | null;
+    };
   }> {
     const nextName = input.fullName?.trim();
     const nextEmail = input.email?.trim().toLowerCase();
     const nextImageRaw = input.image;
+    const nextPhoneRaw =
+      input.phone !== undefined ? String(input.phone).trim() : undefined;
 
     if (nextName !== undefined && nextName.length < 2) {
       throw new BadRequestException('Full name must be at least 2 characters');
@@ -469,17 +541,25 @@ export class WorkspaceIdentityService {
     if (nextEmail !== undefined && !nextEmail.includes('@')) {
       throw new BadRequestException('Invalid email address');
     }
+    if (nextPhoneRaw !== undefined && nextPhoneRaw.length > 40) {
+      throw new BadRequestException('Phone number is too long');
+    }
 
     let nextImage: string | null | undefined = undefined;
     if (nextImageRaw !== undefined) {
-      const normalized = typeof nextImageRaw === 'string' ? nextImageRaw.trim() : '';
+      const normalized =
+        typeof nextImageRaw === 'string' ? nextImageRaw.trim() : '';
       if (!normalized) {
         nextImage = null;
       } else {
         const isHttp = /^https?:\/\//i.test(normalized);
-        const isDataImage = /^data:image\/(png|jpe?g|webp);base64,/i.test(normalized);
+        const isDataImage = /^data:image\/(png|jpe?g|webp);base64,/i.test(
+          normalized,
+        );
         if (!isHttp && !isDataImage) {
-          throw new BadRequestException('Image must be a valid URL or image file payload');
+          throw new BadRequestException(
+            'Image must be a valid URL or image file payload',
+          );
         }
         if (isDataImage && normalized.length > 1_500_000) {
           throw new BadRequestException('Image file is too large');
@@ -489,21 +569,64 @@ export class WorkspaceIdentityService {
     }
 
     try {
+      let mergedAbac: Prisma.InputJsonValue | undefined = undefined;
+      if (nextPhoneRaw !== undefined) {
+        const existing = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { abacContext: true },
+        });
+        const currentCtx =
+          existing?.abacContext &&
+          typeof existing.abacContext === 'object' &&
+          !Array.isArray(existing.abacContext)
+            ? { ...(existing.abacContext as Record<string, unknown>) }
+            : {};
+        const prevSelf =
+          currentCtx.selfProfile &&
+          typeof currentCtx.selfProfile === 'object' &&
+          !Array.isArray(currentCtx.selfProfile)
+            ? { ...(currentCtx.selfProfile as Record<string, unknown>) }
+            : {};
+        prevSelf.phone = nextPhoneRaw.length > 0 ? nextPhoneRaw : null;
+        mergedAbac = {
+          ...currentCtx,
+          selfProfile: prevSelf,
+        } as Prisma.InputJsonValue;
+      }
+
       const row = await this.prisma.user.update({
         where: { id: userId },
         data: {
           ...(nextName !== undefined ? { name: nextName } : {}),
           ...(nextEmail !== undefined ? { email: nextEmail } : {}),
           ...(nextImage !== undefined ? { image: nextImage } : {}),
+          ...(mergedAbac !== undefined ? { abacContext: mergedAbac } : {}),
         },
-        select: { id: true, email: true, name: true, image: true },
+        select: {
+          id: true,
+          email: true,
+          name: true,
+          image: true,
+          abacContext: true,
+        },
       });
+
+      const phoneFromCtx = (() => {
+        const abac = row.abacContext;
+        if (!abac || typeof abac !== 'object' || Array.isArray(abac))
+          return null;
+        const sp = (abac as Record<string, unknown>).selfProfile;
+        if (!sp || typeof sp !== 'object' || Array.isArray(sp)) return null;
+        const p = (sp as Record<string, unknown>).phone;
+        return typeof p === 'string' && p.trim() ? p.trim() : null;
+      })();
 
       await this.appendSecurityAudit(userId, 'SELF_PROFILE_UPDATED', {
         changed: {
           fullName: nextName !== undefined,
           email: nextEmail !== undefined,
           image: nextImage !== undefined,
+          phone: nextPhoneRaw !== undefined,
         },
       });
 
@@ -511,9 +634,10 @@ export class WorkspaceIdentityService {
         ok: true,
         profile: {
           id: row.id,
-          fullName: row.name ?? (row.email?.split('@')[0] ?? 'User'),
+          fullName: row.name ?? row.email?.split('@')[0] ?? 'User',
           email: row.email ?? '',
           avatarUrl: row.image,
+          phone: phoneFromCtx,
         },
       };
     } catch (error) {
@@ -527,26 +651,347 @@ export class WorkspaceIdentityService {
     }
   }
 
-  async deleteMyAccount(userId: string, actorRole: string): Promise<{ ok: true }> {
+  async requestAccountDeletion(
+    userId: string,
+    actorRole: string,
+    reason: string,
+  ): Promise<{ ok: true; requestId: string }> {
     if (parseAppRoleString(actorRole) === USER_ROLE.SUPER_ADMIN) {
       throw new ForbiddenException('Super Admin account cannot be deleted');
+    }
+    const trimmed = String(reason ?? '').trim();
+    if (trimmed.length < 80) {
+      throw new BadRequestException(
+        'Please provide a detailed reason (at least 80 characters).',
+      );
+    }
+    if (trimmed.length > 8000) {
+      throw new BadRequestException(
+        'Reason is too long (max 8000 characters).',
+      );
+    }
+
+    let existingPending;
+    try {
+      existingPending = await this.accountDeletionRequestDelegate.findFirst({
+        where: { userId, status: 'PENDING' },
+      });
+    } catch (err) {
+      if (this.isAccountDeletionTableMissing(err)) {
+        this.logger.warn(
+          'AccountDeletionRequest table missing; apply database/migrations/028_account_deletion_requests.sql',
+        );
+        throw new ServiceUnavailableException(
+          'Account deletion is not available until the database migration is applied.',
+        );
+      }
+      throw err;
+    }
+    if (existingPending) {
+      throw new BadRequestException(
+        'You already have a pending account deletion request.',
+      );
     }
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, appRole: true },
+      select: { id: true, email: true, name: true },
     });
     if (!user) {
       throw new NotFoundException('User not found');
     }
 
-    await this.appendSecurityAudit(userId, 'SELF_ACCOUNT_DELETE_REQUESTED', {
-      targetUserId: user.id,
-      targetEmail: user.email ?? null,
-      role: user.appRole,
+    let row;
+    try {
+      row = await this.accountDeletionRequestDelegate.create({
+        data: {
+          userId,
+          reason: trimmed,
+          status: 'PENDING',
+        },
+        select: { id: true },
+      });
+    } catch (err) {
+      if (this.isAccountDeletionTableMissing(err)) {
+        this.logger.warn(
+          'AccountDeletionRequest table missing; apply database/migrations/028_account_deletion_requests.sql',
+        );
+        throw new ServiceUnavailableException(
+          'Account deletion is not available until the database migration is applied.',
+        );
+      }
+      throw err;
+    }
+
+    await this.appendSecurityAudit(userId, 'ACCOUNT_DELETION_REQUESTED', {
+      requestId: row.id,
+      reasonLength: trimmed.length,
     });
 
-    await this.prisma.user.delete({ where: { id: userId } });
+    await this.prisma.inboxNotification.create({
+      data: {
+        userId,
+        type: 'ACCOUNT_DELETION_SUBMITTED',
+        title: 'Account deletion request submitted',
+        body: 'Your request is being reviewed by a Super Admin. You will receive a notification here once a decision is made.',
+        payload: { requestId: row.id },
+      },
+    });
+
+    const superAdmins = await this.prisma.user.findMany({
+      where: { appRole: USER_ROLE.SUPER_ADMIN },
+      select: { id: true },
+    });
+    const preview =
+      trimmed.length > 400 ? `${trimmed.slice(0, 400)}…` : trimmed;
+    for (const admin of superAdmins) {
+      if (admin.id === userId) continue;
+      await this.prisma.inboxNotification.create({
+        data: {
+          userId: admin.id,
+          type: 'ACCOUNT_DELETION_REVIEW',
+          title: 'Account deletion approval required',
+          body: `User ${user.email ?? userId} requested account deletion.\n\nReason (preview):\n${preview}`,
+          payload: {
+            requestId: row.id,
+            targetUserId: user.id,
+            targetEmail: user.email ?? null,
+          },
+        },
+      });
+    }
+
+    void this.accountDeletionBroadcast.notifyQueueChanged();
+
+    return { ok: true, requestId: row.id };
+  }
+
+  async getMyDeletionStatus(userId: string): Promise<{
+    status: 'NONE' | 'PENDING' | 'REJECTED';
+    requestId?: string;
+    submittedAt?: string;
+    reviewNote?: string | null;
+    rejectedAt?: string | null;
+  }> {
+    try {
+      const pending = await this.accountDeletionRequestDelegate.findFirst({
+        where: { userId, status: 'PENDING' },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (pending) {
+        return {
+          status: 'PENDING',
+          requestId: pending.id,
+          submittedAt: pending.createdAt.toISOString(),
+        };
+      }
+      const last = await this.accountDeletionRequestDelegate.findFirst({
+        where: { userId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (last?.status === 'REJECTED') {
+        return {
+          status: 'REJECTED',
+          requestId: last.id,
+          reviewNote: last.reviewNote ?? null,
+          rejectedAt: last.reviewedAt?.toISOString() ?? null,
+        };
+      }
+      return { status: 'NONE' };
+    } catch (err) {
+      if (this.isAccountDeletionTableMissing(err)) {
+        this.logger.warn(
+          'AccountDeletionRequest table missing; apply database/migrations/028_account_deletion_requests.sql',
+        );
+        return { status: 'NONE' };
+      }
+      throw err;
+    }
+  }
+
+  async listPendingAccountDeletionRequests(actorRole: string) {
+    if (parseAppRoleString(actorRole) !== USER_ROLE.SUPER_ADMIN) {
+      throw new ForbiddenException();
+    }
+    let rows;
+    try {
+      rows = await this.accountDeletionRequestDelegate.findMany({
+        where: { status: 'PENDING' },
+        orderBy: { createdAt: 'asc' },
+        include: {
+          user: {
+            select: { id: true, email: true, name: true, appRole: true },
+          },
+        },
+      });
+    } catch (err) {
+      if (this.isAccountDeletionTableMissing(err)) {
+        this.logger.warn(
+          'AccountDeletionRequest table missing; apply database/migrations/028_account_deletion_requests.sql',
+        );
+        return [];
+      }
+      throw err;
+    }
+    return rows.map((r) => ({
+      id: r.id,
+      createdAt: r.createdAt.toISOString(),
+      reason: r.reason,
+      user: {
+        id: r.user.id,
+        email: r.user.email ?? '',
+        fullName: r.user.name ?? r.user.email?.split('@')[0] ?? 'User',
+        role: parseAppRoleString(r.user.appRole ?? ''),
+      },
+    }));
+  }
+
+  async approveAccountDeletionRequest(params: {
+    actorUserId: string;
+    actorRole: string;
+    requestId: string;
+  }): Promise<{ ok: true }> {
+    if (parseAppRoleString(params.actorRole) !== USER_ROLE.SUPER_ADMIN) {
+      throw new ForbiddenException();
+    }
+    let req;
+    try {
+      req = await this.accountDeletionRequestDelegate.findUnique({
+        where: { id: params.requestId },
+        include: {
+          user: { select: { id: true, email: true, appRole: true } },
+        },
+      });
+    } catch (err) {
+      if (this.isAccountDeletionTableMissing(err)) {
+        this.logger.warn(
+          'AccountDeletionRequest table missing; apply database/migrations/028_account_deletion_requests.sql',
+        );
+        throw new ServiceUnavailableException(
+          'Account deletion is not available until the database migration is applied.',
+        );
+      }
+      throw err;
+    }
+    if (!req || req.status !== 'PENDING') {
+      throw new NotFoundException('Request not found or already processed');
+    }
+    if (parseAppRoleString(req.user.appRole) === USER_ROLE.SUPER_ADMIN) {
+      throw new BadRequestException('Cannot delete a Super Admin account');
+    }
+
+    const email = req.user.email?.trim();
+    if (email) {
+      await this.sendWorkspaceEmail({
+        to: email,
+        subject: 'Your account will be deleted',
+        html: `<p>Your account deletion request has been <strong>approved</strong> by a Super Admin.</p><p>Your account and related sign-in data will be removed according to policy. If you are still signed in on another device, that session will stop working.</p>`,
+      });
+    }
+
+    await this.appendSecurityAudit(
+      params.actorUserId,
+      'ACCOUNT_DELETION_APPROVED',
+      {
+        requestId: req.id,
+        targetUserId: req.userId,
+        targetEmail: req.user.email ?? null,
+      },
+    );
+
+    await this.prisma.user.delete({ where: { id: req.userId } });
+
+    void this.accountDeletionBroadcast.notifyQueueChanged();
+
     return { ok: true };
+  }
+
+  async rejectAccountDeletionRequest(params: {
+    actorUserId: string;
+    actorRole: string;
+    requestId: string;
+    reviewNote?: string;
+  }): Promise<{ ok: true }> {
+    if (parseAppRoleString(params.actorRole) !== USER_ROLE.SUPER_ADMIN) {
+      throw new ForbiddenException();
+    }
+    let req;
+    try {
+      req = await this.accountDeletionRequestDelegate.findUnique({
+        where: { id: params.requestId },
+        include: { user: { select: { id: true, email: true } } },
+      });
+    } catch (err) {
+      if (this.isAccountDeletionTableMissing(err)) {
+        this.logger.warn(
+          'AccountDeletionRequest table missing; apply database/migrations/028_account_deletion_requests.sql',
+        );
+        throw new ServiceUnavailableException(
+          'Account deletion is not available until the database migration is applied.',
+        );
+      }
+      throw err;
+    }
+    if (!req || req.status !== 'PENDING') {
+      throw new NotFoundException('Request not found or already processed');
+    }
+
+    const note = params.reviewNote?.trim() || null;
+
+    try {
+      await this.accountDeletionRequestDelegate.update({
+        where: { id: req.id },
+        data: {
+          status: 'REJECTED',
+          reviewedByUserId: params.actorUserId,
+          reviewedAt: new Date(),
+          reviewNote: note,
+        },
+      });
+    } catch (err) {
+      if (this.isAccountDeletionTableMissing(err)) {
+        this.logger.warn(
+          'AccountDeletionRequest table missing; apply database/migrations/028_account_deletion_requests.sql',
+        );
+        throw new ServiceUnavailableException(
+          'Account deletion is not available until the database migration is applied.',
+        );
+      }
+      throw err;
+    }
+
+    await this.prisma.inboxNotification.create({
+      data: {
+        userId: req.userId,
+        type: 'ACCOUNT_DELETION_REJECTED',
+        title: 'Account deletion request declined',
+        body: note
+          ? `A Super Admin declined your account deletion request.\n\nNote: ${note}`
+          : 'A Super Admin declined your account deletion request.',
+        payload: { requestId: req.id },
+      },
+    });
+
+    await this.appendSecurityAudit(
+      params.actorUserId,
+      'ACCOUNT_DELETION_REJECTED',
+      {
+        requestId: req.id,
+        targetUserId: req.userId,
+        targetEmail: req.user.email ?? null,
+      },
+    );
+
+    void this.accountDeletionBroadcast.notifyQueueChanged();
+
+    return { ok: true };
+  }
+
+  deleteMyAccount(userId: string, actorRole: string): Promise<{ ok: true }> {
+    void userId;
+    void actorRole;
+    throw new ForbiddenException(
+      'Direct account deletion is disabled. Open Profile → Delete account, write your reason, and wait for Super Admin approval.',
+    );
   }
 }

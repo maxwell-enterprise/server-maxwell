@@ -42,34 +42,80 @@ type UploadedImageFile = {
   buffer: Buffer;
 };
 
+const ALLOWED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+/** Some browsers / OS send non-standard MIME labels. */
+const IMAGE_MIME_ALIASES: Record<string, string> = {
+  'image/jpg': 'image/jpeg',
+  'image/pjpeg': 'image/jpeg',
+  'image/x-png': 'image/png',
+};
+
+function sniffImageMime(buffer: Buffer): string | null {
+  if (!buffer?.length || buffer.length < 12) return null;
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    return 'image/png';
+  }
+  if (
+    buffer.toString('utf8', 0, 4) === 'RIFF' &&
+    buffer.toString('utf8', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp';
+  }
+  return null;
+}
+
+/** Resolve effective MIME when client sends wrong/empty `Content-Type` for multipart. */
+function resolveProductUploadMime(
+  declared: string | undefined,
+  buffer: Buffer,
+): string | null {
+  const raw = (declared ?? '').trim().toLowerCase();
+  const aliased = raw ? (IMAGE_MIME_ALIASES[raw] ?? raw) : '';
+  if (aliased && ALLOWED_IMAGE_MIMES.has(aliased)) {
+    return aliased;
+  }
+  return sniffImageMime(buffer);
+}
+
 @Injectable()
 export class ProductsService {
   constructor(private readonly db: DbService) {}
 
-  async uploadImage(file: UploadedImageFile): Promise<{ url: string; path: string }> {
-    const allowedMime = new Set(['image/jpeg', 'image/png', 'image/webp']);
-    if (!allowedMime.has(file.mimetype)) {
-      throw new BadRequestException('Only JPG, PNG, or WEBP images are allowed');
-    }
-
+  async uploadImage(
+    file: UploadedImageFile,
+  ): Promise<{ url: string; path: string }> {
     const maxBytes = 2 * 1024 * 1024;
     if (file.size > maxBytes) {
       throw new BadRequestException('Image size exceeds 2MB limit');
+    }
+
+    const mime = resolveProductUploadMime(file.mimetype, file.buffer);
+    if (!mime) {
+      throw new BadRequestException(
+        'Only JPG, PNG, or WEBP images are allowed (file type could not be detected — try exporting as JPEG).',
+      );
     }
 
     const supabaseUrl = process.env.SUPABASE_URL?.trim();
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
     const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || 'app-images';
     if (!supabaseUrl || !serviceRoleKey) {
-      throw new BadRequestException('Supabase Storage is not configured on backend');
+      throw new BadRequestException(
+        'Supabase Storage is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in server-maxwell/.env (see .env.example).',
+      );
     }
 
     const ext =
-      file.mimetype === 'image/png'
-        ? 'png'
-        : file.mimetype === 'image/webp'
-          ? 'webp'
-          : 'jpg';
+      mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
     const objectPath = `products/${Date.now()}-${randomUUID()}.${ext}`;
 
     const supabase = createClient(supabaseUrl, serviceRoleKey, {
@@ -78,7 +124,7 @@ export class ProductsService {
 
     const { error } = await supabase.storage
       .from(bucket)
-      .upload(objectPath, file.buffer, { contentType: file.mimetype, upsert: false });
+      .upload(objectPath, file.buffer, { contentType: mime, upsert: false });
     if (error) {
       throw new BadRequestException(`Storage upload failed: ${error.message}`);
     }

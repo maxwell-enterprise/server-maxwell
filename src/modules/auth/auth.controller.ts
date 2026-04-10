@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Controller,
   Get,
+  HttpException,
   Post,
   Query,
   Req,
@@ -30,17 +31,46 @@ export class AuthController {
   @Get('google/callback')
   async googleCallback(
     @Query('code') code: string | undefined,
+    @Query('error') oauthError: string | undefined,
     @Res() res: Response,
   ) {
-    if (!code) {
-      throw new BadRequestException('Missing code');
-    }
-    const token = await this.auth.handleGoogleCallback(code);
     const base = this.auth.getFrontendBaseUrl();
-    return res.redirect(
-      302,
-      `${base}/auth/callback?token=${encodeURIComponent(token)}`,
-    );
+    const toCallback = (err: string) =>
+      res.redirect(
+        302,
+        `${base}/auth/callback?error=${encodeURIComponent(err)}`,
+      );
+
+    if (oauthError) {
+      return toCallback(
+        oauthError === 'access_denied'
+          ? 'google_access_denied'
+          : 'google_oauth_error',
+      );
+    }
+    if (!code) {
+      return toCallback('missing_code');
+    }
+
+    try {
+      const token = await this.auth.handleGoogleCallback(code);
+      return res.redirect(
+        302,
+        `${base}/auth/callback?token=${encodeURIComponent(token)}`,
+      );
+    } catch (e) {
+      if (e instanceof HttpException) {
+        const status = e.getStatus();
+        if (status === 503) {
+          return toCallback('google_unreachable');
+        }
+        if (status === 401) {
+          return toCallback('google_unauthorized');
+        }
+        return toCallback('google_auth_failed');
+      }
+      return toCallback('google_auth_failed');
+    }
   }
 
   /** Public: returns `{ user }` or `{ user: null }` when no/invalid Bearer. */
@@ -55,7 +85,7 @@ export class AuthController {
       return { user: null };
     }
     try {
-      const p = this.jwt.verify(bearer) as { sub: string };
+      const p = this.jwt.verify(bearer);
       const user = await this.auth.getSessionPayload(p.sub);
       return { user };
     } catch {

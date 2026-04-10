@@ -105,7 +105,9 @@ export class ContractsService {
     );
   }
 
-  async findAllInstances(memberId?: string): Promise<Record<string, unknown>[]> {
+  async findAllInstances(
+    memberId?: string,
+  ): Promise<Record<string, unknown>[]> {
     const mid = memberId?.trim();
     if (mid) {
       const result = await this.db.query<{ document: Record<string, unknown> }>(

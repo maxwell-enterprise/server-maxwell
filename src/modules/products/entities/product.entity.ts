@@ -3,7 +3,8 @@ export type ProductCategory =
   | 'Certification'
   | 'Upgrade'
   | 'Merchandise'
-  | 'Digital';
+  | 'Digital'
+  | 'Token';
 
 export type ProductEntitlementType =
   | 'PHYSICAL'

@@ -25,7 +25,11 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
     variables: [
       { key: 'amount', label: 'Amount Paid', example: 'Rp 1.500.000' },
       { key: 'transaction_id', label: 'Transaction ID', example: 'TRX-9988' },
-      { key: 'payment_method', label: 'Payment Method', example: 'Bank Transfer' },
+      {
+        key: 'payment_method',
+        label: 'Payment Method',
+        example: 'Bank Transfer',
+      },
     ],
   },
   {
@@ -39,7 +43,11 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
       { key: 'invoice_number', label: 'Invoice #', example: 'INV-2025-001' },
       { key: 'due_date', label: 'Due Date', example: '2025-01-01' },
       { key: 'amount', label: 'Total Amount', example: 'Rp 500.000' },
-      { key: 'payment_link', label: 'Payment URL', example: 'https://pay.maxwell...' },
+      {
+        key: 'payment_link',
+        label: 'Payment URL',
+        example: 'https://pay.maxwell...',
+      },
     ],
   },
   {
@@ -74,7 +82,9 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
     category: 'CRM',
     iconName: 'UserPlus',
     sortOrder: 50,
-    variables: [{ key: 'join_date', label: 'Join Date', example: '2025-03-10' }],
+    variables: [
+      { key: 'join_date', label: 'Join Date', example: '2025-03-10' },
+    ],
   },
   {
     id: 'MEMBER_UPGRADE_VIP',
@@ -117,8 +127,16 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
     iconName: 'Ticket',
     sortOrder: 90,
     variables: [
-      { key: 'event_name', label: 'Event Name', example: 'Leadership Summit 2025' },
-      { key: 'ticket_link', label: 'Ticket URL', example: 'https://maxwell.../ticket/123' },
+      {
+        key: 'event_name',
+        label: 'Event Name',
+        example: 'Leadership Summit 2025',
+      },
+      {
+        key: 'ticket_link',
+        label: 'Ticket URL',
+        example: 'https://maxwell.../ticket/123',
+      },
       { key: 'event_date', label: 'Event Date', example: '2025-09-01' },
       { key: 'location', label: 'Venue', example: 'Grand Ballroom' },
     ],
@@ -154,7 +172,9 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
     category: 'EVENT',
     iconName: 'Calendar',
     sortOrder: 120,
-    variables: [{ key: 'event_name', label: 'Event Name', example: 'Leadership Summit' }],
+    variables: [
+      { key: 'event_name', label: 'Event Name', example: 'Leadership Summit' },
+    ],
   },
   {
     id: 'EVENT_REMINDER_24H',
@@ -210,7 +230,11 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
     iconName: 'FileSignature',
     sortOrder: 170,
     variables: [
-      { key: 'document_name', label: 'Doc Title', example: 'Facilitator Agreement' },
+      {
+        key: 'document_name',
+        label: 'Doc Title',
+        example: 'Facilitator Agreement',
+      },
       { key: 'sign_link', label: 'Signing URL', example: 'https://...' },
     ],
   },
@@ -221,7 +245,9 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
     category: 'SYSTEM',
     iconName: 'CheckCircle',
     sortOrder: 180,
-    variables: [{ key: 'signed_date', label: 'Date Signed', example: '2025-03-01' }],
+    variables: [
+      { key: 'signed_date', label: 'Date Signed', example: '2025-03-01' },
+    ],
   },
   {
     id: 'EMAIL_WELCOME_SENT',
@@ -230,6 +256,8 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
     category: 'SYSTEM',
     iconName: 'Mail',
     sortOrder: 190,
-    variables: [{ key: 'member_name', label: 'Recipient', example: 'New User' }],
+    variables: [
+      { key: 'member_name', label: 'Recipient', example: 'New User' },
+    ],
   },
 ];

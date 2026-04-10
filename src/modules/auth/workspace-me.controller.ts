@@ -57,13 +57,37 @@ export class WorkspaceMeController {
   @Patch('profile')
   async patchProfile(
     @Req() req: { user: JwtUserPayload },
-    @Body() body: { fullName?: string; email?: string; image?: string | null },
+    @Body()
+    body: {
+      fullName?: string;
+      email?: string;
+      image?: string | null;
+      phone?: string;
+    },
   ) {
     return this.workspace.updateMyProfile(req.user.sub, {
       fullName: body?.fullName,
       email: body?.email,
       image: body?.image,
+      phone: body?.phone,
     });
+  }
+
+  @Post('account/deletion-request')
+  async requestAccountDeletion(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: { reason?: string },
+  ) {
+    return this.workspace.requestAccountDeletion(
+      req.user.sub,
+      req.user.role,
+      String(body?.reason ?? ''),
+    );
+  }
+
+  @Get('account/deletion-status')
+  async deletionStatus(@Req() req: { user: JwtUserPayload }) {
+    return this.workspace.getMyDeletionStatus(req.user.sub);
   }
 
   @Delete('account')

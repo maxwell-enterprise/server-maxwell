@@ -72,12 +72,7 @@ export class AccountSettingsService {
         "smsAlerts" = excluded."smsAlerts",
         "updatedAt" = now()
       `,
-      [
-        userId,
-        next.emailTransactional,
-        next.emailMarketing,
-        next.smsAlerts,
-      ],
+      [userId, next.emailTransactional, next.emailMarketing, next.smsAlerts],
     );
 
     return next;

@@ -83,7 +83,7 @@ export class CmsService {
     };
     const statsPayload =
       typeof body.stats === 'object' && body.stats !== null
-        ? { ...defaultStats, ...(body.stats as object) }
+        ? { ...defaultStats, ...body.stats }
         : defaultStats;
 
     const result = await this.db.query<Record<string, unknown>>(
@@ -131,7 +131,7 @@ export class CmsService {
     const prevStats = parseJson<Record<string, unknown>>(row0.stats, {});
     const nextStats =
       typeof body.stats === 'object' && body.stats !== null
-        ? { ...prevStats, ...(body.stats as object) }
+        ? { ...prevStats, ...body.stats }
         : prevStats;
 
     const title = body.title != null ? String(body.title) : String(row0.title);
@@ -144,7 +144,9 @@ export class CmsService {
       body.status != null ? String(body.status) : String(row0.status);
     const publishDate = body.publishDate ?? row0.publishDate;
     const unpublishDate =
-      body.unpublishDate !== undefined ? body.unpublishDate : row0.unpublishDate;
+      body.unpublishDate !== undefined
+        ? body.unpublishDate
+        : row0.unpublishDate;
     const linkedProductId =
       body.linkedProductId !== undefined
         ? uuidOrNull(body.linkedProductId)

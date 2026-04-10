@@ -19,6 +19,7 @@ export class AppConfigService {
   private readonly corsOriginPatterns = this.env.APP_CORS_ORIGINS.split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
+  private readonly resolvedDbPoolMax = this.resolveDbPoolMax();
 
   get nodeEnv() {
     return this.env.NODE_ENV;
@@ -30,6 +31,11 @@ export class AppConfigService {
 
   get paymentPpnRatePercent() {
     return this.env.PAYMENT_PPN_RATE_PERCENT;
+  }
+
+  /** Enables test-only settlement without Midtrans webhook (see TransactionsController.simulateSettle). */
+  get allowPaymentSimulation(): boolean {
+    return this.env.ALLOW_PAYMENT_SIMULATION;
   }
 
   /** Server-to-server member bootstrap from Next.js (optional; see InternalMembersController). */
@@ -126,7 +132,7 @@ export class AppConfigService {
       port: this.env.DATABASE_URL ? null : this.env.DB_PORT,
       database: this.env.DATABASE_URL ? null : (this.env.DB_DATABASE ?? null),
       ssl: this.env.DB_SSL,
-      poolMax: this.env.DB_POOL_MAX,
+      poolMax: this.resolvedDbPoolMax,
       applicationName: this.env.DB_APPLICATION_NAME,
     };
   }
@@ -138,7 +144,7 @@ export class AppConfigService {
         : undefined;
 
     const baseConfig: PoolConfig = {
-      max: this.env.DB_POOL_MAX,
+      max: this.resolvedDbPoolMax,
       idleTimeoutMillis: this.env.DB_IDLE_TIMEOUT_MS,
       connectionTimeoutMillis: this.env.DB_CONNECTION_TIMEOUT_MS,
       application_name: this.env.DB_APPLICATION_NAME,
@@ -160,5 +166,30 @@ export class AppConfigService {
       password: this.env.DB_PASSWORD,
       database: this.env.DB_DATABASE,
     };
+  }
+
+  /**
+   * If DATABASE_URL declares `connection_limit`, enforce it as upper-bound for `pg` pool max.
+   * This prevents runtime bursts from exceeding server-side session limits and causing
+   * repeated "MaxClientsInSessionMode" errors.
+   */
+  private resolveDbPoolMax(): number {
+    const configuredMax = Math.max(1, this.env.DB_POOL_MAX);
+    const rawUrl = this.env.DATABASE_URL;
+    if (!rawUrl) {
+      return configuredMax;
+    }
+
+    try {
+      const url = new URL(rawUrl);
+      const rawLimit = url.searchParams.get('connection_limit');
+      const parsedLimit = Number(rawLimit);
+      if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+        return configuredMax;
+      }
+      return Math.max(1, Math.min(configuredMax, Math.floor(parsedLimit)));
+    } catch {
+      return configuredMax;
+    }
   }
 }

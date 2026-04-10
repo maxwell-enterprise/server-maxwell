@@ -62,7 +62,8 @@ export const SCOPE_NOTES = {
     GUEST: 'Stage CRM awal / lead; bukan definisi anonim browser.',
     IDENTIFIED: 'Identitas terdaftar; belum berpartisipasi program.',
     PARTICIPANT: 'Ikut event/program gratis; belum pembelian berbayar.',
-    MEMBER: 'Minimal satu pembelian; scope OWN (tiket, profil, riwayat sendiri).',
+    MEMBER:
+      'Minimal satu pembelian; scope OWN (tiket, profil, riwayat sendiri).',
     CERTIFIED: 'Alumni bersertifikasi terverifikasi.',
     FACILITATOR:
       'Delegated: tribe, komisi, downline; tanpa konfigurasi backoffice global.',

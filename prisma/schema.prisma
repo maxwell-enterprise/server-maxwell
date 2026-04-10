@@ -46,6 +46,23 @@ model User {
   accounts           Account[]
   sessions           Session[]
   inboxNotifications InboxNotification[]
+  accountDeletionRequests AccountDeletionRequest[]
+}
+
+/// User-submitted reason; Super Admin must approve before the account is removed.
+model AccountDeletionRequest {
+  id                 String    @id @default(cuid())
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reason             String    @db.Text
+  status             String    @default("PENDING")
+  reviewedByUserId String?
+  reviewedAt         DateTime?
+  reviewNote         String?   @db.Text
+  createdAt          DateTime  @default(now())
+
+  @@index([userId, status])
+  @@index([status, createdAt])
 }
 
 model InboxNotification {

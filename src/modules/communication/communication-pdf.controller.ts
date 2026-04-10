@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Put, Param, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Put,
+  Param,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { CommunicationPdfService } from './communication-pdf.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';

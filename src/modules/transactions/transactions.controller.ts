@@ -21,6 +21,7 @@ import {
   CreateRefundDtoSchema,
   MidtransWebhookDtoSchema,
   PublicTransactionStatusDtoSchema,
+  SimulatePaymentSettleDtoSchema,
 } from './dto';
 import type {
   CheckoutDto,
@@ -28,6 +29,7 @@ import type {
   CreateRefundDto,
   MidtransWebhookDto,
   PublicTransactionStatusDto,
+  SimulatePaymentSettleDto,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -81,6 +83,22 @@ export class TransactionsController {
     dto: PublicTransactionStatusDto,
   ) {
     return this.transactionsService.getPublicPaymentStatus(
+      dto.transactionId,
+      dto.customerEmail,
+    );
+  }
+
+  /**
+   * Test-only: mark a PENDING Snap transaction as PAID (no Midtrans callback).
+   * Guarded by ALLOW_PAYMENT_SIMULATION on the server. Midtrans integration stays unchanged.
+   */
+  @Post('simulate-settle')
+  @RateLimit({ limit: 30, windowMs: 60_000, keyBy: 'customerEmail' })
+  simulateSettle(
+    @Body(new ZodValidationPipe(SimulatePaymentSettleDtoSchema))
+    dto: SimulatePaymentSettleDto,
+  ) {
+    return this.transactionsService.simulateSettlePaymentForTesting(
       dto.transactionId,
       dto.customerEmail,
     );

@@ -9,6 +9,21 @@ import { parseAppEnv } from './common/config/env.schema';
 const appEnv = parseAppEnv(process.env);
 const typeOrmPostgresSsl =
   appEnv.DB_SSL || /supabase\.(com|co)/i.test(appEnv.DATABASE_URL ?? '');
+const typeOrmPoolMax = (() => {
+  const configuredMax = Math.max(1, appEnv.DB_POOL_MAX);
+  const rawUrl = appEnv.DATABASE_URL;
+  if (!rawUrl) return configuredMax;
+  try {
+    const url = new URL(rawUrl);
+    const connectionLimit = Number(url.searchParams.get('connection_limit'));
+    if (!Number.isFinite(connectionLimit) || connectionLimit <= 0) {
+      return configuredMax;
+    }
+    return Math.max(1, Math.min(configuredMax, Math.floor(connectionLimit)));
+  } catch {
+    return configuredMax;
+  }
+})();
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { RootController } from './root.controller';
@@ -60,9 +75,12 @@ import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard'
             password: appEnv.DB_PASSWORD,
             database: appEnv.DB_DATABASE,
           }),
-      ...(typeOrmPostgresSsl
-        ? { ssl: { rejectUnauthorized: false } }
-        : {}),
+      ...(typeOrmPostgresSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+      extra: {
+        max: typeOrmPoolMax,
+        idleTimeoutMillis: appEnv.DB_IDLE_TIMEOUT_MS,
+        connectionTimeoutMillis: appEnv.DB_CONNECTION_TIMEOUT_MS,
+      },
       autoLoadEntities: true,
       synchronize: false, // true hanya untuk development awal
     }),
