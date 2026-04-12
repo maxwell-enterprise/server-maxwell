@@ -11,7 +11,10 @@ import {
 import { SystemAdminService } from './system-admin.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
-import { assertSuperAdminOnly } from '../../common/security/access-policy';
+import {
+  assertAutomationQueueAccess,
+  assertSuperAdminOnly,
+} from '../../common/security/access-policy';
 
 /**
  * System admin: Automations, Security logs, Database meta, AI usage, Maintenance.
@@ -29,7 +32,7 @@ export class SystemAdminController {
   // --- Automations ---
   @Get('automations/queue')
   listAutomationQueue(@Req() req: { user: JwtUserPayload }) {
-    this.assertSystemAdmin(req);
+    assertAutomationQueueAccess(req.user, 'List automation queue');
     return this.systemAdmin.listAutomationQueue();
   }
 
@@ -39,7 +42,7 @@ export class SystemAdminController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    this.assertSystemAdmin(req);
+    assertAutomationQueueAccess(req.user, 'Update automation queue item');
     await this.systemAdmin.upsertAutomationQueueItem(
       decodeURIComponent(id),
       body,

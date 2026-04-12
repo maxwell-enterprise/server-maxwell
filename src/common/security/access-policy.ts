@@ -88,3 +88,36 @@ export function assertOpsOrGateKeeper(
 ): void {
   assertRole(user, [USER_ROLE.OPERATIONS, USER_ROLE.GATE_KEEPER], actionLabel);
 }
+
+/** CRM / marketing / ops emit + client background worker (automation queue). */
+export function assertAutomationEmitAllowed(
+  user: JwtUserPayload,
+  actionLabel = 'Automation emit',
+): void {
+  assertRole(
+    user,
+    [
+      USER_ROLE.SUPER_ADMIN,
+      USER_ROLE.OPERATIONS,
+      USER_ROLE.MARKETING,
+      USER_ROLE.FINANCE,
+    ],
+    actionLabel,
+  );
+}
+
+export function assertAutomationQueueAccess(
+  user: JwtUserPayload,
+  actionLabel = 'Automation queue',
+): void {
+  assertRole(
+    user,
+    [
+      USER_ROLE.SUPER_ADMIN,
+      USER_ROLE.OPERATIONS,
+      USER_ROLE.MARKETING,
+      USER_ROLE.FINANCE,
+    ],
+    actionLabel,
+  );
+}

@@ -884,6 +884,27 @@ export class SystemAdminService implements OnModuleInit {
     }
   }
 
+  /** User Journey / CRM timeline (`member_activity_logs`). */
+  async appendMemberJourneyLog(params: {
+    memberId: string;
+    category: string;
+    action: string;
+    details?: string;
+    metadata?: unknown;
+  }): Promise<void> {
+    await this.db.query(
+      `INSERT INTO member_activity_logs ("memberId", date, category, action, details, metadata)
+       VALUES ($1, (now() AT TIME ZONE 'utc')::date, $2, $3, $4, $5::jsonb)`,
+      [
+        params.memberId,
+        params.category,
+        params.action,
+        params.details ?? null,
+        JSON.stringify(params.metadata ?? {}),
+      ],
+    );
+  }
+
   // --- Maintenance snapshot ---
 
   async getMaintenanceStatus(): Promise<{

@@ -87,6 +87,20 @@ export const AUTOMATION_TRIGGER_SEED: AutomationTriggerSeedRow[] = [
     ],
   },
   {
+    id: 'NEW_MEMBER',
+    label: 'New Member (Welcome Email)',
+    description:
+      'CRM/Auth: member created → queues welcome email via POST /fe/automations/emit.',
+    category: 'CRM',
+    iconName: 'UserPlus',
+    sortOrder: 55,
+    variables: [
+      { key: 'member_name', label: 'Member name', example: 'Siti Aminah' },
+      { key: 'email', label: 'Email', example: 'siti@example.com' },
+      { key: 'join_date', label: 'Join date', example: '2025-04-13' },
+    ],
+  },
+  {
     id: 'MEMBER_UPGRADE_VIP',
     label: 'VIP Upgrade',
     description: 'Triggered when a member reaches VIP tier (manual or auto).',

@@ -53,6 +53,7 @@ import { YouthImpactModule } from './modules/youth-impact/youth-impact.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
 import { CommunicationModule } from './modules/communication/communication.module';
 import { SystemAdminModule } from './modules/system-admin/system-admin.module';
+import { AutomationsModule } from './modules/automations/automations.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { CmsModule } from './modules/cms/cms.module';
 import { AccountSettingsModule } from './modules/account-settings/account-settings.module';
@@ -113,6 +114,7 @@ import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard'
     GamificationModule,
     CommunicationModule,
     SystemAdminModule,
+    AutomationsModule,
     CampaignsModule,
     CmsModule,
     AccountSettingsModule,

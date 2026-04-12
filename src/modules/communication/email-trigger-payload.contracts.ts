@@ -26,6 +26,7 @@ export const EMAIL_TRIGGER_PAYLOAD_CONTRACTS: Record<
       'name',
       'email',
       'phone',
+      'join_date',
     ],
     requiredVariableKeys: ['email'],
     recipientEmailKey: 'email',
