@@ -1,8 +1,23 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+  BadRequestException,
+} from '@nestjs/common';
+import { Resend } from 'resend';
 import { DatabaseService } from '../../common/database/database.service';
+import {
+  assertSupportedEmailTrigger,
+  EMAIL_TRIGGER_PAYLOAD_CONTRACTS,
+  normalizeEmailTriggerVariables,
+  type SupportedEmailAutomationTriggerId,
+} from './email-trigger-payload.contracts';
 
 @Injectable()
 export class CommunicationEmailService {
+  private readonly logger = new Logger(CommunicationEmailService.name);
+
   constructor(private readonly db: DatabaseService) {}
 
   private iso(v: unknown): string {
@@ -13,13 +28,17 @@ export class CommunicationEmailService {
 
   async listTemplates(): Promise<Record<string, unknown>[]> {
     const r = await this.db.query<Record<string, unknown>>(
-      `SELECT id, name, category, subject, body, variables
+      `SELECT id, name, category, subject, body, variables, "linkedTriggerId"
        FROM email_templates
        ORDER BY name ASC`,
     );
     return r.rows.map((row) => ({
       ...row,
       variables: Array.isArray(row.variables) ? row.variables : [],
+      linkedTriggerId:
+        row.linkedTriggerId != null && String(row.linkedTriggerId) !== ''
+          ? String(row.linkedTriggerId)
+          : undefined,
     }));
   }
 
@@ -110,6 +129,113 @@ export class CommunicationEmailService {
         body.metadata ?? null,
       ],
     );
+  }
+
+  /**
+   * Resolve `email_templates.linkedTriggerId`, merge variables per central contract,
+   * send via Resend, write `email_logs`.
+   */
+  async sendTransactionalByTrigger(body: Record<string, unknown>): Promise<{
+    ok: true;
+    logId: string;
+    templateId: string;
+  }> {
+    const triggerId = String(body.triggerId ?? '').trim();
+    if (!triggerId) {
+      throw new BadRequestException('triggerId is required');
+    }
+    assertSupportedEmailTrigger(triggerId);
+
+    const vars = normalizeEmailTriggerVariables(
+      triggerId as SupportedEmailAutomationTriggerId,
+      (body.variables && typeof body.variables === 'object'
+        ? (body.variables as Record<string, unknown>)
+        : {}) ?? {},
+    );
+
+    const contractRow = await this.db.query<Record<string, unknown>>(
+      `SELECT id, subject, body
+       FROM email_templates
+       WHERE "linkedTriggerId" = $1
+       LIMIT 1`,
+      [triggerId],
+    );
+
+    if (contractRow.rows.length === 0) {
+      throw new NotFoundException(
+        `No email template linked to trigger "${triggerId}". Link one in the database (linkedTriggerId).`,
+      );
+    }
+
+    const row = contractRow.rows[0]!;
+    const templateId = String(row.id ?? '');
+    let subject = String(row.subject ?? '');
+    let html = String(row.body ?? '');
+
+    for (const [key, val] of Object.entries(vars)) {
+      const re = new RegExp(`\\{\\{${key}\\}\\}`, 'gi');
+      subject = subject.replace(re, val);
+      html = html.replace(re, val);
+    }
+
+    const logId = `LOG-TRX-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+    const recipKey =
+      EMAIL_TRIGGER_PAYLOAD_CONTRACTS[triggerId as SupportedEmailAutomationTriggerId]
+        .recipientEmailKey;
+    const to = vars[recipKey];
+
+    try {
+      await this.dispatchWithResend(to, subject, html);
+      await this.createLog({
+        id: logId,
+        templateId,
+        recipientEmail: to,
+        subject,
+        sentAt: new Date(),
+        status: 'SUCCESS',
+        metadata: { triggerId, variables: vars },
+      });
+      return { ok: true, logId, templateId };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `sendTransactionalByTrigger failed trigger=${triggerId} to=${to}: ${message}`,
+      );
+      await this.createLog({
+        id: logId,
+        templateId,
+        recipientEmail: to,
+        subject,
+        sentAt: new Date(),
+        status: 'FAILED',
+        metadata: { triggerId, variables: vars, error: message },
+      });
+      throw err;
+    }
+  }
+
+  private async dispatchWithResend(
+    to: string,
+    subject: string,
+    html: string,
+  ): Promise<void> {
+    const resendKey = process.env.RESEND_API_KEY?.trim();
+    const from = process.env.EMAIL_FROM?.trim() ?? 'onboarding@resend.dev';
+    if (!resendKey) {
+      throw new ServiceUnavailableException(
+        'Transactional email is not configured (RESEND_API_KEY).',
+      );
+    }
+    const resend = new Resend(resendKey);
+    const { error } = await resend.emails.send({
+      from,
+      to,
+      subject,
+      html,
+    });
+    if (error) {
+      throw new BadRequestException(`Email provider error: ${error.message}`);
+    }
   }
 
   private mapCampaignRow(
