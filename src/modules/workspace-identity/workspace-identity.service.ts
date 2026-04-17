@@ -93,8 +93,10 @@ export class WorkspaceIdentityService {
   }
 
   private isInvitableInternalRole(role: UserRoleString): boolean {
-    // Security Admin: only core business roles + Member (revoke). No Guest / Gate Keeper / Facilitator via this endpoint.
+    // Security Admin: core business roles + Super Admin + Member (revoke).
+    // No Guest / Gate Keeper / Facilitator via this endpoint.
     const allowed = new Set<UserRoleString>([
+      USER_ROLE.SUPER_ADMIN,
       USER_ROLE.FINANCE,
       USER_ROLE.OPERATIONS,
       USER_ROLE.MARKETING,
@@ -152,6 +154,39 @@ export class WorkspaceIdentityService {
     ]);
 
     await this.createRoleChangeInbox(userId, pending.targetRole);
+
+    // Keep Super Admin as a single active holder for handover flows:
+    // when an invited Super Admin role is consumed by target user, inviter
+    // is auto-downgraded to Sales (applies after inviter refreshes session).
+    if (
+      pending.targetRole === USER_ROLE.SUPER_ADMIN &&
+      pending.createdByUserId &&
+      pending.createdByUserId !== userId
+    ) {
+      const downgraded = await this.prisma.user.updateMany({
+        where: {
+          id: pending.createdByUserId,
+          appRole: USER_ROLE.SUPER_ADMIN,
+        },
+        data: { appRole: USER_ROLE.SALES },
+      });
+      if (downgraded.count > 0) {
+        await this.createRoleChangeInbox(
+          pending.createdByUserId,
+          USER_ROLE.SALES,
+        );
+        await this.appendSecurityAudit(
+          pending.createdByUserId,
+          'RBAC_SUPER_ADMIN_HANDOVER_ACTOR_DOWNGRADED',
+          {
+            inviteId: pending.id,
+            targetUserId: userId,
+            targetRole: pending.targetRole,
+            actorNewRole: USER_ROLE.SALES,
+          },
+        );
+      }
+    }
   }
 
   async createRoleChangeInbox(
@@ -175,7 +210,13 @@ export class WorkspaceIdentityService {
     email: string;
     targetRole: string;
   }): Promise<
-    | { ok: true; mode: 'updated'; userId: string }
+    | {
+        ok: true;
+        mode: 'updated';
+        userId: string;
+        actorRelogRequired?: boolean;
+        actorNewRole?: string;
+      }
     | { ok: true; mode: 'pending_signup'; inviteId: string }
   > {
     if (parseAppRoleString(params.actorRole) !== USER_ROLE.SUPER_ADMIN) {
@@ -193,6 +234,8 @@ export class WorkspaceIdentityService {
         'Target role is not invitable via Security Admin',
       );
     }
+    const shouldAutoDowngradeActorAfterSuperAdminHandover =
+      targetRole === USER_ROLE.SUPER_ADMIN;
 
     const existing = await this.prisma.user.findFirst({
       where: { email: { equals: rawEmail, mode: 'insensitive' } },
@@ -233,7 +276,40 @@ export class WorkspaceIdentityService {
         targetUserId: existing.id,
         targetRole,
       });
-      return { ok: true, mode: 'updated', userId: existing.id };
+
+      // Super Admin handover policy:
+      // when actor grants Super Admin to another existing account, actor is
+      // automatically downgraded to Sales (effective after next login token refresh).
+      if (
+        shouldAutoDowngradeActorAfterSuperAdminHandover &&
+        existing.id !== params.actorUserId
+      ) {
+        await this.prisma.user.update({
+          where: { id: params.actorUserId },
+          data: { appRole: USER_ROLE.SALES },
+        });
+        await this.createRoleChangeInbox(params.actorUserId, USER_ROLE.SALES);
+        await this.appendSecurityAudit(
+          params.actorUserId,
+          'RBAC_SUPER_ADMIN_HANDOVER_ACTOR_DOWNGRADED',
+          {
+            targetEmail: rawEmail,
+            targetUserId: existing.id,
+            targetRole,
+            actorNewRole: USER_ROLE.SALES,
+          },
+        );
+      }
+      const actorRelogRequired =
+        shouldAutoDowngradeActorAfterSuperAdminHandover &&
+        existing.id !== params.actorUserId;
+      return {
+        ok: true,
+        mode: 'updated',
+        userId: existing.id,
+        actorRelogRequired,
+        actorNewRole: actorRelogRequired ? USER_ROLE.SALES : undefined,
+      };
     }
 
     await this.prisma.pendingRoleInvite.deleteMany({
