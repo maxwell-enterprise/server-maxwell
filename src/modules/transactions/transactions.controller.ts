@@ -33,6 +33,7 @@ import type {
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../auth/optional-jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import { RateLimit } from '../../common/security/rate-limit.decorator';
 import { assertFinanceControllerOnly } from '../../common/security/access-policy';
@@ -46,11 +47,13 @@ export class TransactionsController {
    * POST /transactions/checkout
    */
   @Post('checkout')
+  @UseGuards(OptionalJwtAuthGuard)
   checkout(
+    @Req() req: { user?: JwtUserPayload },
     @Body(new ZodValidationPipe(CheckoutDtoSchema)) dto: CheckoutDto,
     @Headers('x-idempotency-key') idempotencyKey?: string,
   ) {
-    const userId = null; // Could be null for guest checkout
+    const userId = req.user?.sub != null ? String(req.user.sub) : null;
     return this.transactionsService.checkout(userId, dto, idempotencyKey);
   }
 
@@ -59,12 +62,14 @@ export class TransactionsController {
    * POST /transactions/midtrans/snap
    */
   @Post('midtrans/snap')
+  @UseGuards(OptionalJwtAuthGuard)
   @RateLimit({ limit: 20, windowMs: 60_000, keyBy: 'guestEmail' })
   midtransSnap(
+    @Req() req: { user?: JwtUserPayload },
     @Body(new ZodValidationPipe(CheckoutDtoSchema)) dto: CheckoutDto,
     @Headers('x-idempotency-key') idempotencyKey?: string,
   ) {
-    const userId = null; // guest checkout for this version
+    const userId = req.user?.sub != null ? String(req.user.sub) : null;
     return this.transactionsService.createMidtransSnap(
       userId,
       dto,

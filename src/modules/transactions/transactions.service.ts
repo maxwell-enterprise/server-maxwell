@@ -5,6 +5,7 @@
 
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -23,15 +24,19 @@ import { AppConfigService } from '../../common/config/app-config.service';
 import { MidtransService } from '../midtrans/midtrans.service';
 import { MembersService } from '../members/members.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 
 @Injectable()
 export class TransactionsService {
+  private readonly logger = new Logger(TransactionsService.name);
+
   constructor(
     private readonly db: DbService,
     private readonly midtrans: MidtransService,
     private readonly config: AppConfigService,
     private readonly members: MembersService,
     private readonly campaigns: CampaignsService,
+    private readonly checkoutEntitlements: CheckoutEntitlementsService,
   ) {}
 
   // ==========================================================================
@@ -349,6 +354,7 @@ export class TransactionsService {
         "createdAt",
         "expiryTime",
         "customerEmail",
+        "buyerUserId",
         "attributionSource",
         "virtualAccountNumber",
         "qrisUrl",
@@ -363,21 +369,22 @@ export class TransactionsService {
         $3::numeric,
         null,
         $4::numeric,
-        CASE WHEN $11::boolean THEN $4::numeric ELSE 0::numeric END,
-        CASE WHEN $11::boolean THEN 0::numeric ELSE $4::numeric END,
+        CASE WHEN $12::boolean THEN $4::numeric ELSE 0::numeric END,
+        CASE WHEN $12::boolean THEN 0::numeric ELSE $4::numeric END,
         null,
         null,
         $5,
-        CASE WHEN $11 THEN 'PAID' ELSE 'PENDING' END,
+        CASE WHEN $12 THEN 'PAID' ELSE 'PENDING' END,
         $6,
         $7,
         $8,
         $9,
+        $10,
         null,
         null,
         null,
         null,
-        $10::jsonb
+        $11::jsonb
       )
       returning id, "orderId", "totalAmount", status, method, "createdAt", "customerEmail"
       `,
@@ -390,6 +397,7 @@ export class TransactionsService {
         now.toISOString(),
         expiry.toISOString(),
         customerEmail,
+        userId,
         attributionSource,
         JSON.stringify(
           dto.items.map((i) => ({
@@ -414,6 +422,15 @@ export class TransactionsService {
         orderId: payment.orderId,
         channel: 'checkout',
       });
+      try {
+        await this.checkoutEntitlements.processForPaymentId(payment.id);
+      } catch (err) {
+        this.logger.error(
+          `Checkout entitlements failed for payment ${payment.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
 
     // 5. Map ke Transaction entity (supaya kompatibel dengan frontend)
@@ -612,6 +629,15 @@ export class TransactionsService {
         const rowPaid = String(row.status).toUpperCase() === 'PAID';
         if (rowPaid) {
           if (rowGross === 0) {
+            try {
+              await this.checkoutEntitlements.processForPaymentId(row.id);
+            } catch (err) {
+              this.logger.error(
+                `Checkout entitlements failed for payment ${row.id}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
+            }
             return {
               transaction: this.mapPaymentRowToTransaction(row),
               snapToken: '',
@@ -667,6 +693,15 @@ export class TransactionsService {
           if (!r) {
             throw new BadRequestException('Could not reload free transaction');
           }
+          try {
+            await this.checkoutEntitlements.processForPaymentId(r.id);
+          } catch (err) {
+            this.logger.error(
+              `Checkout entitlements failed for payment ${r.id}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
           return {
             transaction: this.mapPaymentRowToTransaction(r),
             snapToken: '',
@@ -713,6 +748,7 @@ export class TransactionsService {
         "createdAt",
         "expiryTime",
         "customerEmail",
+        "buyerUserId",
         "attributionSource",
         "virtualAccountNumber",
         "qrisUrl",
@@ -727,21 +763,22 @@ export class TransactionsService {
         $3::numeric,
         null,
         $4::numeric,
-        CASE WHEN $11::boolean THEN $4::numeric ELSE 0::numeric END,
-        CASE WHEN $11::boolean THEN 0::numeric ELSE $4::numeric END,
+        CASE WHEN $12::boolean THEN $4::numeric ELSE 0::numeric END,
+        CASE WHEN $12::boolean THEN 0::numeric ELSE $4::numeric END,
         null,
         null,
         $5,
-        CASE WHEN $11 THEN 'PAID' ELSE 'PENDING' END,
+        CASE WHEN $12 THEN 'PAID' ELSE 'PENDING' END,
         $6,
         $7,
         $8,
         $9,
+        $10,
         null,
         null,
         null,
         null,
-        $10::jsonb
+        $11::jsonb
       )
       returning id, "orderId", "totalAmount", status, method, "createdAt", "customerEmail"
       `,
@@ -754,6 +791,7 @@ export class TransactionsService {
         now.toISOString(),
         expiry.toISOString(),
         customerEmail,
+        userId,
         attributionSource,
         JSON.stringify(
           dto.items.map((i) => ({
@@ -778,6 +816,15 @@ export class TransactionsService {
         orderId: payment.orderId,
         channel: 'midtrans_snap',
       });
+      try {
+        await this.checkoutEntitlements.processForPaymentId(payment.id);
+      } catch (err) {
+        this.logger.error(
+          `Checkout entitlements failed for payment ${payment.id}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
 
     // 5) Create Snap token using gross_amount from BE (skip for Rp 0 — Midtrans does not support it).
@@ -878,6 +925,7 @@ export class TransactionsService {
       dto.transaction_status === 'capture'
     ) {
       const paid = await this.db.query<{
+        id: string;
         attributionSource: string | null;
         totalAmount: number;
         customerEmail: string | null;
@@ -890,7 +938,7 @@ export class TransactionsService {
           "balanceDue" = 0
         where "orderId" = $1
           and status <> 'PAID'
-        returning "attributionSource", "totalAmount", "customerEmail"
+        returning id::text as id, "attributionSource", "totalAmount", "customerEmail"
         `,
         [dto.order_id],
       );
@@ -907,6 +955,17 @@ export class TransactionsService {
           paidRow.attributionSource,
           Number(paidRow.totalAmount) || 0,
         );
+      }
+      if (paidRow?.id) {
+        try {
+          await this.checkoutEntitlements.processForPaymentId(paidRow.id);
+        } catch (err) {
+          this.logger.error(
+            `Checkout entitlements failed after Midtrans webhook (payment ${paidRow.id}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
       }
       await this.appendSecurityLog('PAYMENT_WEBHOOK_PAID', {
         orderId: dto.order_id,
@@ -1485,6 +1544,15 @@ export class TransactionsService {
         );
       }
       if (String(row.status).toUpperCase() === 'PAID') {
+        try {
+          await this.checkoutEntitlements.processForPaymentId(transactionId);
+        } catch (err) {
+          this.logger.error(
+            `Checkout entitlements failed (already PAID simulate ${transactionId}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
         return {
           paymentStatus: 'PAID',
           totalAmount: Number(row.totalAmount) || 0,
@@ -1501,6 +1569,15 @@ export class TransactionsService {
       paidRow.attributionSource ?? null,
       Number(paidRow.totalAmount) || 0,
     );
+    try {
+      await this.checkoutEntitlements.processForPaymentId(transactionId);
+    } catch (err) {
+      this.logger.error(
+        `Checkout entitlements failed after simulate-settle (${transactionId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
     await this.appendSecurityLog('PAYMENT_SIMULATION_SETTLED', {
       transactionId,
       orderId: paidRow.orderId,

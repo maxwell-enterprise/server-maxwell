@@ -139,6 +139,22 @@ export class MembersService {
     }
   }
 
+  /** Wallet / entitlement owner id (`members.id` as text) for checkout email. */
+  async findMemberIdByEmail(rawEmail: string): Promise<string | null> {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email) return null;
+    const res = await this.db.query<{ id: string }>(
+      `
+      select m.id::text as id
+      from members m
+      where lower(trim(m.email)) = $1
+      limit 1
+      `,
+      [email],
+    );
+    return res.rows[0]?.id ?? null;
+  }
+
   private lifecycleRank(stage: string): number {
     const key = String(stage ?? '')
       .trim()

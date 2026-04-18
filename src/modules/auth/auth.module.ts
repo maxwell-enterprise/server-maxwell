@@ -5,6 +5,7 @@ import { WorkspaceIdentityModule } from '../workspace-identity/workspace-identit
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { OptionalJwtAuthGuard } from './optional-jwt-auth.guard';
 import { AdminWorkspaceController } from './admin-workspace.controller';
 import { WorkspaceMeController } from './workspace-me.controller';
 
@@ -25,7 +26,7 @@ import { WorkspaceMeController } from './workspace-me.controller';
     AdminWorkspaceController,
     WorkspaceMeController,
   ],
-  providers: [AuthService, JwtAuthGuard],
-  exports: [AuthService, JwtModule],
+  providers: [AuthService, JwtAuthGuard, OptionalJwtAuthGuard],
+  exports: [AuthService, JwtModule, JwtAuthGuard, OptionalJwtAuthGuard],
 })
 export class AuthModule {}
