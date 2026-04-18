@@ -56,6 +56,7 @@ create table if not exists sys_internal_users (
 
 create table if not exists events (
   id uuid primary key default gen_random_uuid(),
+  public_id text,
   name text not null,
   date date not null,
   "endDate" date,

@@ -49,7 +49,8 @@ export const AppEnvSchema = z
     DB_SSL: z.preprocess(parseBoolean, z.boolean().default(false)),
     DB_POOL_MAX: z.coerce.number().int().positive().default(10),
     DB_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
-    DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
+    /** First TCP/pg handshake to Supabase / remote Postgres often needs >5s on slow or pooled links. */
+    DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
     DB_APPLICATION_NAME: z.string().min(1).default('maxwell-backend'),
     SUPABASE_URL: z.string().url().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),

@@ -44,6 +44,14 @@ export function assertOperationsOnly(
   assertRole(user, [USER_ROLE.OPERATIONS], actionLabel);
 }
 
+/** Event / ops surfaces: Operations owns day-to-day; Super Admin break-glass. */
+export function assertOperationsOrSuperAdmin(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRole(user, [USER_ROLE.OPERATIONS, USER_ROLE.SUPER_ADMIN], actionLabel);
+}
+
 /**
  * Store catalog (products): matches maxwell-refactor `Storefront` `isStoreAdmin`
  * (Operations, Marketing, Super Admin). Narrower than `assertOperationsOnly` so

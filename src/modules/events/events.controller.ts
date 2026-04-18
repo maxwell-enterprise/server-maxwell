@@ -32,7 +32,7 @@ import {
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
-import { assertOperationsOnly } from '../../common/security/access-policy';
+import { assertOperationsOrSuperAdmin } from '../../common/security/access-policy';
 
 @Controller('events')
 export class EventsController {
@@ -44,7 +44,7 @@ export class EventsController {
     @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(CreateEventDtoSchema)) dto: CreateEventDto,
   ) {
-    assertOperationsOnly(req.user, 'Event creation');
+    assertOperationsOrSuperAdmin(req.user, 'Event creation');
     return this.eventsService.create(dto);
   }
 
@@ -67,7 +67,7 @@ export class EventsController {
     @Param('identifier') identifier: string,
     @Body(new ZodValidationPipe(UpdateEventDtoSchema)) dto: UpdateEventDto,
   ) {
-    assertOperationsOnly(req.user, 'Event update');
+    assertOperationsOrSuperAdmin(req.user, 'Event update');
     return this.eventsService.update(identifier, dto);
   }
 
@@ -77,7 +77,7 @@ export class EventsController {
     @Req() req: { user: JwtUserPayload },
     @Param('identifier') identifier: string,
   ) {
-    assertOperationsOnly(req.user, 'Event deletion');
+    assertOperationsOrSuperAdmin(req.user, 'Event deletion');
     return this.eventsService.remove(identifier);
   }
 
@@ -88,7 +88,7 @@ export class EventsController {
     @Param('identifier') identifier: string,
     @Body('status') status: string,
   ) {
-    assertOperationsOnly(req.user, 'Event status update');
+    assertOperationsOrSuperAdmin(req.user, 'Event status update');
     return this.eventsService.updateStatus(identifier, status);
   }
 
@@ -99,7 +99,7 @@ export class EventsController {
     @Param('eventIdentifier') eventIdentifier: string,
     @Body(new ZodValidationPipe(CreateTierDtoSchema)) dto: CreateTierDto,
   ) {
-    assertOperationsOnly(req.user, 'Event tier creation');
+    assertOperationsOrSuperAdmin(req.user, 'Event tier creation');
     return this.eventsService.createTier(eventIdentifier, dto);
   }
 
@@ -115,7 +115,7 @@ export class EventsController {
     @Param('eventIdentifier') eventIdentifier: string,
     @Body(new ZodValidationPipe(CreateGateDtoSchema)) dto: CreateGateDto,
   ) {
-    assertOperationsOnly(req.user, 'Gate creation');
+    assertOperationsOrSuperAdmin(req.user, 'Gate creation');
     return this.eventsService.createGate(eventIdentifier, dto);
   }
 
@@ -132,7 +132,7 @@ export class EventsController {
     @Body(new ZodValidationPipe(CreateAccessRuleDtoSchema))
     dto: CreateAccessRuleDto,
   ) {
-    assertOperationsOnly(req.user, 'Access rule creation');
+    assertOperationsOrSuperAdmin(req.user, 'Access rule creation');
     return this.eventsService.createAccessRule({
       ...dto,
       eventId: eventIdentifier,
@@ -166,7 +166,7 @@ export class AccessTagsController {
     @Body(new ZodValidationPipe(CreateAccessTagDtoSchema))
     dto: CreateAccessTagDto,
   ) {
-    assertOperationsOnly(req.user, 'Access tag creation');
+    assertOperationsOrSuperAdmin(req.user, 'Access tag creation');
     return this.eventsService.createTag(dto);
   }
 
@@ -183,7 +183,7 @@ export class AccessTagsController {
     @Body(new ZodValidationPipe(UpdateAccessTagDtoSchema))
     dto: UpdateAccessTagDto,
   ) {
-    assertOperationsOnly(req.user, 'Access tag update');
+    assertOperationsOrSuperAdmin(req.user, 'Access tag update');
     return this.eventsService.updateTag(tagIdentifier, dto);
   }
 
@@ -193,7 +193,7 @@ export class AccessTagsController {
     @Req() req: { user: JwtUserPayload },
     @Param('tagIdentifier') tagIdentifier: string,
   ) {
-    assertOperationsOnly(req.user, 'Access tag deletion');
+    assertOperationsOrSuperAdmin(req.user, 'Access tag deletion');
     return this.eventsService.removeTag(tagIdentifier);
   }
 

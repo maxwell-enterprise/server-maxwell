@@ -101,7 +101,8 @@ export interface EventContract {
 }
 
 interface EventRow {
-  internalId: string;
+  /** Raw DB primary key (uuid text). Alias is lowercase so pg/node always maps reliably. */
+  event_internal_uuid: string;
   id: string;
   name: string;
   date: string | Date;
@@ -194,11 +195,11 @@ export class EventsRuntimeService {
         now(), now()
       )
       returning
-        id::text as "internalId",
+        id::text as event_internal_uuid,
         coalesce(public_id, id::text) as id,
         name,
-        date,
-        "endDate" as "endDate",
+        to_char(date, 'YYYY-MM-DD') as date,
+        to_char("endDate", 'YYYY-MM-DD') as "endDate",
         time,
         location,
         "locationMode" as "locationMode",
@@ -308,11 +309,11 @@ export class EventsRuntimeService {
     const result = await this.db.query<EventRow>(
       `
       select
-        e.id::text as "internalId",
+        e.id::text as event_internal_uuid,
         coalesce(e.public_id, e.id::text) as id,
         e.name,
-        e.date,
-        e."endDate" as "endDate",
+        to_char(e.date, 'YYYY-MM-DD') as date,
+        to_char(e."endDate", 'YYYY-MM-DD') as "endDate",
         e.time,
         e.location,
         e."locationMode" as "locationMode",
@@ -360,7 +361,11 @@ export class EventsRuntimeService {
     const fields: string[] = [];
     const params: unknown[] = [];
 
-    if (dto.id && dto.id !== existing.id && dto.id !== existing.internalId) {
+    if (
+      dto.id &&
+      dto.id !== existing.id &&
+      dto.id !== existing.event_internal_uuid
+    ) {
       throw new ConflictException('Event ID cannot be changed');
     }
     if (dto.name !== undefined) {
@@ -476,7 +481,7 @@ export class EventsRuntimeService {
       return this.toEvent(existing);
     }
 
-    params.push(existing.internalId);
+    params.push(existing.event_internal_uuid);
 
     const result = await this.db.query<EventRow>(
       `
@@ -484,11 +489,11 @@ export class EventsRuntimeService {
       set ${fields.join(', ')}, "updatedAt" = now()
       where id = $${params.length}::uuid
       returning
-        id::text as "internalId",
+        id::text as event_internal_uuid,
         coalesce(public_id, id::text) as id,
         name,
-        date,
-        "endDate" as "endDate",
+        to_char(date, 'YYYY-MM-DD') as date,
+        to_char("endDate", 'YYYY-MM-DD') as "endDate",
         time,
         location,
         "locationMode" as "locationMode",
@@ -523,7 +528,7 @@ export class EventsRuntimeService {
   async remove(identifier: string): Promise<void> {
     const existing = await this.findRowByIdentifier(identifier);
     await this.db.query('delete from events where id = $1::uuid', [
-      existing.internalId,
+      existing.event_internal_uuid,
     ]);
   }
 
@@ -736,11 +741,11 @@ export class EventsRuntimeService {
     const result = await this.db.query<EventRow>(
       `
       select
-        e.id::text as "internalId",
+        e.id::text as event_internal_uuid,
         coalesce(e.public_id, e.id::text) as id,
         e.name,
-        e.date,
-        e."endDate" as "endDate",
+        to_char(e.date, 'YYYY-MM-DD') as date,
+        to_char(e."endDate", 'YYYY-MM-DD') as "endDate",
         e.time,
         e.location,
         e."locationMode" as "locationMode",
@@ -780,11 +785,11 @@ export class EventsRuntimeService {
     const result = await this.db.query<EventRow>(
       `
       select
-        e.id::text as "internalId",
+        e.id::text as event_internal_uuid,
         coalesce(e.public_id, e.id::text) as id,
         e.name,
-        e.date,
-        e."endDate" as "endDate",
+        to_char(e.date, 'YYYY-MM-DD') as date,
+        to_char(e."endDate", 'YYYY-MM-DD') as "endDate",
         e.time,
         e.location,
         e."locationMode" as "locationMode",
@@ -825,7 +830,13 @@ export class EventsRuntimeService {
       select count(*)::text as count
       from event_attendance_ledger
       where "eventId" = (
-        select id from events where public_id = $1 or id::text = $1
+        select id from events
+        where (
+          public_id is not null
+          and btrim(public_id) <> ''
+          and lower(btrim(public_id)) = lower(btrim($1::text))
+        )
+        or id::text = $1::text
       )
       `,
       [identifier.trim()],
@@ -840,11 +851,11 @@ export class EventsRuntimeService {
     const result = await this.db.query<EventRow>(
       `
       select
-        e.id::text as "internalId",
+        e.id::text as event_internal_uuid,
         coalesce(e.public_id, e.id::text) as id,
         e.name,
-        e.date,
-        e."endDate" as "endDate",
+        to_char(e.date, 'YYYY-MM-DD') as date,
+        to_char(e."endDate", 'YYYY-MM-DD') as "endDate",
         e.time,
         e.location,
         e."locationMode" as "locationMode",
@@ -870,7 +881,12 @@ export class EventsRuntimeService {
         e.tiers,
         e.sessions
       from events e
-      where e.public_id = $1 or e.id::text = $1
+      where (
+        e.public_id is not null
+        and btrim(e.public_id) <> ''
+        and lower(btrim(e.public_id)) = lower(btrim($1::text))
+      )
+      or e.id::text = $1::text
       limit 1
       `,
       [identifier.trim()],
@@ -966,15 +982,20 @@ export class EventsRuntimeService {
     requestedId: string | undefined,
     name: string,
   ): Promise<string> {
-    const baseCandidate = requestedId
-      ? this.normalizePublicId(requestedId)
+    const trimmedRequested = requestedId?.trim();
+    const baseCandidate = trimmedRequested
+      ? this.normalizePublicId(trimmedRequested)
       : this.normalizePublicId(`EVT-${name}`);
 
-    let candidate = baseCandidate;
+    const safeBase =
+      baseCandidate ||
+      this.normalizePublicId(`EVT-${(name || 'EVENT').trim() || 'EVENT'}`);
+
+    let candidate = safeBase;
     let suffix = 1;
     while (await this.publicIdExists(candidate)) {
       suffix += 1;
-      candidate = `${baseCandidate}-${suffix}`;
+      candidate = `${safeBase}-${suffix}`;
     }
     return candidate;
   }
@@ -990,7 +1011,14 @@ export class EventsRuntimeService {
 
   private async publicIdExists(publicId: string): Promise<boolean> {
     const result = await this.db.query<{ exists: boolean }>(
-      'select exists(select 1 from events where public_id = $1) as exists',
+      `
+      select exists(
+        select 1 from events
+        where public_id is not null
+          and btrim(public_id) <> ''
+          and lower(btrim(public_id)) = lower(btrim($1::text))
+      ) as exists
+      `,
       [publicId],
     );
     return result.rows[0]?.exists ?? false;
@@ -1003,11 +1031,20 @@ export class EventsRuntimeService {
     if (!trimmed) {
       return null;
     }
-    const result = await this.db.query<{ internalId: string }>(
-      'select id::text as "internalId" from events where public_id = $1 or id::text = $1 limit 1',
+    const result = await this.db.query<{ event_internal_uuid: string }>(
+      `
+      select id::text as event_internal_uuid from events
+      where (
+        public_id is not null
+        and btrim(public_id) <> ''
+        and lower(btrim(public_id)) = lower(btrim($1::text))
+      )
+      or id::text = $1::text
+      limit 1
+      `,
       [trimmed],
     );
-    return result.rows[0]?.internalId ?? null;
+    return result.rows[0]?.event_internal_uuid ?? null;
   }
 
   private async resolveRequiredEventInternalId(
@@ -1073,13 +1110,24 @@ export class EventsRuntimeService {
   }
 
   private formatDate(value: string | Date | null): string | undefined {
-    if (!value) {
+    if (value === null || value === undefined) {
       return undefined;
     }
     if (value instanceof Date) {
-      return value.toISOString().slice(0, 10);
+      if (Number.isNaN(value.getTime())) {
+        return undefined;
+      }
+      // node-pg + postgres-date parse PostgreSQL DATE "YYYY-MM-DD" as *local* midnight (Date(y,m-1,d)).
+      // toISOString() converts to UTC and shifts the calendar day for non-UTC timezones (e.g. +7 → previous day).
+      const y = value.getFullYear();
+      const m = String(value.getMonth() + 1).padStart(2, '0');
+      const d = String(value.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
     }
-    return value.slice(0, 10);
+    if (typeof value === 'string') {
+      return value.trim().slice(0, 10) || undefined;
+    }
+    return undefined;
   }
 
   private toJson(value: unknown): string {

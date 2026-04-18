@@ -67,6 +67,7 @@ create index if not exists idx_user_notification_preferences_updated
 
 create table if not exists events (
   id uuid primary key default gen_random_uuid(),
+  public_id text,
   name text not null,
   date date not null,
   "endDate" date,
