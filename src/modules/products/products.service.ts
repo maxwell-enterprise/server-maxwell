@@ -8,6 +8,12 @@ import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 import { DbService } from '../../common/db.service';
 import {
+  assertServiceRoleKeyLooksLikeJwt,
+  explainSupabaseJwsError,
+  normalizeSupabaseJwtKey,
+  normalizeSupabaseUrl,
+} from '../../common/supabase-service-env';
+import {
   CreateProductDto,
   ProductQueryDto,
   ProductVariantDto,
@@ -42,7 +48,12 @@ type UploadedImageFile = {
   buffer: Buffer;
 };
 
-const ALLOWED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const ALLOWED_IMAGE_MIMES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+]);
 
 /** Some browsers / OS send non-standard MIME labels. */
 const IMAGE_MIME_ALIASES: Record<string, string> = {
@@ -69,6 +80,10 @@ function sniffImageMime(buffer: Buffer): string | null {
     buffer.toString('utf8', 8, 12) === 'WEBP'
   ) {
     return 'image/webp';
+  }
+  const sig6 = buffer.toString('ascii', 0, 6);
+  if (sig6 === 'GIF87a' || sig6 === 'GIF89a') {
+    return 'image/gif';
   }
   return null;
 }
@@ -101,12 +116,14 @@ export class ProductsService {
     const mime = resolveProductUploadMime(file.mimetype, file.buffer);
     if (!mime) {
       throw new BadRequestException(
-        'Only JPG, PNG, or WEBP images are allowed (file type could not be detected — try exporting as JPEG).',
+        'Only JPG, PNG, WEBP, or GIF images are allowed (file type could not be detected — try exporting as JPEG or PNG).',
       );
     }
 
-    const supabaseUrl = process.env.SUPABASE_URL?.trim();
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    const supabaseUrl = normalizeSupabaseUrl(process.env.SUPABASE_URL);
+    const serviceRoleKey = normalizeSupabaseJwtKey(
+      process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+    );
     const bucket = process.env.SUPABASE_STORAGE_BUCKET?.trim() || 'app-images';
     if (!supabaseUrl || !serviceRoleKey) {
       throw new BadRequestException(
@@ -114,19 +131,50 @@ export class ProductsService {
       );
     }
 
+    assertServiceRoleKeyLooksLikeJwt(serviceRoleKey);
+
     const ext =
-      mime === 'image/png' ? 'png' : mime === 'image/webp' ? 'webp' : 'jpg';
+      mime === 'image/png'
+        ? 'png'
+        : mime === 'image/webp'
+          ? 'webp'
+          : mime === 'image/gif'
+            ? 'gif'
+            : 'jpg';
     const objectPath = `products/${Date.now()}-${randomUUID()}.${ext}`;
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
+    let supabase: ReturnType<typeof createClient>;
+    try {
+      // Always send the service_role key for Storage requests. Without this, supabase-js
+      // may use `auth.getSession()` first; a stray/empty session access_token yields
+      // `Authorization: Bearer ` with garbage and Supabase returns "Invalid Compact JWS".
+      supabase = createClient(supabaseUrl, serviceRoleKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+        accessToken: async () => serviceRoleKey,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new BadRequestException(
+        `Supabase client init failed: ${explainSupabaseJwsError(msg)}`,
+      );
+    }
 
-    const { error } = await supabase.storage
-      .from(bucket)
-      .upload(objectPath, file.buffer, { contentType: mime, upsert: false });
-    if (error) {
-      throw new BadRequestException(`Storage upload failed: ${error.message}`);
+    let uploadError: { message: string } | null = null;
+    try {
+      const out = await supabase.storage
+        .from(bucket)
+        .upload(objectPath, file.buffer, { contentType: mime, upsert: false });
+      uploadError = out.error;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new BadRequestException(
+        `Storage upload failed: ${explainSupabaseJwsError(msg)}`,
+      );
+    }
+    if (uploadError) {
+      throw new BadRequestException(
+        `Storage upload failed: ${explainSupabaseJwsError(uploadError.message)}`,
+      );
     }
 
     const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);

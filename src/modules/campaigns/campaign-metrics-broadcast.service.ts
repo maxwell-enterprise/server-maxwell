@@ -5,6 +5,10 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import {
+  normalizeSupabaseJwtKey,
+  normalizeSupabaseUrl,
+} from '../../common/supabase-service-env';
+import {
   createClient,
   type RealtimeChannel,
   type SupabaseClient,
@@ -67,8 +71,10 @@ export class CampaignMetricsBroadcastService
       return;
     }
 
-    const url = process.env.SUPABASE_URL?.trim();
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    const url = normalizeSupabaseUrl(process.env.SUPABASE_URL);
+    const key = normalizeSupabaseJwtKey(
+      process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+    );
     if (!url || !key) {
       this.logger.warn(
         'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set — campaign metrics broadcast disabled.',
@@ -84,6 +90,7 @@ export class CampaignMetricsBroadcastService
 
     this.client = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
+      accessToken: async () => key,
       realtime: {
         // Default Realtime push timeout is 10s; slow networks / cold start can hit TIMED_OUT.
         timeout: 30_000,

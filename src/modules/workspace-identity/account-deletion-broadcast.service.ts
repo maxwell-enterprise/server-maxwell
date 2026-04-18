@@ -10,6 +10,10 @@ import {
   type SupabaseClient,
 } from '@supabase/supabase-js';
 import {
+  normalizeSupabaseJwtKey,
+  normalizeSupabaseUrl,
+} from '../../common/supabase-service-env';
+import {
   ACCOUNT_DELETION_BROADCAST_CHANNEL,
   ACCOUNT_DELETION_BROADCAST_EVENT,
 } from './account-deletion-broadcast.constants';
@@ -44,8 +48,10 @@ export class AccountDeletionBroadcastService
       return;
     }
 
-    const url = process.env.SUPABASE_URL?.trim();
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    const url = normalizeSupabaseUrl(process.env.SUPABASE_URL);
+    const key = normalizeSupabaseJwtKey(
+      process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+    );
     if (!url || !key) {
       this.logger.warn(
         'SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set — account deletion realtime disabled.',
@@ -55,6 +61,7 @@ export class AccountDeletionBroadcastService
 
     this.client = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
+      accessToken: async () => key,
       realtime: { timeout: 30_000 },
     });
 

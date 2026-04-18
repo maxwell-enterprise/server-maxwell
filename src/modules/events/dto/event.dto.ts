@@ -63,6 +63,9 @@ const RecurringMetaDtoSchema = z.object({
   totalSessions: z.coerce.number().int().positive(),
 });
 
+/** Storage/CDN URLs (e.g. Supabase signed) can exceed 2k; DB column is TEXT. */
+const EVENT_BANNER_URL_MAX = 16_384;
+
 const EventShape = {
   id: z.string().min(1).max(120).optional(),
   name: z.string().min(1).max(255),
@@ -73,7 +76,7 @@ const EventShape = {
   locationMode: LocationModeEnum.default('OFFLINE'),
   onlineMeetingLink: z.string().max(2048).optional(),
   locationMapLink: z.string().max(2048).optional(),
-  banner_url: z.string().max(2048).optional(),
+  banner_url: z.string().max(EVENT_BANNER_URL_MAX).optional(),
   description: z.string().max(5000).optional().default(''),
   capacity: z.coerce.number().int().nonnegative().default(0),
   attendees: z.coerce.number().int().nonnegative().default(0),
