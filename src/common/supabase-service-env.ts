@@ -43,7 +43,10 @@ export function explainSupabaseJwsError(message: string): string {
     return `${message} — In Supabase → Storage, create the bucket named in SUPABASE_STORAGE_BUCKET (default app-images) or fix the env name.`;
   }
   if (/row-level security|RLS|violates.*policy/i.test(message)) {
-    return `${message} — Allow service_role uploads for this bucket in Supabase Storage policies.`;
+    return (
+      `${message} — Supabase Storage memakai RLS pada tabel storage.objects. Di Supabase Dashboard → SQL Editor, jalankan script ` +
+      `database/supabase-sql/storage_app_images_rls.sql (sesuaikan nama bucket). Bukan di database Postgres Maxwell utama.`
+    );
   }
   return message;
 }
