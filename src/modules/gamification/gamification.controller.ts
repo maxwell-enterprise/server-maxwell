@@ -8,6 +8,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { GamificationService } from './gamification.service';
+import type { UserGamificationProfile } from './gamification.types';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import { assertOperationsOnly } from '../../common/security/access-policy';
@@ -54,8 +55,12 @@ export class GamificationController {
   }
 
   @Get('profiles/lookup/:userId')
-  getProfile(@Param('userId') userId: string) {
-    return this.gamification.getProfileByUserId(decodeURIComponent(userId));
+  lookupProfile(
+    @Param('userId') userId: string,
+  ): Promise<UserGamificationProfile | null> {
+    return this.gamification.getProfileByUserIdOptional(
+      decodeURIComponent(userId),
+    );
   }
 
   @Put('profiles/:userId')
@@ -65,10 +70,11 @@ export class GamificationController {
     @Param('userId') userId: string,
     @Body() body: Record<string, unknown>,
   ) {
-    assertOperationsOnly(req.user, 'Gamification profile update');
-    return this.gamification.upsertProfile(
-      decodeURIComponent(userId),
-      body ?? {},
-    );
+    const decoded = decodeURIComponent(userId);
+    const subject = String(req.user.sub ?? '');
+    if (decoded !== subject) {
+      assertOperationsOnly(req.user, 'Gamification profile update');
+    }
+    return this.gamification.upsertProfile(decoded, body ?? {});
   }
 }

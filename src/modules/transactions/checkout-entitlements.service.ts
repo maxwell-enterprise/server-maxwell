@@ -414,25 +414,27 @@ export class CheckoutEntitlementsService {
     if (!eventId || cache.has(eventId)) {
       return;
     }
-    try {
-      const res = await this.db.query<EventTicketContext>(
-        `
-        select
-          e.id::text as id,
-          e.name as name,
-          e.date::text as date,
-          e.location as location,
-          e."locationMode" as "locationMode",
-          e."onlineMeetingLink" as "onlineMeetingLink"
-        from events e
-        where e.id = $1::uuid
-        limit 1
-        `,
-        [eventId],
-      );
-      cache.set(eventId, res.rows[0] ?? null);
-    } catch {
-      cache.set(eventId, null);
-    }
+    const trimmed = eventId.trim();
+    const res = await this.db.query<EventTicketContext>(
+      `
+      select
+        coalesce(e.public_id, e.id::text) as id,
+        e.name as name,
+        to_char(e.date, 'YYYY-MM-DD') as date,
+        coalesce(e.location, '') as location,
+        coalesce(e."locationMode"::text, 'OFFLINE') as "locationMode",
+        e."onlineMeetingLink" as "onlineMeetingLink"
+      from events e
+      where (
+        e.public_id is not null
+        and btrim(e.public_id) <> ''
+        and lower(btrim(e.public_id)) = lower(btrim($1::text))
+      )
+      or e.id::text = $1::text
+      limit 1
+      `,
+      [trimmed],
+    );
+    cache.set(eventId, res.rows[0] ?? null);
   }
 }

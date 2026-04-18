@@ -152,6 +152,17 @@ export class GamificationService {
   }
 
   async getProfileByUserId(userId: string): Promise<UserGamificationProfile> {
+    const found = await this.getProfileByUserIdOptional(userId);
+    if (!found) {
+      throw new NotFoundException('Gamification profile not found');
+    }
+    return found;
+  }
+
+  /** Used by GET /profiles/lookup — returns null when the member has no row yet (no 404). */
+  async getProfileByUserIdOptional(
+    userId: string,
+  ): Promise<UserGamificationProfile | null> {
     const result = await this.db.query<Record<string, unknown>>(
       `SELECT "userId", "userName", "avatarUrl", "totalPoints", "currentLevel", badges, rank, "streakCount"
        FROM gamification_profiles
@@ -159,7 +170,7 @@ export class GamificationService {
       [userId],
     );
     const row = result.rows[0];
-    if (!row) throw new NotFoundException('Gamification profile not found');
+    if (!row) return null;
     return this.rowToProfile(row);
   }
 
