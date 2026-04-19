@@ -33,7 +33,10 @@ export class AppConfigService {
     return this.env.PAYMENT_PPN_RATE_PERCENT;
   }
 
-  /** Enables test-only settlement without Midtrans webhook (see TransactionsController.simulateSettle). */
+  /**
+   * Test-only settlement without Midtrans (`simulate-settle`). When env is unset, schema defaults
+   * to on for local / Vercel-hosted preview and off for production Node / Vercel Production.
+   */
   get allowPaymentSimulation(): boolean {
     return this.env.ALLOW_PAYMENT_SIMULATION;
   }

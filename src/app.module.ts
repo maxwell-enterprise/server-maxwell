@@ -4,6 +4,7 @@
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ScheduleModule } from '@nestjs/schedule';
 import { parseAppEnv } from './common/config/env.schema';
 
 const appEnv = parseAppEnv(process.env);
@@ -65,6 +66,7 @@ import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard'
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRoot({
       type: 'postgres',
       ...(appEnv.DATABASE_URL

@@ -22,5 +22,6 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
     CommunicationPdfService,
     JwtAuthGuard,
   ],
+  exports: [CommunicationEmailService, CommunicationWhatsappService],
 })
 export class CommunicationModule {}

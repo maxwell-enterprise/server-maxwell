@@ -16,10 +16,7 @@ export class AutomationsEmitService {
     const payload =
       body.payload && typeof body.payload === 'object' ? body.payload : {};
 
-    if (
-      triggerId !== 'NEW_MEMBER' &&
-      triggerId !== 'NEW_MEMBER_REGISTRATION'
-    ) {
+    if (triggerId !== 'NEW_MEMBER' && triggerId !== 'NEW_MEMBER_REGISTRATION') {
       throw new BadRequestException(
         `Unsupported triggerId for emit: ${triggerId}`,
       );

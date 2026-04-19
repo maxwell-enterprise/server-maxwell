@@ -35,9 +35,7 @@ export function assertServiceRoleKeyLooksLikeJwt(key: string): void {
 
 export function explainSupabaseJwsError(message: string): string {
   if (/invalid compact jws/i.test(message)) {
-    return (
-      'Invalid Supabase service_role JWT. Set SUPABASE_SERVICE_ROLE_KEY in Railway to the full service_role key from Supabase Dashboard → Settings → API (not the JWT Secret, not the database password). Strip quotes, newlines, and any "Bearer " prefix.'
-    );
+    return 'Invalid Supabase service_role JWT. Set SUPABASE_SERVICE_ROLE_KEY in Railway to the full service_role key from Supabase Dashboard → Settings → API (not the JWT Secret, not the database password). Strip quotes, newlines, and any "Bearer " prefix.';
   }
   if (/bucket not found|Bucket not found/i.test(message)) {
     return `${message} — In Supabase → Storage, create the bucket named in SUPABASE_STORAGE_BUCKET (default app-images) or fix the env name.`;

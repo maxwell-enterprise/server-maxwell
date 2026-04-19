@@ -215,6 +215,14 @@ export class WalletController {
     return this.walletService.getMembershipCard(userId);
   }
 
+  /** Aggregated entitlement hub: membership card + CRM id + gamification (member app). */
+  @Get('member-hub')
+  @UseGuards(JwtAuthGuard)
+  getMemberHub(@Req() req: { user: JwtUserPayload }) {
+    const userId = String(req.user.sub);
+    return this.walletService.getMemberHubContext(userId);
+  }
+
   @Post('gifts')
   @UseGuards(JwtAuthGuard)
   createGift(

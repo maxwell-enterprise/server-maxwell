@@ -25,6 +25,27 @@ const parseBoolean = (value: unknown) => {
   return value;
 };
 
+/**
+ * When `ALLOW_PAYMENT_SIMULATION` is unset, allow simulate-settle on local and Vercel preview,
+ * and disallow on production (Railway/Vercel prod, NODE_ENV=production without preview).
+ * Explicit `true` / `false` in env always wins.
+ */
+function inferAllowPaymentSimulation(): boolean {
+  const onVercel =
+    process.env.VERCEL === '1' ||
+    String(process.env.VERCEL ?? '').toLowerCase() === 'true';
+  if (onVercel && process.env.VERCEL_ENV === 'production') {
+    return false;
+  }
+  if (onVercel) {
+    return true;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+  return true;
+}
+
 export const AppEnvSchema = z
   .object({
     NODE_ENV: z
@@ -50,7 +71,11 @@ export const AppEnvSchema = z
     DB_POOL_MAX: z.coerce.number().int().positive().default(10),
     DB_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
     /** First TCP/pg handshake to Supabase / remote Postgres often needs >5s on slow or pooled links. */
-    DB_CONNECTION_TIMEOUT_MS: z.coerce.number().int().positive().default(30_000),
+    DB_CONNECTION_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(30_000),
     DB_APPLICATION_NAME: z.string().min(1).default('maxwell-backend'),
     SUPABASE_URL: z.string().url().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
@@ -63,12 +88,16 @@ export const AppEnvSchema = z
 
     /**
      * When true, `POST /transactions/simulate-settle` may mark a PENDING payment as PAID (testing only).
-     * Keep false in production unless you explicitly accept the risk.
+     * If unset: enabled on local / Vercel preview; disabled on `NODE_ENV=production` (e.g. Railway)
+     * and on Vercel Production. Set explicitly to override.
      */
-    ALLOW_PAYMENT_SIMULATION: z.preprocess(
-      (v) => parseBoolean(v) ?? false,
-      z.boolean(),
-    ),
+    ALLOW_PAYMENT_SIMULATION: z.preprocess((v) => {
+      const explicit = parseBoolean(v);
+      if (explicit !== undefined) {
+        return explicit;
+      }
+      return inferAllowPaymentSimulation();
+    }, z.boolean()),
 
     /** When set, `POST /fe/internal/members/sync` requires header `x-internal-key` with this value (server-to-server only). */
     INTERNAL_MEMBER_SYNC_KEY: z.string().optional(),

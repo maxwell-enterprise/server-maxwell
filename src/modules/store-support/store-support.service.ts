@@ -339,10 +339,11 @@ export class StoreSupportService {
   }
 
   async listInventoryTransactions(limit = 200): Promise<unknown[]> {
+    // Column is named `timestamp` (migration 011) — must be quoted in SQL; bare `timestamp` is a reserved type keyword.
     const result = await this.db.query<Record<string, unknown>>(
-      `SELECT id::text AS id, "feId", sku, type, quantity, "balanceAfter", reference, "performedBy", timestamp
+      `SELECT id::text AS id, "feId", sku, type, quantity, "balanceAfter", reference, "performedBy", "timestamp" AS "ts"
        FROM inventory_transactions
-       ORDER BY timestamp DESC
+       ORDER BY "timestamp" DESC
        LIMIT $1`,
       [Math.min(limit, 500)],
     );
@@ -354,7 +355,7 @@ export class StoreSupportService {
       balanceAfter: Number(r.balanceAfter),
       reference: r.reference ?? '',
       performedBy: r.performedBy ?? '',
-      timestamp: toIso(r.timestamp),
+      timestamp: toIso(r.ts),
     }));
   }
 

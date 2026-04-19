@@ -54,7 +54,13 @@ export class TransactionsController {
     @Headers('x-idempotency-key') idempotencyKey?: string,
   ) {
     const userId = req.user?.sub != null ? String(req.user.sub) : null;
-    return this.transactionsService.checkout(userId, dto, idempotencyKey);
+    const buyerRole = req.user?.role?.trim() || 'GUEST';
+    return this.transactionsService.checkout(
+      userId,
+      dto,
+      idempotencyKey,
+      buyerRole,
+    );
   }
 
   /**
@@ -70,10 +76,12 @@ export class TransactionsController {
     @Headers('x-idempotency-key') idempotencyKey?: string,
   ) {
     const userId = req.user?.sub != null ? String(req.user.sub) : null;
+    const buyerRole = req.user?.role?.trim() || 'GUEST';
     return this.transactionsService.createMidtransSnap(
       userId,
       dto,
       idempotencyKey,
+      buyerRole,
     );
   }
 

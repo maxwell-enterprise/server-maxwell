@@ -3,9 +3,17 @@
  * when a payment row is PAID. Idempotent via payment_transactions."entitlementProcessed".
  */
 
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
 import { DbService } from '../../common/db.service';
-import { ProductsService } from '../products/products.service';
+import {
+  ProductsService,
+  type PgQueryExecutor,
+} from '../products/products.service';
 import { WalletService } from '../wallet/wallet.service';
 import { MembersService } from '../members/members.service';
 import {
@@ -42,12 +50,51 @@ const CREDIT_TAG_DESCRIPTIONS: Record<string, string> = {
   SERIES_2025_FULL: 'Annual pass credits',
 };
 
+/** jsonb is usually parsed by node-pg; tolerate string / legacy double-encoding. */
+function parseItemsSnapshot(
+  raw: unknown,
+): Array<{ productId: string; quantity: number; variantId?: string | null }> {
+  if (Array.isArray(raw)) {
+    return raw as Array<{
+      productId: string;
+      quantity: number;
+      variantId?: string | null;
+    }>;
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const once = JSON.parse(raw) as unknown;
+      if (Array.isArray(once)) {
+        return once as Array<{
+          productId: string;
+          quantity: number;
+          variantId?: string | null;
+        }>;
+      }
+      if (typeof once === 'string' && once.trim()) {
+        const twice = JSON.parse(once) as unknown;
+        if (Array.isArray(twice)) {
+          return twice as Array<{
+            productId: string;
+            quantity: number;
+            variantId?: string | null;
+          }>;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
 @Injectable()
 export class CheckoutEntitlementsService {
   private readonly logger = new Logger(CheckoutEntitlementsService.name);
 
   constructor(
     private readonly db: DbService,
+    private readonly prisma: PrismaService,
     private readonly products: ProductsService,
     private readonly wallet: WalletService,
     private readonly members: MembersService,
@@ -60,6 +107,30 @@ export class CheckoutEntitlementsService {
   async processForPaymentId(paymentId: string): Promise<void> {
     const id = paymentId.trim();
     if (!id) return;
+
+    const peek = await this.db.query<PaymentEntitlementRow>(
+      `
+      select
+        id::text as id,
+        "orderId" as "orderId",
+        "customerEmail" as "customerEmail",
+        "buyerUserId" as "buyerUserId",
+        "itemsSnapshot" as "itemsSnapshot"
+      from payment_transactions
+      where id = $1::uuid
+        and upper(status) = 'PAID'
+        and coalesce("entitlementProcessed", false) = false
+      limit 1
+      `,
+      [id],
+    );
+    const peekRow = peek.rows[0];
+    if (!peekRow) {
+      return;
+    }
+    // Runs on the pool (not inside FOR UPDATE): avoids nested `pool.connect` while a
+    // checkout transaction client is already checked out — fixes "timeout exceeded when trying to connect".
+    await this.members.ensureCrmMemberForPurchaseEmail(peekRow.customerEmail);
 
     await this.db.withTransaction(async (client) => {
       const sel = await client.query<PaymentEntitlementRow>(
@@ -90,21 +161,12 @@ export class CheckoutEntitlementsService {
 
       if (!walletOwnerId) {
         this.logger.warn(
-          `Checkout entitlements: no wallet owner for payment ${row.id} (email=${row.customerEmail}); marking processed to avoid retries.`,
-        );
-        await client.query(
-          `
-          update payment_transactions
-          set "entitlementProcessed" = true,
-              "entitlementProcessedAt" = now()
-          where id = $1::uuid
-          `,
-          [row.id],
+          `Checkout entitlements: no wallet owner for payment ${row.id} (email=${row.customerEmail}); leaving entitlementProcessed=false so a later sync (member/JWT) can retry.`,
         );
         return;
       }
 
-      const snapshot = Array.isArray(row.itemsSnapshot) ? row.itemsSnapshot : [];
+      const snapshot = parseItemsSnapshot(row.itemsSnapshot);
       if (snapshot.length === 0) {
         await client.query(
           `
@@ -135,16 +197,32 @@ export class CheckoutEntitlementsService {
 
       for (const line of snapshot) {
         const qty = Math.max(1, Number(line.quantity) || 1);
-        let product: Product;
-        try {
-          product = await this.products.findOne(String(line.productId));
-        } catch {
+        const rawLine = line as Record<string, unknown>;
+        const productKey =
+          (typeof rawLine.productId === 'string' && rawLine.productId.trim()) ||
+          (typeof rawLine.product_id === 'string' && rawLine.product_id.trim()) ||
+          (typeof rawLine.id === 'string' && rawLine.id.trim()) ||
+          '';
+        if (!productKey) {
           this.logger.warn(
-            `Checkout entitlements: product ${line.productId} not found for payment ${row.id}`,
+            `Checkout entitlements: snapshot line missing productId for payment ${row.id}`,
           );
           continue;
         }
-        const bom = this.resolveBomLines(product, line.variantId ?? undefined);
+        let product: Product;
+        try {
+          product = await this.products.findOne(productKey, client);
+        } catch {
+          this.logger.warn(
+            `Checkout entitlements: product ${productKey} not found for payment ${row.id}`,
+          );
+          continue;
+        }
+        const variantKey =
+          rawLine.variantId != null && String(rawLine.variantId).trim()
+            ? String(rawLine.variantId).trim()
+            : undefined;
+        const bom = this.resolveBomLines(product, variantKey);
         const chunk = await this.expandBomToWalletItems({
           walletUserId: walletOwnerId,
           paymentId: row.id,
@@ -153,8 +231,18 @@ export class CheckoutEntitlementsService {
           bom,
           cartQty: qty,
           eventCache,
+          sql: client,
         });
         mutations.push(...chunk);
+      }
+
+      if (snapshot.length > 0 && mutations.length === 0) {
+        this.logger.error(
+          `Checkout entitlements: payment ${row.id} has ${snapshot.length} snapshot line(s) but expanded to 0 wallet rows (check productId / BOM / variants).`,
+        );
+        throw new BadRequestException(
+          'Checkout could not create wallet items: product bundle is empty or invalid for this order. In Store Admin, set bundle items (e.g. Digital → DIGITAL_LINK with Resource URL), save the product, then try again.',
+        );
       }
 
       for (const item of mutations) {
@@ -201,17 +289,42 @@ export class CheckoutEntitlementsService {
     if (trimmedBuyer) {
       return trimmedBuyer;
     }
-    return this.members.findMemberIdByEmail(customerEmail);
+    const email = String(customerEmail ?? '').trim();
+    if (!email) {
+      return null;
+    }
+    // Prefer Prisma workspace `User.id` (JWT `sub` / session `user.id`) so wallet rows
+    // match GET /wallet/items?userId=… when the buyer signs in later.
+    const workspaceUser = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (workspaceUser) {
+      return workspaceUser.id;
+    }
+    return this.members.findMemberIdByEmail(email);
   }
 
   private resolveBomLines(product: Product, variantId?: string): ProductItem[] {
-    if (product.hasVariants && variantId) {
-      const v = product.variants?.find((x) => x.id === variantId);
-      if (v?.items?.length) {
-        return v.items;
+    const parentItems = Array.isArray(product.items) ? product.items : [];
+    if (product.hasVariants && product.variants?.length) {
+      const vid = String(variantId ?? '').trim();
+      if (vid) {
+        const v = product.variants.find((x) => x.id === vid);
+        if (v?.items?.length) {
+          return v.items;
+        }
       }
+      if (parentItems.length) {
+        return parentItems;
+      }
+      const firstWithItems = product.variants.find((vv) => vv.items?.length);
+      if (firstWithItems?.items?.length) {
+        return firstWithItems.items;
+      }
+      return [];
     }
-    return product.items ?? [];
+    return parentItems;
   }
 
   private async expandBomToWalletItems(ctx: {
@@ -222,18 +335,20 @@ export class CheckoutEntitlementsService {
     bom: ProductItem[];
     cartQty: number;
     eventCache: Map<string, EventTicketContext | null>;
+    /** Transaction-scoped SQL (same `pg` client as wallet upserts) — never `this.db` here. */
+    sql: PgQueryExecutor;
   }): Promise<
     Array<{
-    id: string;
-    userId: string;
-    type: string;
-    title: string;
-    subtitle: string;
-    status: string;
-    isTransferable?: boolean;
-    expiryDate?: string | null;
-    qrData?: string | null;
-    meta?: Record<string, unknown>;
+      id: string;
+      userId: string;
+      type: string;
+      title: string;
+      subtitle: string;
+      status: string;
+      isTransferable?: boolean;
+      expiryDate?: string | null;
+      qrData?: string | null;
+      meta?: Record<string, unknown>;
     }>
   > {
     const out: Array<{
@@ -260,16 +375,21 @@ export class CheckoutEntitlementsService {
 
     for (const bom of ctx.bom) {
       const lineUnits = Math.max(1, Number(bom.quantity) || 1) * ctx.cartQty;
-      const type = bom.type as ProductEntitlementType;
+      const rawType = bom.type as string | undefined;
+      const type =
+        typeof rawType === 'string' && rawType.trim()
+          ? rawType.trim().toUpperCase()
+          : '';
+      const normalizedType: ProductEntitlementType | '' =
+        type === 'DIGITAL'
+          ? 'DIGITAL_LINK'
+          : (type as ProductEntitlementType);
 
-      switch (type) {
+      switch (normalizedType) {
         case 'TICKET': {
-          const eventId = String(
-            (bom.meta as Record<string, unknown> | undefined)?.['eventId'] ??
-              '',
-          ).trim();
-          await this.ensureEventInCache(eventId, ctx.eventCache);
-          const evt = eventId ? ctx.eventCache.get(eventId) ?? null : null;
+          const eventId = String(bom.meta?.['eventId'] ?? '').trim();
+          await this.ensureEventInCache(eventId, ctx.eventCache, ctx.sql);
+          const evt = eventId ? (ctx.eventCache.get(eventId) ?? null) : null;
 
           for (let i = 0; i < lineUnits; i++) {
             const id = `W-TKT-${stamp()}-${i}`;
@@ -290,9 +410,7 @@ export class CheckoutEntitlementsService {
                 : `TICKET:${eventId || 'UNKNOWN'}:${ctx.walletUserId}:${id}`,
               meta: {
                 ...baseMeta,
-                ...(bom.meta && typeof bom.meta === 'object'
-                  ? (bom.meta as Record<string, unknown>)
-                  : {}),
+                ...(bom.meta && typeof bom.meta === 'object' ? bom.meta : {}),
                 eventId: eventId || undefined,
                 targetTier: (bom.meta as { targetTier?: string } | undefined)
                   ?.targetTier,
@@ -307,7 +425,7 @@ export class CheckoutEntitlementsService {
         case 'EVENT_CREDIT':
         case 'RECURRING_PASS': {
           const id = `W-CR-${stamp()}`;
-          const meta = (bom.meta ?? {}) as Record<string, unknown>;
+          const meta = bom.meta ?? {};
           const creditTag =
             typeof meta['creditTag'] === 'string' ? meta['creditTag'] : '';
           const unlimited = Boolean(meta['isUnlimited']);
@@ -337,7 +455,7 @@ export class CheckoutEntitlementsService {
         case 'PHYSICAL': {
           for (let i = 0; i < lineUnits; i++) {
             const id = `W-PHY-${stamp()}-${i}`;
-            const meta = (bom.meta ?? {}) as Record<string, unknown>;
+            const meta = bom.meta ?? {};
             out.push({
               id,
               userId: ctx.walletUserId,
@@ -359,7 +477,7 @@ export class CheckoutEntitlementsService {
         case 'DIGITAL_LINK': {
           for (let i = 0; i < lineUnits; i++) {
             const id = `W-DIG-${stamp()}-${i}`;
-            const meta = (bom.meta ?? {}) as Record<string, unknown>;
+            const meta = bom.meta ?? {};
             const urlRaw =
               (typeof meta['url'] === 'string' && meta['url']) ||
               (typeof meta['link'] === 'string' && meta['link']) ||
@@ -386,7 +504,7 @@ export class CheckoutEntitlementsService {
         }
         default:
           this.logger.warn(
-            `Unknown BOM type "${String(type)}" on product ${ctx.product.id}`,
+            `Unknown BOM type "${String(rawType)}" on product ${ctx.product.id}`,
           );
       }
     }
@@ -410,12 +528,13 @@ export class CheckoutEntitlementsService {
   private async ensureEventInCache(
     eventId: string,
     cache: Map<string, EventTicketContext | null>,
+    sql: PgQueryExecutor = this.db,
   ): Promise<void> {
     if (!eventId || cache.has(eventId)) {
       return;
     }
     const trimmed = eventId.trim();
-    const res = await this.db.query<EventTicketContext>(
+    const res = await sql.query<EventTicketContext>(
       `
       select
         coalesce(e.public_id, e.id::text) as id,

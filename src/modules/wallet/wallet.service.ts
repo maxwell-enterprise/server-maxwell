@@ -27,6 +27,7 @@ import {
   WalletHistoryQueryDto,
 } from './dto';
 import { DbService } from '../../common/db.service';
+import { PrismaService } from '../../prisma/prisma.service';
 import { MembersService } from '../members/members.service';
 
 type SqlExecutor = Pick<DbService, 'query'> | Pick<PoolClient, 'query'>;
@@ -66,10 +67,27 @@ interface TeamMemberRow extends CorporateTeamMemberContract {
   internalId: string;
 }
 
+export interface WalletMemberHubContext {
+  appUserId: string;
+  displayName: string | null;
+  email: string | null;
+  memberPublicId: string | null;
+  gateScanQrPayload: string;
+  membershipTier: string | null;
+  cardNumber: string | null;
+  gamification: {
+    totalPoints: number;
+    currentLevel: string;
+    rank: number | null;
+  } | null;
+  card: MembershipCard | null;
+}
+
 @Injectable()
 export class WalletService {
   constructor(
     private readonly db: DbService,
+    private readonly prisma: PrismaService,
     private readonly members: MembersService,
   ) {}
   // ==========================================================================
@@ -513,7 +531,7 @@ export class WalletService {
         now(),
         now()
       )
-      on conflict (public_id) do update
+      on conflict (public_id) where (public_id is not null) do update
       set "userId" = excluded."userId",
           type = excluded.type,
           title = excluded.title,
@@ -665,7 +683,7 @@ export class WalletService {
         $10::timestamptz,
         $11::timestamptz
       )
-      on conflict (public_id) do update
+      on conflict (public_id) where (public_id is not null) do update
       set "sourceUserId" = excluded."sourceUserId",
           "sourceUserName" = excluded."sourceUserName",
           "entitlementId" = excluded."entitlementId",
@@ -754,7 +772,7 @@ export class WalletService {
         $6::timestamptz,
         $7::timestamptz
       )
-      on conflict (public_id) do update
+      on conflict (public_id) where (public_id is not null) do update
       set "orgId" = excluded."orgId",
           email = excluded.email,
           name = excluded.name,
@@ -1185,6 +1203,72 @@ export class WalletService {
       .catch(() => ({ rows: [] as MembershipCard[] }));
 
     return insert.rows[0];
+  }
+
+  /**
+   * Member Wallet hub: digital card row + CRM member id + gamification for gate scan / UI.
+   */
+  async getMemberHubContext(userId: string): Promise<WalletMemberHubContext> {
+    const uid = userId.trim();
+    const user = await this.prisma.user.findUnique({
+      where: { id: uid },
+      select: { email: true, name: true },
+    });
+    const emailLc = user?.email?.trim().toLowerCase() ?? '';
+    let memberPublicId: string | null = null;
+    let memberName: string | null = null;
+    if (emailLc) {
+      const digest = await this.members.findMemberDigestByEmail(emailLc);
+      memberPublicId = digest?.publicId ?? null;
+      memberName = digest?.name ?? null;
+    }
+    let gamification: WalletMemberHubContext['gamification'] = null;
+    try {
+      const g = await this.db.query<{
+        totalPoints: number;
+        currentLevel: string;
+        rank: number | null;
+      }>(
+        `
+        select "totalPoints", "currentLevel", rank
+        from gamification_profiles
+        where "userId" = $1
+        limit 1
+        `,
+        [uid],
+      );
+      const row = g.rows[0];
+      if (row) {
+        gamification = {
+          totalPoints: Number(row.totalPoints) || 0,
+          currentLevel: String(row.currentLevel ?? '1'),
+          rank: row.rank != null ? Number(row.rank) : null,
+        };
+      }
+    } catch {
+      gamification = null;
+    }
+    let card: MembershipCard | null = null;
+    try {
+      card = (await this.getMembershipCard(uid)) ?? null;
+    } catch {
+      card = null;
+    }
+    const gateScanQrPayload =
+      (card?.qrString && String(card.qrString).trim()) ||
+      `MEMBER:${uid}:${emailLc || 'user'}`;
+    const membershipTier = card?.membershipTier?.trim() || null;
+    return {
+      appUserId: uid,
+      displayName: user?.name?.trim() || memberName || null,
+      email: user?.email ?? null,
+      memberPublicId,
+      gateScanQrPayload,
+      membershipTier,
+      cardNumber: card?.cardNumber ?? null,
+      gamification,
+      card,
+    };
   }
 
   /**

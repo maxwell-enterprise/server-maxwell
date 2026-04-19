@@ -33,13 +33,17 @@ export const EMAIL_TRIGGER_PAYLOAD_CONTRACTS: Record<
   },
 };
 
-const EMAIL_RE =
-  /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function assertSupportedEmailTrigger(
   triggerId: string,
 ): asserts triggerId is SupportedEmailAutomationTriggerId {
-  if (!Object.prototype.hasOwnProperty.call(EMAIL_TRIGGER_PAYLOAD_CONTRACTS, triggerId)) {
+  if (
+    !Object.prototype.hasOwnProperty.call(
+      EMAIL_TRIGGER_PAYLOAD_CONTRACTS,
+      triggerId,
+    )
+  ) {
     throw new BadRequestException(
       `Unknown or unsupported email automation trigger: ${triggerId}`,
     );

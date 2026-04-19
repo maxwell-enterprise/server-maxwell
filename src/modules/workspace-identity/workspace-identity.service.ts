@@ -198,7 +198,7 @@ export class WorkspaceIdentityService {
         userId,
         type: 'ROLE_CHANGED',
         title: 'Workspace role updated',
-        body: `Your access role is now "${newRoleDisplay}" (RBAC). Please log out and sign in again so menus and actions refresh to the latest permissions.`,
+        body: `Your workspace role is now "${newRoleDisplay}". Please sign out and sign in again so menus and actions match your latest access.`,
         payload: { newRole: newRoleDisplay },
       },
     });
@@ -466,7 +466,7 @@ export class WorkspaceIdentityService {
       assignedRole,
       metadata: {
         rbacInboxId: n.id,
-        memberName: 'RBAC',
+        memberName: 'Workspace',
       },
     }));
   }

@@ -6,7 +6,16 @@ import {
 } from '@nestjs/common';
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
+import type { QueryResult } from 'pg';
 import { DbService } from '../../common/db.service';
+
+/** Same `.query` shape as `pg` Pool / PoolClient — use transaction client to avoid pool deadlock. */
+export type PgQueryExecutor = {
+  query: <T = unknown>(
+    queryText: string,
+    values?: readonly unknown[],
+  ) => Promise<QueryResult<T>>;
+};
 import {
   assertServiceRoleKeyLooksLikeJwt,
   explainSupabaseJwsError,
@@ -337,8 +346,11 @@ export class ProductsService {
     };
   }
 
-  async findOne(identifier: string): Promise<Product> {
-    const row = await this.findRowByIdentifier(identifier);
+  async findOne(
+    identifier: string,
+    executor: PgQueryExecutor = this.db,
+  ): Promise<Product> {
+    const row = await this.findRowByIdentifier(identifier, executor);
     return this.toProduct(row);
   }
 
@@ -436,8 +448,11 @@ export class ProductsService {
     ]);
   }
 
-  private async findRowByIdentifier(identifier: string): Promise<ProductRow> {
-    const result = await this.db.query<ProductRow>(
+  private async findRowByIdentifier(
+    identifier: string,
+    executor: PgQueryExecutor = this.db,
+  ): Promise<ProductRow> {
+    const result = await executor.query<ProductRow>(
       `
       select
         p.id::text as "internalId",
@@ -468,7 +483,33 @@ export class ProductsService {
     return row;
   }
 
+  /** jsonb is usually parsed; tolerate string payloads from drivers / legacy rows. */
+  private parseJsonbArray<T>(value: unknown): T[] {
+    if (Array.isArray(value)) {
+      return value as T[];
+    }
+    if (typeof value === 'string' && value.trim()) {
+      try {
+        const parsed = JSON.parse(value) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed as T[];
+        }
+        if (typeof parsed === 'string' && parsed.trim()) {
+          const twice = JSON.parse(parsed) as unknown;
+          if (Array.isArray(twice)) {
+            return twice as T[];
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    return [];
+  }
+
   private toProduct(row: ProductRow): Product {
+    const items = this.parseJsonbArray<ProductItem>(row.items);
+    const variantsRaw = this.parseJsonbArray<ProductVariant>(row.variants);
     return {
       id: row.id,
       title: row.title,
@@ -480,12 +521,9 @@ export class ProductsService {
           : Number(row.compareAtPriceIdr),
       category: row.category,
       imageUrl: row.imageUrl ?? '',
-      items: Array.isArray(row.items) ? row.items : [],
+      items,
       hasVariants: row.hasVariants,
-      variants:
-        Array.isArray(row.variants) && row.variants.length > 0
-          ? row.variants
-          : undefined,
+      variants: variantsRaw.length > 0 ? variantsRaw : undefined,
       installmentConfig: row.installmentConfig ?? undefined,
       isActive: row.isActive,
     };

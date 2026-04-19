@@ -18,7 +18,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import {
   assertFinanceControllerOnly,
-  assertMarketingOnly,
+  assertMarketingOrSuperAdmin,
   assertOperationsOnly,
 } from '../../common/security/access-policy';
 
@@ -30,8 +30,9 @@ export class StoreSupportController {
     assertOperationsOnly(req.user, action);
   }
 
+  /** Voucher write/delete: Marketing owns promos; Super Admin break-glass (matches FE policies). */
   private assertMarketing(req: { user: JwtUserPayload }, action: string): void {
-    assertMarketingOnly(req.user, action);
+    assertMarketingOrSuperAdmin(req.user, action);
   }
 
   private assertFinance(req: { user: JwtUserPayload }, action: string): void {

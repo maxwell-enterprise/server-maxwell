@@ -247,6 +247,7 @@ export class TransactionsService {
     userId: string | null,
     dto: CheckoutDto,
     idempotencyKey?: string,
+    buyerRole: string = 'GUEST',
   ): Promise<{
     transaction: Transaction;
     paymentUrl?: string;
@@ -286,6 +287,7 @@ export class TransactionsService {
       products,
       subtotal,
       userId,
+      buyerRole,
     );
 
     const discountAmount = pricing.discountAmount;
@@ -422,15 +424,7 @@ export class TransactionsService {
         orderId: payment.orderId,
         channel: 'checkout',
       });
-      try {
-        await this.checkoutEntitlements.processForPaymentId(payment.id);
-      } catch (err) {
-        this.logger.error(
-          `Checkout entitlements failed for payment ${payment.id}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
+      await this.checkoutEntitlements.processForPaymentId(payment.id);
     }
 
     // 5. Map ke Transaction entity (supaya kompatibel dengan frontend)
@@ -523,6 +517,7 @@ export class TransactionsService {
     userId: string | null,
     dto: CheckoutDto,
     idempotencyKey?: string,
+    buyerRole: string = 'GUEST',
   ): Promise<{
     transaction: Transaction;
     snapToken: string;
@@ -556,6 +551,7 @@ export class TransactionsService {
       products,
       subtotal,
       userId,
+      buyerRole,
     );
 
     const discountAmount = pricing.discountAmount;
@@ -629,15 +625,7 @@ export class TransactionsService {
         const rowPaid = String(row.status).toUpperCase() === 'PAID';
         if (rowPaid) {
           if (rowGross === 0) {
-            try {
-              await this.checkoutEntitlements.processForPaymentId(row.id);
-            } catch (err) {
-              this.logger.error(
-                `Checkout entitlements failed for payment ${row.id}: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            }
+            await this.checkoutEntitlements.processForPaymentId(row.id);
             return {
               transaction: this.mapPaymentRowToTransaction(row),
               snapToken: '',
@@ -693,15 +681,7 @@ export class TransactionsService {
           if (!r) {
             throw new BadRequestException('Could not reload free transaction');
           }
-          try {
-            await this.checkoutEntitlements.processForPaymentId(r.id);
-          } catch (err) {
-            this.logger.error(
-              `Checkout entitlements failed for payment ${r.id}: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          }
+          await this.checkoutEntitlements.processForPaymentId(r.id);
           return {
             transaction: this.mapPaymentRowToTransaction(r),
             snapToken: '',
@@ -816,15 +796,7 @@ export class TransactionsService {
         orderId: payment.orderId,
         channel: 'midtrans_snap',
       });
-      try {
-        await this.checkoutEntitlements.processForPaymentId(payment.id);
-      } catch (err) {
-        this.logger.error(
-          `Checkout entitlements failed for payment ${payment.id}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
+      await this.checkoutEntitlements.processForPaymentId(payment.id);
     }
 
     // 5) Create Snap token using gross_amount from BE (skip for Rp 0 — Midtrans does not support it).
@@ -1111,12 +1083,13 @@ export class TransactionsService {
     }>,
     subtotal: number,
     userId: string | null,
+    buyerRole: string = 'GUEST',
   ): Promise<{
     discountAmount: number;
     taxAmount: number;
     totalAmount: number;
   }> {
-    // NOTE: userId currently unused for voucher scopes in this first implementation.
+    // NOTE: userId reserved for future ABAC voucher checks on the server.
     // The goal is to ensure totals sent to Midtrans always come from BE calculations.
     let discountAmount = 0;
 
@@ -1126,6 +1099,7 @@ export class TransactionsService {
         code,
         dto.items,
         products,
+        buyerRole,
       );
     }
 
@@ -1153,6 +1127,7 @@ export class TransactionsService {
       hasVariants: boolean;
       variants: unknown;
     }>,
+    buyerRole: string = 'GUEST',
   ): Promise<number> {
     const discountRes = await this.db.query<{
       type: string;
@@ -1204,6 +1179,20 @@ export class TransactionsService {
     )
       return 0;
 
+    const scopeNorm = String(discount.scope ?? '')
+      .trim()
+      .toUpperCase()
+      .replace(/-/g, '_');
+    const buyerUpper = String(buyerRole ?? 'GUEST')
+      .trim()
+      .toUpperCase()
+      .replace(/-/g, '_');
+    const roleMatchesTarget =
+      !!buyerUpper &&
+      (discount.targetIds ?? []).some(
+        (tid) => String(tid).trim().toUpperCase().replace(/-/g, '_') === buyerUpper,
+      );
+
     let totalDiscount = 0;
 
     for (const cartItem of cartItems) {
@@ -1219,20 +1208,25 @@ export class TransactionsService {
         (targetId === product.id || targetId === product.lookupId);
 
       const applicable =
-        discount.scope === 'GLOBAL' ||
-        discount.scope === 'ABAC_COMPLEX' ||
-        (discount.scope === 'CATEGORY_SPECIFIC' &&
+        scopeNorm === 'GLOBAL' ||
+        scopeNorm === 'ABAC_COMPLEX' ||
+        (scopeNorm === 'USER_ROLE_SPECIFIC' && roleMatchesTarget) ||
+        (scopeNorm === 'CATEGORY_SPECIFIC' &&
           discount.targetIds?.includes(product.category)) ||
-        (discount.scope === 'Product_SPECIFIC' &&
+        (scopeNorm === 'PRODUCT_SPECIFIC' &&
           discount.targetIds?.some((tid) => productMatchesLookup(tid))) ||
-        (discount.scope === 'EVENT_SPECIFIC' &&
+        (scopeNorm === 'EVENT_SPECIFIC' &&
           discount.targetIds?.some((tid) => productMatchesLookup(tid)));
 
       if (!applicable) continue;
 
       // BUNDLE_VOLUME: only apply when qty >= minQty (when provided)
+      const typeNorm = String(discount.type ?? '')
+        .trim()
+        .toUpperCase();
+
       if (
-        discount.type === 'BUNDLE_VOLUME' &&
+        typeNorm === 'BUNDLE_VOLUME' &&
         discount.minQty !== null &&
         qty < discount.minQty
       ) {
@@ -1245,11 +1239,11 @@ export class TransactionsService {
       );
       if (!Number.isFinite(unitPrice) || unitPrice <= 0) continue;
 
-      if (discount.type === 'PERCENTAGE' || discount.type === 'BUNDLE_VOLUME') {
+      if (typeNorm === 'PERCENTAGE' || typeNorm === 'BUNDLE_VOLUME') {
         // Percent discount is per-unit, multiplied by quantity.
         const unitDiscount = unitPrice * (Number(discount.value) / 100);
         totalDiscount += unitDiscount * qty;
-      } else if (discount.type === 'FIXED_AMOUNT') {
+      } else if (typeNorm === 'FIXED_AMOUNT') {
         // Fixed discount applied once per cart line (mimics FE PaymentModal behaviour).
         const unitDiscount = Math.min(Number(discount.value), unitPrice);
         totalDiscount += unitDiscount;
@@ -1544,15 +1538,7 @@ export class TransactionsService {
         );
       }
       if (String(row.status).toUpperCase() === 'PAID') {
-        try {
-          await this.checkoutEntitlements.processForPaymentId(transactionId);
-        } catch (err) {
-          this.logger.error(
-            `Checkout entitlements failed (already PAID simulate ${transactionId}): ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        }
+        await this.checkoutEntitlements.processForPaymentId(transactionId);
         return {
           paymentStatus: 'PAID',
           totalAmount: Number(row.totalAmount) || 0,
@@ -1569,15 +1555,7 @@ export class TransactionsService {
       paidRow.attributionSource ?? null,
       Number(paidRow.totalAmount) || 0,
     );
-    try {
-      await this.checkoutEntitlements.processForPaymentId(transactionId);
-    } catch (err) {
-      this.logger.error(
-        `Checkout entitlements failed after simulate-settle (${transactionId}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    await this.checkoutEntitlements.processForPaymentId(transactionId);
     await this.appendSecurityLog('PAYMENT_SIMULATION_SETTLED', {
       transactionId,
       orderId: paidRow.orderId,

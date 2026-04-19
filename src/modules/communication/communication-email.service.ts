@@ -180,8 +180,9 @@ export class CommunicationEmailService {
 
     const logId = `LOG-TRX-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
     const recipKey =
-      EMAIL_TRIGGER_PAYLOAD_CONTRACTS[triggerId as SupportedEmailAutomationTriggerId]
-        .recipientEmailKey;
+      EMAIL_TRIGGER_PAYLOAD_CONTRACTS[
+        triggerId as SupportedEmailAutomationTriggerId
+      ].recipientEmailKey;
     const to = vars[recipKey];
 
     try {

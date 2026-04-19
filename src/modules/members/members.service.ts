@@ -7,7 +7,12 @@ import {
 } from '@nestjs/common';
 import { MemberLifecycleStage } from '../../schemas/enums.schema';
 import { DbService } from '../../common/db.service';
-import { CreateMemberDto, MemberQueryDto, UpdateMemberDto } from './dto';
+import {
+  CreateMemberDto,
+  CreateMemberDtoSchema,
+  MemberQueryDto,
+  UpdateMemberDto,
+} from './dto';
 import {
   Member,
   MemberAddress,
@@ -153,6 +158,68 @@ export class MembersService {
       [email],
     );
     return res.rows[0]?.id ?? null;
+  }
+
+  /** CRM-facing id + name for wallet / membership hub (public_id when set). */
+  async findMemberDigestByEmail(
+    rawEmail: string,
+  ): Promise<{ publicId: string; name: string } | null> {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email) return null;
+    const res = await this.db.query<{ publicId: string; name: string }>(
+      `
+      select
+        coalesce(nullif(trim(m.public_id), ''), m.id::text) as "publicId",
+        m.name as name
+      from members m
+      where lower(trim(m.email)) = $1
+      limit 1
+      `,
+      [email],
+    );
+    const row = res.rows[0];
+    if (!row?.publicId) return null;
+    return { publicId: row.publicId, name: row.name };
+  }
+
+  /**
+   * Idempotent CRM row for a purchase email (commerce “shadow” / auto-provision).
+   * Wallet grants still use Prisma `User.id` when the buyer has a workspace account;
+   * this ensures `members` always has a lead for ops/reporting after a paid order.
+   */
+  async ensureCrmMemberForPurchaseEmail(
+    rawEmail: string,
+    displayName?: string | null,
+  ): Promise<void> {
+    const email = rawEmail?.trim().toLowerCase();
+    if (!email?.includes('@')) return;
+    const existing = await this.findMemberIdByEmail(email);
+    if (existing) return;
+    try {
+      const name = (
+        displayName?.trim() ||
+        email.split('@')[0] ||
+        'Customer'
+      ).slice(0, 255);
+      const dto = CreateMemberDtoSchema.parse({
+        name,
+        email,
+        phone: '',
+        joinMonth: new Date().toISOString().slice(0, 7),
+        lifecycleStage: 'IDENTIFIED',
+        platform: 'Store',
+        program: 'Online purchase',
+      });
+      await this.create(dto);
+      this.logger.log(`CRM member provisioned for purchase email ${email}`);
+    } catch (e) {
+      if (e instanceof ConflictException) return;
+      this.logger.warn(
+        `ensureCrmMemberForPurchaseEmail(${email}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
   }
 
   private lifecycleRank(stage: string): number {
