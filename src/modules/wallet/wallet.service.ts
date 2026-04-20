@@ -1436,14 +1436,18 @@ export class WalletService {
   }
 
   private toNullableTimestamp(value?: string | Date | null): string | null {
-    if (!value) {
+    if (value == null || value === '') {
       return null;
     }
 
     if (value instanceof Date) {
-      return value.toISOString();
+      return Number.isNaN(value.getTime()) ? null : value.toISOString();
     }
 
-    return new Date(value).toISOString();
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) {
+      return null;
+    }
+    return d.toISOString();
   }
 }

@@ -327,6 +327,25 @@ export class CheckoutEntitlementsService {
     return parentItems;
   }
 
+  /**
+   * Token-category products with no BOM in DB still grant a single flexible credit pass
+   * so PAID → wallet never expands to 0 rows (avoids checkout / simulate-settle failures).
+   */
+  private defaultTokenCreditBom(product: Product): ProductItem[] {
+    return [
+      {
+        id: 'token-credit-default',
+        name:
+          (product.title && product.title.trim()) || 'Flexible wallet credits',
+        type: 'EVENT_CREDIT',
+        quantity: 1,
+        meta: {
+          creditTag: 'FLEX_CREDIT_2025',
+        },
+      },
+    ];
+  }
+
   private async expandBomToWalletItems(ctx: {
     walletUserId: string;
     paymentId: string;
@@ -373,17 +392,37 @@ export class CheckoutEntitlementsService {
       sourceProductId: ctx.product.id,
     };
 
-    for (const bom of ctx.bom) {
+    const bomLines =
+      ctx.bom.length > 0
+        ? ctx.bom
+        : ctx.product.category === 'Token'
+          ? (() => {
+              this.logger.log(
+                `Checkout entitlements: product ${ctx.product.id} (Token) has empty BOM — applying default credit bundle`,
+              );
+              return this.defaultTokenCreditBom(ctx.product);
+            })()
+        : ctx.bom;
+
+    for (const bom of bomLines) {
       const lineUnits = Math.max(1, Number(bom.quantity) || 1) * ctx.cartQty;
       const rawType = bom.type as string | undefined;
       const type =
         typeof rawType === 'string' && rawType.trim()
           ? rawType.trim().toUpperCase()
           : '';
-      const normalizedType: ProductEntitlementType | '' =
+      let normalizedType: ProductEntitlementType | '' =
         type === 'DIGITAL'
           ? 'DIGITAL_LINK'
           : (type as ProductEntitlementType);
+      if (
+        type === 'TOKEN' ||
+        type === 'CREDIT' ||
+        type === 'FLEX_CREDIT' ||
+        type === 'WALLET_CREDIT'
+      ) {
+        normalizedType = 'EVENT_CREDIT';
+      }
 
       switch (normalizedType) {
         case 'TICKET': {
@@ -518,7 +557,14 @@ export class CheckoutEntitlementsService {
     }
     const exp = meta['expiration'];
     if (typeof exp === 'string' && exp.trim()) {
-      return exp.trim();
+      const t = exp.trim();
+      const parsed = new Date(t);
+      if (!Number.isNaN(parsed.getTime())) {
+        return t;
+      }
+      this.logger.warn(
+        `Checkout entitlements: ignoring invalid meta.expiration "${t}" (use YYYY-MM-DD or ISO date)`,
+      );
     }
     const d = new Date();
     d.setFullYear(d.getFullYear() + 1);
