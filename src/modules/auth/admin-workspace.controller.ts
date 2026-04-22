@@ -30,13 +30,14 @@ export class AdminWorkspaceController {
   @Post('role-invites')
   async roleInvites(
     @Req() req: { user: JwtUserPayload },
-    @Body() body: { email?: string; targetRole?: string },
+    @Body() body: { email?: string; targetRole?: string; targetRoles?: string[] },
   ) {
     const result = await this.workspace.postRoleInvite({
       actorUserId: req.user.sub,
       actorRole: req.user.role,
       email: body.email ?? '',
       targetRole: body.targetRole ?? '',
+      targetRoles: Array.isArray(body.targetRoles) ? body.targetRoles : undefined,
     });
 
     if (result.mode === 'updated' && result.actorRelogRequired === true) {

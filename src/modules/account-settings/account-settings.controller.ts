@@ -11,6 +11,7 @@ import {
 import { AccountSettingsService } from './account-settings.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
+import { parseAppRoleString, USER_ROLE } from '../workspace-identity/user-role.constants';
 
 type PatchBody = {
   emailTransactional?: boolean;
@@ -28,7 +29,8 @@ export class AccountSettingsController {
     targetUserId: string,
   ) {
     const isSelf = req.user.sub === targetUserId;
-    const isSuperAdmin = String(req.user.role).toUpperCase() === 'SUPER_ADMIN';
+    const isSuperAdmin =
+      parseAppRoleString(req.user.role) === USER_ROLE.SUPER_ADMIN;
     if (!isSelf && !isSuperAdmin) {
       throw new ForbiddenException(
         'You are not allowed to access another user notification preferences.',
