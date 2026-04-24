@@ -11,7 +11,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
 import { MembersService } from '../members/members.service';
 import { CreateMemberDtoSchema } from '../members/dto';
-import { USER_ROLE } from '../workspace-identity/user-role.constants';
+import {
+  parseAppRoleList,
+  parseAppRoleString,
+  USER_ROLE,
+} from '../workspace-identity/user-role.constants';
 import { Resend } from 'resend';
 
 function escapeHtml(text: string): string {
@@ -25,6 +29,16 @@ function escapeHtml(text: string): string {
 function buildDefaultAvatarUrl(nameOrEmail: string): string {
   const seed = encodeURIComponent((nameOrEmail || 'User').trim());
   return `https://ui-avatars.com/api/?name=${seed}&background=0f172a&color=fff&bold=true`;
+}
+
+function isLocalUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    const host = u.hostname.trim().toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -80,9 +94,15 @@ export class AuthService {
   ) {}
 
   getFrontendBaseUrl(): string {
-    return (
-      process.env.FRONTEND_URL?.trim() || 'http://localhost:3000'
-    ).replace(/\/+$/, '');
+    const explicit = process.env.FRONTEND_URL?.trim();
+    const allowNonLocalInDev =
+      process.env.ALLOW_NON_LOCAL_AUTH_REDIRECT_IN_DEV === 'true';
+
+    if (!explicit) return 'http://localhost:3000';
+    if (process.env.NODE_ENV !== 'production' && !allowNonLocalInDev) {
+      return isLocalUrl(explicit) ? explicit.replace(/\/+$/, '') : 'http://localhost:3000';
+    }
+    return explicit.replace(/\/+$/, '');
   }
 
   /**
@@ -106,10 +126,16 @@ export class AuthService {
   }
 
   getGoogleRedirectUri(): string {
-    return (
-      process.env.GOOGLE_REDIRECT_URI?.trim() ||
-      `${this.getFrontendBaseUrl()}/fe/auth/google/callback`
-    );
+    const fallback = `${this.getFrontendBaseUrl()}/fe/auth/google/callback`;
+    const explicit = process.env.GOOGLE_REDIRECT_URI?.trim();
+    const allowNonLocalInDev =
+      process.env.ALLOW_NON_LOCAL_AUTH_REDIRECT_IN_DEV === 'true';
+
+    if (!explicit) return fallback;
+    if (process.env.NODE_ENV !== 'production' && !allowNonLocalInDev) {
+      return isLocalUrl(explicit) ? explicit : fallback;
+    }
+    return explicit;
   }
 
   buildGoogleAuthorizeUrl(): string {
@@ -364,19 +390,21 @@ export class AuthService {
   }
 
   signAccessToken(userId: string, email: string, appRole: string): string {
+    const activeRole = parseAppRoleString(appRole);
     return this.jwt.sign({
       sub: userId,
       email,
-      role: appRole,
+      role: activeRole,
     });
   }
 
-  async getSessionPayload(userId: string): Promise<{
+  async getSessionPayload(userId: string, activeRoleHint?: string): Promise<{
     id: string;
     email: string;
     name: string | null;
     image: string | null;
     role: string;
+    roles: string[];
     phone: string | null;
     abacContext: unknown;
   } | null> {
@@ -393,12 +421,17 @@ export class AuthService {
     });
     if (!row?.email) return null;
     const phone = AuthService.readSelfProfilePhone(row.abacContext);
+    const assignedRoles = parseAppRoleList(row.appRole);
+    const activeRole = assignedRoles.includes(parseAppRoleString(activeRoleHint))
+      ? parseAppRoleString(activeRoleHint)
+      : assignedRoles[0];
     return {
       id: row.id,
       email: row.email,
       name: row.name,
       image: row.image,
-      role: row.appRole,
+      role: activeRole,
+      roles: assignedRoles,
       phone,
       abacContext: row.abacContext,
     };

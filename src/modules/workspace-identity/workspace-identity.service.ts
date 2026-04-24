@@ -15,7 +15,11 @@ import {
   USER_ROLE,
   UserRoleString,
   assertAssignableRole,
+  assertAssignableRoleList,
+  hasAssignedRole,
+  parseAppRoleList,
   parseAppRoleString,
+  serializeAppRoleList,
 } from './user-role.constants';
 
 function getBootstrapAdminEmails(): Set<string> {
@@ -106,6 +110,60 @@ export class WorkspaceIdentityService {
     return allowed.has(role);
   }
 
+  private rolesLabel(roles: readonly string[]): string {
+    return roles.join(', ');
+  }
+
+  private normalizeAssignedRoles(values: readonly string[]): UserRoleString[] {
+    let roles: UserRoleString[];
+    try {
+      roles = assertAssignableRoleList(values);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Invalid target roles',
+      );
+    }
+    for (const role of roles) {
+      if (!this.isInvitableInternalRole(role)) {
+        throw new BadRequestException(
+          'Target role is not invitable via Security Admin',
+        );
+      }
+    }
+    return roles;
+  }
+
+  private async countUsersWithAssignedRole(role: UserRoleString): Promise<number> {
+    const rows = await this.prisma.user.findMany({
+      select: { appRole: true },
+    });
+    return rows.filter((row) => hasAssignedRole(row.appRole, role)).length;
+  }
+
+  private removeRoleFromAssignedSet(
+    rawValue: string | null | undefined,
+    roleToRemove: UserRoleString,
+  ): UserRoleString[] {
+    const next = parseAppRoleList(rawValue).filter((role) => role !== roleToRemove);
+    return next.length > 0 ? next : [USER_ROLE.MEMBER];
+  }
+
+  private mergeRoleIntoAssignedSet(
+    rawValue: string | null | undefined,
+    roleToAdd: UserRoleString,
+  ): UserRoleString[] {
+    const next: UserRoleString[] = parseAppRoleList(rawValue).filter(
+      (role) => role !== USER_ROLE.MEMBER,
+    );
+    if (!next.includes(roleToAdd)) {
+      next.push(roleToAdd);
+    }
+    if (next.length === 0) {
+      return [USER_ROLE.MEMBER];
+    }
+    return next.slice(0, 2);
+  }
+
   async ensureBootstrapSuperAdmin(
     userId: string,
     email: string | null | undefined,
@@ -119,11 +177,19 @@ export class WorkspaceIdentityService {
     });
     if (!row) return;
 
-    const r = row.appRole.trim();
-    if (r === USER_ROLE.MEMBER || r === USER_ROLE.GUEST) {
+    const assignedRoles = parseAppRoleList(row.appRole);
+    if (
+      !assignedRoles.includes(USER_ROLE.SUPER_ADMIN) &&
+      (assignedRoles.includes(USER_ROLE.MEMBER) ||
+        assignedRoles.includes(USER_ROLE.GUEST))
+    ) {
       await this.prisma.user.update({
         where: { id: userId },
-        data: { appRole: USER_ROLE.SUPER_ADMIN },
+        data: {
+          appRole: serializeAppRoleList(
+            this.mergeRoleIntoAssignedSet(row.appRole, USER_ROLE.SUPER_ADMIN),
+          ),
+        },
       });
     }
   }
@@ -142,10 +208,13 @@ export class WorkspaceIdentityService {
 
     if (!pending) return;
 
+    const targetRoles = parseAppRoleList(pending.targetRole);
+    const serializedTargetRoles = serializeAppRoleList(targetRoles);
+
     await this.prisma.$transaction([
       this.prisma.user.update({
         where: { id: userId },
-        data: { appRole: pending.targetRole },
+        data: { appRole: serializedTargetRoles },
       }),
       this.prisma.pendingRoleInvite.update({
         where: { id: pending.id },
@@ -153,27 +222,43 @@ export class WorkspaceIdentityService {
       }),
     ]);
 
-    await this.createRoleChangeInbox(userId, pending.targetRole);
+    await this.createRoleChangeInbox(
+      userId,
+      this.rolesLabel(targetRoles),
+      targetRoles,
+    );
 
     // Keep Super Admin as a single active holder for handover flows:
     // when an invited Super Admin role is consumed by target user, inviter
     // is auto-downgraded to Sales (applies after inviter refreshes session).
     if (
-      pending.targetRole === USER_ROLE.SUPER_ADMIN &&
+      targetRoles.includes(USER_ROLE.SUPER_ADMIN) &&
       pending.createdByUserId &&
       pending.createdByUserId !== userId
     ) {
-      const downgraded = await this.prisma.user.updateMany({
-        where: {
-          id: pending.createdByUserId,
-          appRole: USER_ROLE.SUPER_ADMIN,
-        },
-        data: { appRole: USER_ROLE.SALES },
+      const actorRow = await this.prisma.user.findUnique({
+        where: { id: pending.createdByUserId },
+        select: { appRole: true },
       });
-      if (downgraded.count > 0) {
+      const actorRoles = actorRow
+        ? this.removeRoleFromAssignedSet(actorRow.appRole, USER_ROLE.SUPER_ADMIN)
+        : [];
+      const downgradedRoles =
+        actorRoles.length > 0
+          ? this.mergeRoleIntoAssignedSet(
+              serializeAppRoleList(actorRoles),
+              USER_ROLE.SALES,
+            )
+          : [USER_ROLE.SALES];
+      if (actorRow && hasAssignedRole(actorRow.appRole, USER_ROLE.SUPER_ADMIN)) {
+        await this.prisma.user.update({
+          where: { id: pending.createdByUserId },
+          data: { appRole: serializeAppRoleList(downgradedRoles) },
+        });
         await this.createRoleChangeInbox(
           pending.createdByUserId,
-          USER_ROLE.SALES,
+          this.rolesLabel(downgradedRoles),
+          downgradedRoles,
         );
         await this.appendSecurityAudit(
           pending.createdByUserId,
@@ -181,8 +266,8 @@ export class WorkspaceIdentityService {
           {
             inviteId: pending.id,
             targetUserId: userId,
-            targetRole: pending.targetRole,
-            actorNewRole: USER_ROLE.SALES,
+            targetRoles,
+            actorNewRoles: downgradedRoles,
           },
         );
       }
@@ -192,6 +277,7 @@ export class WorkspaceIdentityService {
   async createRoleChangeInbox(
     userId: string,
     newRoleDisplay: string,
+    newRoles?: readonly string[],
   ): Promise<void> {
     await this.prisma.inboxNotification.create({
       data: {
@@ -199,7 +285,10 @@ export class WorkspaceIdentityService {
         type: 'ROLE_CHANGED',
         title: 'Workspace role updated',
         body: `Your workspace role is now "${newRoleDisplay}". Please sign out and sign in again so menus and actions match your latest access.`,
-        payload: { newRole: newRoleDisplay },
+        payload: {
+          newRole: newRoleDisplay,
+          newRoles: newRoles ?? [newRoleDisplay],
+        },
       },
     });
   }
@@ -208,7 +297,8 @@ export class WorkspaceIdentityService {
     actorUserId: string;
     actorRole: string;
     email: string;
-    targetRole: string;
+    targetRole?: string;
+    targetRoles?: string[];
   }): Promise<
     | {
         ok: true;
@@ -216,6 +306,7 @@ export class WorkspaceIdentityService {
         userId: string;
         actorRelogRequired?: boolean;
         actorNewRole?: string;
+        userRoles: string[];
       }
     | { ok: true; mode: 'pending_signup'; inviteId: string }
   > {
@@ -228,14 +319,14 @@ export class WorkspaceIdentityService {
       throw new BadRequestException('Invalid email');
     }
 
-    const targetRole = assertAssignableRole(params.targetRole);
-    if (!this.isInvitableInternalRole(targetRole)) {
-      throw new BadRequestException(
-        'Target role is not invitable via Security Admin',
-      );
-    }
+    const requestedRoles =
+      Array.isArray(params.targetRoles) && params.targetRoles.length > 0
+        ? params.targetRoles
+        : [String(params.targetRole ?? '')];
+    const targetRoles = this.normalizeAssignedRoles(requestedRoles);
+    const serializedTargetRoles = serializeAppRoleList(targetRoles);
     const shouldAutoDowngradeActorAfterSuperAdminHandover =
-      targetRole === USER_ROLE.SUPER_ADMIN;
+      targetRoles.includes(USER_ROLE.SUPER_ADMIN);
 
     const existing = await this.prisma.user.findFirst({
       where: { email: { equals: rawEmail, mode: 'insensitive' } },
@@ -246,14 +337,13 @@ export class WorkspaceIdentityService {
     const expiresAt = new Date('9999-12-31T23:59:59.999Z');
 
     if (existing) {
-      const existingRole = parseAppRoleString(existing.appRole);
+      const existingRoles = parseAppRoleList(existing.appRole);
       const isDemotingLastSuperAdmin =
-        existingRole === USER_ROLE.SUPER_ADMIN &&
-        targetRole !== USER_ROLE.SUPER_ADMIN;
+        existingRoles.includes(USER_ROLE.SUPER_ADMIN) &&
+        !targetRoles.includes(USER_ROLE.SUPER_ADMIN);
       if (isDemotingLastSuperAdmin) {
-        const superAdminCount = await this.prisma.user.count({
-          where: { appRole: USER_ROLE.SUPER_ADMIN },
-        });
+        const superAdminCount =
+          await this.countUsersWithAssignedRole(USER_ROLE.SUPER_ADMIN);
         if (superAdminCount <= 1) {
           throw new BadRequestException(
             'At least one Super Admin must remain active',
@@ -263,18 +353,22 @@ export class WorkspaceIdentityService {
 
       await this.prisma.user.update({
         where: { id: existing.id },
-        data: { appRole: targetRole },
+        data: { appRole: serializedTargetRoles },
       });
-      await this.createRoleChangeInbox(existing.id, targetRole);
+      await this.createRoleChangeInbox(
+        existing.id,
+        this.rolesLabel(targetRoles),
+        targetRoles,
+      );
       await this.sendWorkspaceEmail({
         to: rawEmail,
-        subject: `Workspace role updated: ${targetRole}`,
-        html: `<p>Your workspace role has been updated to <strong>${targetRole}</strong>.</p><p>Please log out and sign in again to apply the latest permissions.</p><p><a href="${this.getFrontendBaseUrl()}">Open workspace</a></p>`,
+        subject: `Workspace role updated: ${this.rolesLabel(targetRoles)}`,
+        html: `<p>Your workspace role has been updated to <strong>${this.rolesLabel(targetRoles)}</strong>.</p><p>Please log out and sign in again to apply the latest permissions.</p><p><a href="${this.getFrontendBaseUrl()}">Open workspace</a></p>`,
       });
       await this.appendSecurityAudit(params.actorUserId, 'RBAC_ROLE_UPDATED', {
         targetEmail: rawEmail,
         targetUserId: existing.id,
-        targetRole,
+        targetRoles,
       });
 
       // Super Admin handover policy:
@@ -284,19 +378,38 @@ export class WorkspaceIdentityService {
         shouldAutoDowngradeActorAfterSuperAdminHandover &&
         existing.id !== params.actorUserId
       ) {
+        const actorRow = await this.prisma.user.findUnique({
+          where: { id: params.actorUserId },
+          select: { appRole: true },
+        });
+        const nextActorRoles = actorRow
+          ? this.mergeRoleIntoAssignedSet(
+              serializeAppRoleList(
+                this.removeRoleFromAssignedSet(
+                  actorRow.appRole,
+                  USER_ROLE.SUPER_ADMIN,
+                ),
+              ),
+              USER_ROLE.SALES,
+            )
+          : [USER_ROLE.SALES];
         await this.prisma.user.update({
           where: { id: params.actorUserId },
-          data: { appRole: USER_ROLE.SALES },
+          data: { appRole: serializeAppRoleList(nextActorRoles) },
         });
-        await this.createRoleChangeInbox(params.actorUserId, USER_ROLE.SALES);
+        await this.createRoleChangeInbox(
+          params.actorUserId,
+          this.rolesLabel(nextActorRoles),
+          nextActorRoles,
+        );
         await this.appendSecurityAudit(
           params.actorUserId,
           'RBAC_SUPER_ADMIN_HANDOVER_ACTOR_DOWNGRADED',
           {
             targetEmail: rawEmail,
             targetUserId: existing.id,
-            targetRole,
-            actorNewRole: USER_ROLE.SALES,
+            targetRoles,
+            actorNewRoles: nextActorRoles,
           },
         );
       }
@@ -309,6 +422,7 @@ export class WorkspaceIdentityService {
         userId: existing.id,
         actorRelogRequired,
         actorNewRole: actorRelogRequired ? USER_ROLE.SALES : undefined,
+        userRoles: targetRoles,
       };
     }
 
@@ -319,7 +433,7 @@ export class WorkspaceIdentityService {
     const invite = await this.prisma.pendingRoleInvite.create({
       data: {
         email: rawEmail,
-        targetRole,
+        targetRole: serializedTargetRoles,
         createdByUserId: params.actorUserId,
         expiresAt,
       },
@@ -327,13 +441,13 @@ export class WorkspaceIdentityService {
 
     await this.sendWorkspaceEmail({
       to: rawEmail,
-      subject: `You're invited to ${targetRole} workspace access`,
-      html: `<p>Your email has been invited to the role <strong>${targetRole}</strong>.</p><p>Sign in with this same email at <a href="${this.getFrontendBaseUrl()}">${this.getFrontendBaseUrl()}</a>. This invitation remains active until it is used or replaced by a newer invite.</p><p>After sign-in, your role will be applied automatically and you may be asked to re-login once.</p>`,
+      subject: `You're invited to ${this.rolesLabel(targetRoles)} workspace access`,
+      html: `<p>Your email has been invited to the role <strong>${this.rolesLabel(targetRoles)}</strong>.</p><p>Sign in with this same email at <a href="${this.getFrontendBaseUrl()}">${this.getFrontendBaseUrl()}</a>. This invitation remains active until it is used or replaced by a newer invite.</p><p>After sign-in, your role will be applied automatically and you may be asked to re-login once.</p>`,
     });
 
     await this.appendSecurityAudit(params.actorUserId, 'RBAC_ROLE_INVITED', {
       targetEmail: rawEmail,
-      targetRole,
+      targetRoles,
       inviteId: invite.id,
     });
 
@@ -416,19 +530,26 @@ export class WorkspaceIdentityService {
     });
 
     const list = rows
-      .map((row) => ({
-        id: row.id,
-        email: row.email ?? '',
-        fullName: row.name ?? row.email?.split('@')[0] ?? 'Unknown User',
-        role: parseAppRoleString(row.appRole ?? ''),
-        avatarUrl: row.image,
-        provider: 'email' as const,
-      }))
-      .filter((u) => u.role !== USER_ROLE.MEMBER);
+      .map((row) => {
+        const roles = parseAppRoleList(row.appRole ?? '');
+        return {
+          id: row.id,
+          email: row.email ?? '',
+          fullName: row.name ?? row.email?.split('@')[0] ?? 'Unknown User',
+          role: roles[0],
+          roles,
+          avatarUrl: row.image,
+          provider: 'email' as const,
+        };
+      })
+      .filter(
+        (u) =>
+          !(u.roles.length === 1 && u.roles[0] === USER_ROLE.MEMBER),
+      );
 
     list.sort((a, b) => {
-      const aSuper = a.role === USER_ROLE.SUPER_ADMIN ? 0 : 1;
-      const bSuper = b.role === USER_ROLE.SUPER_ADMIN ? 0 : 1;
+      const aSuper = a.roles.includes(USER_ROLE.SUPER_ADMIN) ? 0 : 1;
+      const bSuper = b.roles.includes(USER_ROLE.SUPER_ADMIN) ? 0 : 1;
       if (aSuper !== bSuper) return aSuper - bSuper;
       return a.email.localeCompare(b.email, undefined, { sensitivity: 'base' });
     });
@@ -469,6 +590,24 @@ export class WorkspaceIdentityService {
         memberName: 'Workspace',
       },
     }));
+  }
+
+  async issueRoleSwitchToken(params: {
+    userId: string;
+    targetRole: string;
+  }): Promise<{ ok: true; role: UserRoleString }> {
+    const nextRole = assertAssignableRole(params.targetRole);
+    const row = await this.prisma.user.findUnique({
+      where: { id: params.userId },
+      select: { appRole: true },
+    });
+    if (!row) {
+      throw new NotFoundException('User not found');
+    }
+    if (!hasAssignedRole(row.appRole, nextRole)) {
+      throw new ForbiddenException('Role is not assigned to this user');
+    }
+    return { ok: true, role: nextRole };
   }
 
   async markInboxRead(userId: string, inboxId: string): Promise<boolean> {
@@ -814,10 +953,9 @@ export class WorkspaceIdentityService {
       },
     });
 
-    const superAdmins = await this.prisma.user.findMany({
-      where: { appRole: USER_ROLE.SUPER_ADMIN },
-      select: { id: true },
-    });
+    const superAdmins = (await this.prisma.user.findMany({
+      select: { id: true, appRole: true },
+    })).filter((row) => hasAssignedRole(row.appRole, USER_ROLE.SUPER_ADMIN));
     const preview =
       trimmed.length > 400 ? `${trimmed.slice(0, 400)}…` : trimmed;
     for (const admin of superAdmins) {

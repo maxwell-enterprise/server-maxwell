@@ -11,13 +11,17 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { AuthService } from './auth.service';
 import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
 import type { JwtUserPayload } from './auth.service';
 
 @Controller('me')
 @UseGuards(JwtAuthGuard)
 export class WorkspaceMeController {
-  constructor(private readonly workspace: WorkspaceIdentityService) {}
+  constructor(
+    private readonly workspace: WorkspaceIdentityService,
+    private readonly auth: AuthService,
+  ) {}
 
   @Get('rbac-tasks')
   rbacTasks(@Req() req: { user: JwtUserPayload }) {
@@ -71,6 +75,23 @@ export class WorkspaceMeController {
       image: body?.image,
       phone: body?.phone,
     });
+  }
+
+  @Post('active-role')
+  async switchActiveRole(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: { role?: string },
+  ) {
+    const result = await this.workspace.issueRoleSwitchToken({
+      userId: req.user.sub,
+      targetRole: String(body?.role ?? ''),
+    });
+    const token = this.auth.signAccessToken(
+      req.user.sub,
+      req.user.email,
+      result.role,
+    );
+    return { ok: true, role: result.role, token };
   }
 
   @Post('account/deletion-request')

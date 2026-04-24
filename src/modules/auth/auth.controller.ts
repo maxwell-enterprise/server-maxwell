@@ -86,7 +86,10 @@ export class AuthController {
     }
     try {
       const p = this.jwt.verify(bearer);
-      const user = await this.auth.getSessionPayload(p.sub);
+      const user = await this.auth.getSessionPayload(
+        String(p.sub ?? ''),
+        typeof p.role === 'string' ? p.role : undefined,
+      );
       return { user };
     } catch {
       return { user: null };
