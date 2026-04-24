@@ -98,12 +98,15 @@ export class AuthController {
 
   @Post('email/send')
   @RateLimit({ limit: 6, windowMs: 60_000, keyBy: 'email' })
-  async sendEmail(@Body() body: { email?: string }) {
+  async sendEmail(@Body() body: { email?: string; returnSearch?: string }) {
     const email = typeof body.email === 'string' ? body.email.trim() : '';
     if (!email) {
       throw new BadRequestException('email required');
     }
-    await this.auth.sendMagicLinkEmail(email);
+    await this.auth.sendMagicLinkEmail(
+      email,
+      typeof body.returnSearch === 'string' ? body.returnSearch : undefined,
+    );
     return { ok: true };
   }
 
@@ -111,6 +114,7 @@ export class AuthController {
   async verifyEmail(
     @Query('email') email: string | undefined,
     @Query('token') token: string | undefined,
+    @Query('returnTo') returnTo: string | undefined,
     @Res() res: Response,
   ) {
     const base = this.auth.getFrontendBaseUrl();
@@ -122,9 +126,13 @@ export class AuthController {
     }
     try {
       const jwt = await this.auth.verifyEmailToken(email, token);
+      const returnParam =
+        typeof returnTo === 'string' && returnTo.trim()
+          ? `&returnTo=${encodeURIComponent(returnTo)}`
+          : '';
       return res.redirect(
         302,
-        `${base}/auth/callback?token=${encodeURIComponent(jwt)}`,
+        `${base}/auth/callback?token=${encodeURIComponent(jwt)}${returnParam}`,
       );
     } catch {
       return res.redirect(

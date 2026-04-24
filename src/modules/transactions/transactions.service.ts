@@ -25,6 +25,7 @@ import { MidtransService } from '../midtrans/midtrans.service';
 import { MembersService } from '../members/members.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
+import { VoucherBroadcastService } from '../store-support/voucher-broadcast.service';
 
 @Injectable()
 export class TransactionsService {
@@ -37,6 +38,7 @@ export class TransactionsService {
     private readonly members: MembersService,
     private readonly campaigns: CampaignsService,
     private readonly checkoutEntitlements: CheckoutEntitlementsService,
+    private readonly voucherBroadcast: VoucherBroadcastService,
   ) {}
 
   // ==========================================================================
@@ -225,6 +227,198 @@ export class TransactionsService {
     }
   }
 
+  private async recordVoucherRedemptionForPayment(
+    paymentId: string,
+  ): Promise<void> {
+    const paymentRes = await this.db.query<{
+      orderId: string;
+      voucherCode: string | null;
+      discountAmount: number | null;
+      buyerUserId: string | null;
+      itemsSnapshot: Array<{
+        productId?: string;
+        quantity?: number;
+        variantId?: string | null;
+      }> | null;
+    }>(
+      `
+      select
+        "orderId",
+        "voucherCode",
+        "discountAmount",
+        "buyerUserId",
+        "itemsSnapshot"
+      from payment_transactions
+      where id = $1::uuid
+      limit 1
+      `,
+      [paymentId],
+    );
+
+    const payment = paymentRes.rows[0];
+    const discountAmount = Math.round(Number(payment?.discountAmount ?? 0));
+    if (!payment || discountAmount <= 0) return;
+
+    let voucherCode = payment.voucherCode?.trim().toUpperCase() || '';
+    if (!voucherCode) {
+      voucherCode = await this.inferVoucherCodeFromPaymentSnapshot(
+        payment.itemsSnapshot,
+        discountAmount,
+      );
+      if (voucherCode) {
+        await this.db.query(
+          `
+          update payment_transactions
+          set "voucherCode" = $2
+          where id = $1::uuid
+            and coalesce("voucherCode", '') = ''
+          `,
+          [paymentId, voucherCode],
+        );
+      }
+    }
+    if (!voucherCode) return;
+
+    const discountRes = await this.db.query<{ id: string }>(
+      `
+      select id::text as id
+      from discounts
+      where upper(code) = $1
+      limit 1
+      `,
+      [voucherCode],
+    );
+
+    const discountId = discountRes.rows[0]?.id;
+    if (!discountId) return;
+
+    const inserted = await this.db.query(
+      `
+      insert into discount_redemption_logs (
+        id,
+        "discountId",
+        "discountCode",
+        "userId",
+        "orderId",
+        amount,
+        "specificDiscount",
+        metadata
+      )
+      select
+        gen_random_uuid(),
+        $1::uuid,
+        $2,
+        $3,
+        $4,
+        $5::numeric,
+        $5::numeric,
+        $6::jsonb
+      where not exists (
+        select 1
+        from discount_redemption_logs
+        where "orderId" = $4
+          and "discountCode" = $2
+      )
+      `,
+      [
+        discountId,
+        voucherCode,
+        payment.buyerUserId ?? null,
+        payment.orderId,
+        discountAmount,
+        JSON.stringify({ paymentId }),
+      ],
+    );
+
+    if ((inserted.rowCount ?? 0) === 0) return;
+
+    const updated = await this.db.query<{
+      currentUsageCount: number;
+      currentBudgetBurned: number;
+    }>(
+      `
+      update discounts
+      set
+        "currentUsageCount" = coalesce("currentUsageCount", 0) + 1,
+        "currentBudgetBurned" = coalesce("currentBudgetBurned", 0) + $2::numeric
+      where id = $1::uuid
+      returning
+        "currentUsageCount",
+        "currentBudgetBurned"
+      `,
+      [discountId, discountAmount],
+    );
+
+    const snapshot = updated.rows[0];
+    if (snapshot) {
+      await this.voucherBroadcast.notifyVoucherUpdated({
+        voucherCode,
+        usageCount: Number(snapshot.currentUsageCount) || 0,
+        budgetBurned: Number(snapshot.currentBudgetBurned) || 0,
+      });
+    }
+  }
+
+  private async inferVoucherCodeFromPaymentSnapshot(
+    itemsSnapshot:
+      | Array<{
+          productId?: string;
+          quantity?: number;
+          variantId?: string | null;
+        }>
+      | null
+      | undefined,
+    expectedDiscountAmount: number,
+  ): Promise<string> {
+    const cartItems = (Array.isArray(itemsSnapshot) ? itemsSnapshot : [])
+      .map((item) => ({
+        productId: String(item?.productId ?? '').trim(),
+        quantity: Number(item?.quantity ?? 0),
+        variantId:
+          typeof item?.variantId === 'string' && item.variantId.trim()
+            ? item.variantId.trim()
+            : undefined,
+      }))
+      .filter((item) => item.productId && item.quantity > 0);
+
+    if (cartItems.length === 0 || expectedDiscountAmount <= 0) return '';
+
+    const productIds = [...new Set(cartItems.map((item) => item.productId))];
+    let products: Awaited<ReturnType<typeof this.loadProductsForCheckout>>;
+    try {
+      products = await this.loadProductsForCheckout(productIds);
+    } catch {
+      return '';
+    }
+
+    const discountRes = await this.db.query<{ code: string }>(
+      `
+      select code
+      from discounts
+      order by "createdAt" desc
+      `,
+    );
+
+    let matchedCode = '';
+    for (const row of discountRes.rows) {
+      const code = String(row.code ?? '').trim().toUpperCase();
+      if (!code) continue;
+      const amount = await this.calculateDiscountAmount(
+        code,
+        cartItems,
+        products,
+        'GUEST',
+      );
+      if (Math.round(amount) !== expectedDiscountAmount) continue;
+      if (matchedCode) {
+        return '';
+      }
+      matchedCode = code;
+    }
+
+    return matchedCode;
+  }
+
   /** Same side effects as Midtrans webhook when a transaction becomes PAID (lifecycle, campaign). */
   private async onCheckoutPaidSideEffects(
     customerEmail: string | null | undefined,
@@ -345,6 +539,7 @@ export class TransactionsService {
         "orderId",
         amount,
         "discountAmount",
+        "voucherCode",
         "uniqueCode",
         "totalAmount",
         "paidAmount",
@@ -369,24 +564,25 @@ export class TransactionsService {
         $1,
         $2::numeric,
         $3::numeric,
+        $4,
         null,
-        $4::numeric,
-        CASE WHEN $12::boolean THEN $4::numeric ELSE 0::numeric END,
-        CASE WHEN $12::boolean THEN 0::numeric ELSE $4::numeric END,
+        $5::numeric,
+        CASE WHEN $13::boolean THEN $5::numeric ELSE 0::numeric END,
+        CASE WHEN $13::boolean THEN 0::numeric ELSE $5::numeric END,
         null,
         null,
-        $5,
-        CASE WHEN $12 THEN 'PAID' ELSE 'PENDING' END,
         $6,
+        CASE WHEN $13 THEN 'PAID' ELSE 'PENDING' END,
         $7,
         $8,
         $9,
         $10,
+        $11,
         null,
         null,
         null,
         null,
-        $11::jsonb
+        $12::jsonb
       )
       returning id, "orderId", "totalAmount", status, method, "createdAt", "customerEmail"
       `,
@@ -394,6 +590,7 @@ export class TransactionsService {
         orderId,
         subtotal,
         discountAmount,
+        dto.voucherCode?.trim().toUpperCase() || null,
         totalAmount,
         dto.paymentMethod,
         now.toISOString(),
@@ -424,6 +621,7 @@ export class TransactionsService {
         orderId: payment.orderId,
         channel: 'checkout',
       });
+      await this.recordVoucherRedemptionForPayment(payment.id);
       await this.checkoutEntitlements.processForPaymentId(payment.id);
     }
 
@@ -625,6 +823,7 @@ export class TransactionsService {
         const rowPaid = String(row.status).toUpperCase() === 'PAID';
         if (rowPaid) {
           if (rowGross === 0) {
+            await this.recordVoucherRedemptionForPayment(row.id);
             await this.checkoutEntitlements.processForPaymentId(row.id);
             return {
               transaction: this.mapPaymentRowToTransaction(row),
@@ -681,6 +880,7 @@ export class TransactionsService {
           if (!r) {
             throw new BadRequestException('Could not reload free transaction');
           }
+          await this.recordVoucherRedemptionForPayment(r.id);
           await this.checkoutEntitlements.processForPaymentId(r.id);
           return {
             transaction: this.mapPaymentRowToTransaction(r),
@@ -717,6 +917,7 @@ export class TransactionsService {
         "orderId",
         amount,
         "discountAmount",
+        "voucherCode",
         "uniqueCode",
         "totalAmount",
         "paidAmount",
@@ -741,24 +942,25 @@ export class TransactionsService {
         $1,
         $2::numeric,
         $3::numeric,
+        $4,
         null,
-        $4::numeric,
-        CASE WHEN $12::boolean THEN $4::numeric ELSE 0::numeric END,
-        CASE WHEN $12::boolean THEN 0::numeric ELSE $4::numeric END,
+        $5::numeric,
+        CASE WHEN $13::boolean THEN $5::numeric ELSE 0::numeric END,
+        CASE WHEN $13::boolean THEN 0::numeric ELSE $5::numeric END,
         null,
         null,
-        $5,
-        CASE WHEN $12 THEN 'PAID' ELSE 'PENDING' END,
         $6,
+        CASE WHEN $13 THEN 'PAID' ELSE 'PENDING' END,
         $7,
         $8,
         $9,
         $10,
+        $11,
         null,
         null,
         null,
         null,
-        $11::jsonb
+        $12::jsonb
       )
       returning id, "orderId", "totalAmount", status, method, "createdAt", "customerEmail"
       `,
@@ -766,6 +968,7 @@ export class TransactionsService {
         orderId,
         subtotal,
         discountAmount,
+        dto.voucherCode?.trim().toUpperCase() || null,
         totalAmount,
         dto.paymentMethod,
         now.toISOString(),
@@ -796,6 +999,7 @@ export class TransactionsService {
         orderId: payment.orderId,
         channel: 'midtrans_snap',
       });
+      await this.recordVoucherRedemptionForPayment(payment.id);
       await this.checkoutEntitlements.processForPaymentId(payment.id);
     }
 
@@ -930,6 +1134,7 @@ export class TransactionsService {
       }
       if (paidRow?.id) {
         try {
+          await this.recordVoucherRedemptionForPayment(paidRow.id);
           await this.checkoutEntitlements.processForPaymentId(paidRow.id);
         } catch (err) {
           this.logger.error(
@@ -1538,6 +1743,7 @@ export class TransactionsService {
         );
       }
       if (String(row.status).toUpperCase() === 'PAID') {
+        await this.recordVoucherRedemptionForPayment(transactionId);
         await this.checkoutEntitlements.processForPaymentId(transactionId);
         return {
           paymentStatus: 'PAID',
@@ -1555,6 +1761,7 @@ export class TransactionsService {
       paidRow.attributionSource ?? null,
       Number(paidRow.totalAmount) || 0,
     );
+    await this.recordVoucherRedemptionForPayment(transactionId);
     await this.checkoutEntitlements.processForPaymentId(transactionId);
     await this.appendSecurityLog('PAYMENT_SIMULATION_SETTLED', {
       transactionId,
@@ -1769,6 +1976,7 @@ export class TransactionsService {
     totalAmount: number;
     amount: number;
     discountAmount: number | null;
+    voucherCode?: string | null;
     status: string;
     method: string;
     paidAmount?: number;
@@ -1808,7 +2016,7 @@ export class TransactionsService {
       midtransResponse: {},
       paymentExpiresAt: row.expiryTime ? new Date(row.expiryTime) : null,
       voucherId: null,
-      voucherCode: null,
+      voucherCode: row.voucherCode ?? null,
       type: 'SALE',
       originalTransactionId: null,
       entitlementProcessed: false,

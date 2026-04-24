@@ -15,6 +15,7 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { ProductsModule } from '../products/products.module';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
+import { StoreSupportModule } from '../store-support/store-support.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { CheckoutEntitlementsService } from './checkout-entitlements.service';
     CampaignsModule,
     WalletModule,
     ProductsModule,
+    StoreSupportModule,
   ],
   controllers: [TransactionsController, WebhooksController],
   providers: [TransactionsService, CheckoutEntitlementsService],

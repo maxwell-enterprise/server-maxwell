@@ -446,7 +446,10 @@ export class AuthService {
     return p.trim();
   }
 
-  async sendMagicLinkEmail(rawEmail: string): Promise<void> {
+  async sendMagicLinkEmail(
+    rawEmail: string,
+    rawReturnSearch?: string,
+  ): Promise<void> {
     const email = rawEmail.trim().toLowerCase();
     if (!email.includes('@')) {
       throw new UnauthorizedException('Invalid email');
@@ -469,7 +472,19 @@ export class AuthService {
       data: { identifier: email, token, expires },
     });
 
-    const verifyUrl = `${this.getAuthBackendOrigin()}/fe/auth/email/verify?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
+    const normalizedReturnSearch = (() => {
+      const raw = String(rawReturnSearch ?? '').trim();
+      if (!raw) return '';
+      if (raw.length > 1500) return '';
+      return raw.startsWith('?') ? raw : `?${raw}`;
+    })();
+
+    const verifyUrl =
+      `${this.getAuthBackendOrigin()}/fe/auth/email/verify?email=${encodeURIComponent(email)}` +
+      `&token=${encodeURIComponent(token)}` +
+      (normalizedReturnSearch
+        ? `&returnTo=${encodeURIComponent(normalizedReturnSearch)}`
+        : '');
 
     const brandRaw =
       process.env.EMAIL_BRAND_NAME?.trim() || 'Maxwell Leadership Enterprise';
