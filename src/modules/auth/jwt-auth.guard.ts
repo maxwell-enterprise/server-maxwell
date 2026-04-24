@@ -5,6 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { extractWorkspaceJwt } from './jwt-token.extractor';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -12,14 +13,10 @@ export class JwtAuthGuard implements CanActivate {
 
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<{
-      headers: { authorization?: string };
+      headers: { authorization?: string; cookie?: string };
       user?: unknown;
     }>();
-    const auth = req.headers.authorization;
-    const bearer =
-      typeof auth === 'string' && auth.startsWith('Bearer ')
-        ? auth.slice(7)
-        : null;
+    const bearer = extractWorkspaceJwt(req.headers);
     if (!bearer) {
       throw new UnauthorizedException();
     }

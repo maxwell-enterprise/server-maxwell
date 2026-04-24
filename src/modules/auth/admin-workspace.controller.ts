@@ -70,6 +70,18 @@ export class AdminWorkspaceController {
     return { ok: true };
   }
 
+  @Post('users/revoke-staff')
+  revokeStaff(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: { email?: string },
+  ) {
+    return this.workspace.revokeInternalAccess({
+      actorUserId: req.user.sub,
+      actorRole: req.user.role,
+      email: body.email ?? '',
+    });
+  }
+
   @Post('vouchers/revoke')
   async revokeVoucher(
     @Req() req: { user: JwtUserPayload },

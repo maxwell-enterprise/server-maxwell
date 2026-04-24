@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { SystemAdminService } from '../system-admin/system-admin.service';
 
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
 /**
  * Handles `POST /fe/automations/emit` — queues welcome email + background job + journey log.
  */
@@ -12,7 +16,7 @@ export class AutomationsEmitService {
     triggerId: string;
     payload: Record<string, unknown>;
   }): Promise<{ ok: true; queueId: string; backgroundJobId: string }> {
-    const triggerId = String(body.triggerId ?? '').trim();
+    const triggerId = asString(body.triggerId).trim();
     const payload =
       body.payload && typeof body.payload === 'object' ? body.payload : {};
 
@@ -22,22 +26,19 @@ export class AutomationsEmitService {
       );
     }
 
-    const member_name = String(
-      payload.member_name ?? payload.name ?? '',
-    ).trim();
-    const email = String(payload.email ?? '').trim();
+    const member_name = asString(payload.member_name || payload.name).trim();
+    const email = asString(payload.email).trim();
     if (!member_name || !email) {
       throw new BadRequestException(
         'Payload must include member_name (or name) and email',
       );
     }
 
-    const memberId =
-      payload.memberId != null ? String(payload.memberId).trim() : '';
-    const join_date = String(
-      payload.join_date ?? new Date().toISOString().slice(0, 10),
-    ).trim();
-    const phone = String(payload.phone ?? '').trim();
+    const memberId = asString(payload.memberId).trim();
+    const join_date =
+      asString(payload.join_date).trim() ||
+      new Date().toISOString().slice(0, 10);
+    const phone = asString(payload.phone).trim();
 
     const queueId = `Q-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
@@ -81,6 +82,53 @@ export class AutomationsEmitService {
         metadata: { queueId, backgroundJobId: job.id, triggerId },
       });
     }
+
+    return { ok: true, queueId, backgroundJobId: job.id };
+  }
+
+  /**
+   * Generic simulator path for Automation Center:
+   * - NEW_MEMBER / NEW_MEMBER_REGISTRATION keep existing email queue behavior (`emit`)
+   * - all other triggers are queued as-is for manual/background processing visibility
+   */
+  async simulate(body: {
+    triggerId: string;
+    payload: Record<string, unknown>;
+  }): Promise<{ ok: true; queueId: string; backgroundJobId: string }> {
+    const triggerId = asString(body.triggerId).trim();
+    const payload =
+      body.payload && typeof body.payload === 'object' ? body.payload : {};
+
+    if (!triggerId) {
+      throw new BadRequestException('triggerId is required');
+    }
+
+    if (triggerId === 'NEW_MEMBER' || triggerId === 'NEW_MEMBER_REGISTRATION') {
+      return this.emit({
+        triggerId,
+        payload,
+      });
+    }
+
+    const queueId = `Q-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    const description = `Simulated trigger ${triggerId}`;
+
+    await this.systemAdmin.upsertAutomationQueueItem(queueId, {
+      triggerType: triggerId,
+      contextData: payload,
+      description,
+      status: 'PENDING',
+    });
+
+    const job = await this.systemAdmin.insertBackgroundJob({
+      type: 'SIMULATED_TRIGGER',
+      payload: {
+        triggerId,
+        queueId,
+        contextData: payload,
+      },
+      status: 'QUEUED',
+    });
 
     return { ok: true, queueId, backgroundJobId: job.id };
   }

@@ -4,6 +4,11 @@ import type { JwtUserPayload } from '../auth/auth.service';
 import { assertAutomationEmitAllowed } from '../../common/security/access-policy';
 import { AutomationsEmitService } from './automations-emit.service';
 
+function readStringField(source: Record<string, unknown>, key: string): string {
+  const value = source[key];
+  return typeof value === 'string' ? value : '';
+}
+
 @Controller('automations')
 @UseGuards(JwtAuthGuard)
 export class AutomationsController {
@@ -18,11 +23,29 @@ export class AutomationsController {
     @Body() body: Record<string, unknown>,
   ) {
     assertAutomationEmitAllowed(req.user, 'Automation emit');
-    const triggerId = String(body.triggerId ?? '');
+    const triggerId = readStringField(body, 'triggerId');
     const payload =
       body.payload && typeof body.payload === 'object'
         ? (body.payload as Record<string, unknown>)
         : {};
     return this.automationsEmit.emit({ triggerId, payload });
+  }
+
+  /**
+   * Dev simulator entry: log any trigger into automation queue + background jobs.
+   * Used by Automation Center (API mode) for PAYMENT_SUCCESS and other non-NEW_MEMBER triggers.
+   */
+  @Post('simulate')
+  simulate(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: Record<string, unknown>,
+  ) {
+    assertAutomationEmitAllowed(req.user, 'Automation simulate');
+    const triggerId = readStringField(body, 'triggerId');
+    const payload =
+      body.payload && typeof body.payload === 'object'
+        ? (body.payload as Record<string, unknown>)
+        : {};
+    return this.automationsEmit.simulate({ triggerId, payload });
   }
 }
