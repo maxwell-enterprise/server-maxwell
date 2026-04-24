@@ -81,6 +81,13 @@ export class AppConfigService {
       return true;
     }
 
+    // Local FE is sometimes opened from another device / LAN IP during development.
+    // Keep this relaxed only outside production so public deployments still rely on
+    // explicit APP_CORS_ORIGINS allowlists.
+    if (!this.isProduction && this.isPrivateIpv4Host(hostname)) {
+      return true;
+    }
+
     return this.corsOriginPatterns.some((rule) =>
       this.matchesOriginRule(origin, parsedOrigin, rule),
     );
@@ -125,6 +132,31 @@ export class AppConfigService {
     }
 
     return true;
+  }
+
+  private isPrivateIpv4Host(hostname: string): boolean {
+    const parts = hostname.split('.');
+    if (parts.length !== 4) {
+      return false;
+    }
+
+    const octets = parts.map((part) => Number(part));
+    if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) {
+      return false;
+    }
+
+    const [first, second] = octets;
+    if (first === 10) {
+      return true;
+    }
+    if (first === 172 && second >= 16 && second <= 31) {
+      return true;
+    }
+    if (first === 192 && second === 168) {
+      return true;
+    }
+
+    return false;
   }
 
   get databaseRuntime(): DatabaseRuntimeConfig {
