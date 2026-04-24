@@ -8,6 +8,7 @@ import {
   Req,
   Res,
   Body,
+  UnauthorizedException,
 } from '@nestjs/common';
 import type { Response, Request } from 'express';
 import { JwtService } from '@nestjs/jwt';
@@ -85,11 +86,10 @@ export class AuthController {
       return { user: null };
     }
     try {
-      const p = this.jwt.verify(bearer);
-      const user = await this.auth.getSessionPayload(
-        String(p.sub ?? ''),
-        typeof p.role === 'string' ? p.role : undefined,
-      );
+      const p = this.jwt.verify<Record<string, unknown>>(bearer);
+      const sub = typeof p.sub === 'string' ? p.sub : '';
+      const role = typeof p.role === 'string' ? p.role : undefined;
+      const user = await this.auth.getSessionPayload(sub, role);
       return { user };
     } catch {
       return { user: null };
@@ -132,5 +132,48 @@ export class AuthController {
         `${base}/auth/callback?error=${encodeURIComponent('invalid_or_expired_link')}`,
       );
     }
+  }
+
+  /**
+   * Exchange Bearer JWT -> HttpOnly cookie so browser credentialed requests
+   * (e.g. SSE/EventSource with credentials) can authenticate without token in URL.
+   */
+  @Post('session-cookie')
+  setSessionCookie(@Req() req: Request, @Res() res: Response) {
+    const auth = req.headers.authorization;
+    const bearer =
+      typeof auth === 'string' && auth.startsWith('Bearer ')
+        ? auth.slice(7).trim()
+        : '';
+    if (!bearer) {
+      throw new UnauthorizedException('Bearer token required');
+    }
+    try {
+      this.jwt.verify(bearer);
+    } catch {
+      throw new UnauthorizedException('Invalid token');
+    }
+
+    const isProd = process.env.NODE_ENV === 'production';
+    res.cookie('maxwell_workspace_jwt', bearer, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+    return res.status(200).json({ ok: true });
+  }
+
+  @Post('session-cookie/clear')
+  clearSessionCookie(@Res() res: Response) {
+    const isProd = process.env.NODE_ENV === 'production';
+    res.clearCookie('maxwell_workspace_jwt', {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      path: '/',
+    });
+    return res.status(200).json({ ok: true });
   }
 }

@@ -97,15 +97,14 @@ export class WorkspaceIdentityService {
   }
 
   private isInvitableInternalRole(role: UserRoleString): boolean {
-    // Security Admin: core business roles + Super Admin + Member (revoke).
-    // No Guest / Gate Keeper / Facilitator via this endpoint.
+    // Security Admin: assignable staff roles only.
+    // Member downgrade uses a dedicated revoke endpoint.
     const allowed = new Set<UserRoleString>([
       USER_ROLE.SUPER_ADMIN,
       USER_ROLE.FINANCE,
       USER_ROLE.OPERATIONS,
       USER_ROLE.MARKETING,
       USER_ROLE.SALES,
-      USER_ROLE.MEMBER,
     ]);
     return allowed.has(role);
   }
@@ -480,6 +479,68 @@ export class WorkspaceIdentityService {
       targetEmail: email,
       targetUserId: user.id,
     });
+  }
+
+  async revokeInternalAccess(params: {
+    actorUserId: string;
+    actorRole: string;
+    email: string;
+  }): Promise<{ ok: true; userId: string; userRoles: string[] }> {
+    if (parseAppRoleString(params.actorRole) !== USER_ROLE.SUPER_ADMIN) {
+      throw new ForbiddenException();
+    }
+
+    const email = params.email.trim().toLowerCase();
+    if (!email.includes('@')) {
+      throw new BadRequestException('Invalid email');
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { id: true, appRole: true },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const currentRoles = parseAppRoleList(user.appRole);
+    if (currentRoles.includes(USER_ROLE.SUPER_ADMIN)) {
+      const superAdminCount =
+        await this.countUsersWithAssignedRole(USER_ROLE.SUPER_ADMIN);
+      if (superAdminCount <= 1) {
+        throw new BadRequestException(
+          'At least one Super Admin must remain active',
+        );
+      }
+    }
+
+    const nextRoles = [USER_ROLE.MEMBER];
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { appRole: serializeAppRoleList(nextRoles) },
+    });
+    await this.createRoleChangeInbox(
+      user.id,
+      this.rolesLabel(nextRoles),
+      nextRoles,
+    );
+    await this.sendWorkspaceEmail({
+      to: email,
+      subject: 'Workspace staff access revoked',
+      html: `<p>Your workspace staff access has been revoked.</p><p>Your account is now set to <strong>Member</strong>.</p><p><a href="${this.getFrontendBaseUrl()}">Open workspace</a></p>`,
+    });
+    await this.appendSecurityAudit(params.actorUserId, 'RBAC_STAFF_REVOKED', {
+      targetEmail: email,
+      targetUserId: user.id,
+      previousRoles: currentRoles,
+      targetRoles: nextRoles,
+    });
+
+    return {
+      ok: true,
+      userId: user.id,
+      userRoles: nextRoles,
+    };
   }
 
   private async appendSecurityAudit(
