@@ -7,7 +7,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
 import { PrismaService } from '../../prisma/prisma.service';
 import type { AccountDeletionRequestDelegate } from '../../prisma/prisma-account-deletion.types';
 import { AccountDeletionBroadcastService } from './account-deletion-broadcast.service';
@@ -35,6 +35,19 @@ function getBootstrapAdminEmails(): Set<string> {
 function isBootstrapAdminEmail(email: string): boolean {
   return getBootstrapAdminEmails().has(email.trim().toLowerCase());
 }
+
+type WorkspaceCustomRoleAssignment = {
+  id: string;
+  name: string;
+  allowedFeatures: string[];
+  createdAt: string;
+  locked: true;
+};
+
+type WorkspaceCustomRoleEnvelope = {
+  assignment: WorkspaceCustomRoleAssignment;
+  activeId?: string;
+};
 
 @Injectable()
 export class WorkspaceIdentityService {
@@ -74,24 +87,36 @@ export class WorkspaceIdentityService {
     subject: string;
     html: string;
   }): Promise<void> {
-    const resendKey = process.env.RESEND_API_KEY?.trim();
-    const from = process.env.EMAIL_FROM?.trim() ?? 'onboarding@resend.dev';
-    if (!resendKey) {
+    const host = process.env.SMTP_HOST?.trim();
+    const portRaw = Number(process.env.SMTP_PORT ?? 587);
+    const port = Number.isFinite(portRaw) && portRaw > 0 ? portRaw : 587;
+    const user = process.env.SMTP_USER?.trim();
+    const pass = process.env.SMTP_PASS?.trim();
+    const from = process.env.EMAIL_FROM?.trim() ?? user ?? '';
+    if (!host || !user || !pass || !from) {
       this.logger.warn(
-        `Skip workspace email (${params.subject}) to ${params.to}: RESEND_API_KEY missing`,
+        `Skip workspace email (${params.subject}) to ${params.to}: SMTP is not configured`,
       );
       return;
     }
-    const resend = new Resend(resendKey);
-    const { error } = await resend.emails.send({
-      from,
-      to: params.to,
-      subject: params.subject,
-      html: params.html,
+    const secure = String(process.env.SMTP_SECURE ?? '').toLowerCase() === 'true';
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: { user, pass },
     });
-    if (error) {
+    try {
+      await transporter.sendMail({
+        from,
+        to: params.to,
+        subject: params.subject,
+        html: params.html,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
-        `Workspace email failed (${params.subject}) to ${params.to}: ${error.message}`,
+        `Workspace email failed (${params.subject}) to ${params.to}: ${message}`,
       );
     }
   }
@@ -161,6 +186,93 @@ export class WorkspaceIdentityService {
       return [USER_ROLE.MEMBER];
     }
     return next.slice(0, 2);
+  }
+
+  private parseWorkspaceCustomRole(abac: unknown): {
+    assignment: WorkspaceCustomRoleAssignment | null;
+    activeId: string | null;
+  } {
+    if (!abac || typeof abac !== 'object' || Array.isArray(abac)) {
+      return { assignment: null, activeId: null };
+    }
+    const raw = (abac as Record<string, unknown>).workspaceCustomRole;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { assignment: null, activeId: null };
+    }
+    const assignmentRaw = (raw as Record<string, unknown>).assignment;
+    if (
+      !assignmentRaw ||
+      typeof assignmentRaw !== 'object' ||
+      Array.isArray(assignmentRaw)
+    ) {
+      return { assignment: null, activeId: null };
+    }
+    const id = String((assignmentRaw as Record<string, unknown>).id ?? '').trim();
+    const name = String((assignmentRaw as Record<string, unknown>).name ?? '').trim();
+    const createdAt = String(
+      (assignmentRaw as Record<string, unknown>).createdAt ?? '',
+    ).trim();
+    const allowedRaw = (assignmentRaw as Record<string, unknown>).allowedFeatures;
+    const allowedFeatures = Array.isArray(allowedRaw)
+      ? allowedRaw.map((v) => String(v ?? '').trim()).filter(Boolean)
+      : [];
+    if (!id || !name || !createdAt || allowedFeatures.length === 0) {
+      return { assignment: null, activeId: null };
+    }
+    const activeId = String((raw as Record<string, unknown>).activeId ?? '').trim();
+    return {
+      assignment: {
+        id,
+        name,
+        allowedFeatures,
+        createdAt,
+        locked: true,
+      },
+      activeId: activeId || null,
+    };
+  }
+
+  private normalizeCustomRoleInput(params: {
+    name: string;
+    allowedFeatures: string[];
+  }): { name: string; allowedFeatures: string[]; id: string } {
+    const name = String(params.name ?? '').trim();
+    if (name.length < 3 || name.length > 80) {
+      throw new BadRequestException('Custom role name must be 3-80 characters');
+    }
+    const features = Array.from(
+      new Set(
+        (Array.isArray(params.allowedFeatures) ? params.allowedFeatures : [])
+          .map((v) => String(v ?? '').trim())
+          .filter((v) => /^[a-z0-9_]{2,64}$/i.test(v)),
+      ),
+    );
+    if (features.length === 0) {
+      throw new BadRequestException(
+        'Custom role must include at least one allowed feature',
+      );
+    }
+    if (features.length > 200) {
+      throw new BadRequestException('Too many custom features (max 200)');
+    }
+    const id = `CR-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    return { name, allowedFeatures: features, id };
+  }
+
+  private mergeAbacContextWithCustomRole(
+    currentAbac: unknown,
+    envelope: WorkspaceCustomRoleEnvelope | null,
+  ): Prisma.InputJsonValue {
+    const base =
+      currentAbac && typeof currentAbac === 'object' && !Array.isArray(currentAbac)
+        ? { ...(currentAbac as Record<string, unknown>) }
+        : {};
+    if (!envelope) {
+      delete base.workspaceCustomRole;
+      return base as Prisma.InputJsonValue;
+    }
+    base.workspaceCustomRole = envelope;
+    return base as Prisma.InputJsonValue;
   }
 
   async ensureBootstrapSuperAdmin(
@@ -586,6 +698,7 @@ export class WorkspaceIdentityService {
         name: true,
         image: true,
         appRole: true,
+        abacContext: true,
       },
       orderBy: { email: 'asc' },
     });
@@ -593,6 +706,7 @@ export class WorkspaceIdentityService {
     const list = rows
       .map((row) => {
         const roles = parseAppRoleList(row.appRole ?? '');
+        const custom = this.parseWorkspaceCustomRole(row.abacContext);
         return {
           id: row.id,
           email: row.email ?? '',
@@ -601,6 +715,8 @@ export class WorkspaceIdentityService {
           roles,
           avatarUrl: row.image,
           provider: 'email' as const,
+          customRole: custom.assignment,
+          activeCustomRoleId: custom.activeId,
         };
       })
       .filter(
@@ -669,6 +785,164 @@ export class WorkspaceIdentityService {
       throw new ForbiddenException('Role is not assigned to this user');
     }
     return { ok: true, role: nextRole };
+  }
+
+  async issueCustomRoleSwitchToken(params: {
+    userId: string;
+    targetCustomRoleId: string;
+    activeRoleHint?: string;
+  }): Promise<{ ok: true; role: UserRoleString; customRoleId: string }> {
+    const targetCustomRoleId = String(params.targetCustomRoleId ?? '').trim();
+    if (!targetCustomRoleId) {
+      throw new BadRequestException('customRoleId required');
+    }
+    const row = await this.prisma.user.findUnique({
+      where: { id: params.userId },
+      select: { appRole: true, abacContext: true },
+    });
+    if (!row) {
+      throw new NotFoundException('User not found');
+    }
+    const { assignment } = this.parseWorkspaceCustomRole(row.abacContext);
+    if (!assignment || assignment.id !== targetCustomRoleId) {
+      throw new ForbiddenException('Custom role is not assigned to this user');
+    }
+    const assignedRoles = parseAppRoleList(row.appRole);
+    const hintedRole = parseAppRoleString(params.activeRoleHint);
+    const activeRole = assignedRoles.includes(hintedRole)
+      ? hintedRole
+      : assignedRoles[0];
+
+    const nextAbac = this.mergeAbacContextWithCustomRole(row.abacContext, {
+      assignment,
+      activeId: assignment.id,
+    });
+    await this.prisma.user.update({
+      where: { id: params.userId },
+      data: { abacContext: nextAbac },
+    });
+    return { ok: true, role: activeRole, customRoleId: assignment.id };
+  }
+
+  async clearCustomRolePersona(userId: string): Promise<void> {
+    const row = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { abacContext: true },
+    });
+    if (!row) return;
+    const parsed = this.parseWorkspaceCustomRole(row.abacContext);
+    if (!parsed.assignment) return;
+    const nextAbac = this.mergeAbacContextWithCustomRole(row.abacContext, {
+      assignment: parsed.assignment,
+      activeId: '',
+    });
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { abacContext: nextAbac },
+    });
+  }
+
+  async assignCustomRoleToUser(params: {
+    actorUserId: string;
+    actorRole: string;
+    email: string;
+    name: string;
+    allowedFeatures: string[];
+  }): Promise<{ ok: true; userId: string; customRoleId: string }> {
+    if (parseAppRoleString(params.actorRole) !== USER_ROLE.SUPER_ADMIN) {
+      throw new ForbiddenException();
+    }
+    const email = params.email.trim().toLowerCase();
+    if (!email.includes('@')) {
+      throw new BadRequestException('Invalid email');
+    }
+    const normalized = this.normalizeCustomRoleInput({
+      name: params.name,
+      allowedFeatures: params.allowedFeatures,
+    });
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { id: true, abacContext: true },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const envelope: WorkspaceCustomRoleEnvelope = {
+      assignment: {
+        id: normalized.id,
+        name: normalized.name,
+        allowedFeatures: normalized.allowedFeatures,
+        createdAt: new Date().toISOString(),
+        locked: true,
+      },
+      activeId: normalized.id,
+    };
+    const nextAbac = this.mergeAbacContextWithCustomRole(
+      user.abacContext,
+      envelope,
+    );
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { abacContext: nextAbac },
+    });
+    await this.sendWorkspaceEmail({
+      to: email,
+      subject: `Workspace custom role assigned: ${normalized.name}`,
+      html: `<p>A custom workspace role has been assigned to your account.</p><p><strong>Role name:</strong> ${normalized.name}</p><p><strong>Allowed features:</strong> ${normalized.allowedFeatures.join(', ')}</p><p>This role profile is locked by policy and cannot be edited from your side.</p>`,
+    });
+    await this.appendSecurityAudit(
+      params.actorUserId,
+      'RBAC_CUSTOM_ROLE_ASSIGNED',
+      {
+        targetEmail: email,
+        targetUserId: user.id,
+        customRoleId: normalized.id,
+        customRoleName: normalized.name,
+        allowedFeatures: normalized.allowedFeatures,
+      },
+    );
+    return { ok: true, userId: user.id, customRoleId: normalized.id };
+  }
+
+  async removeCustomRoleFromUser(params: {
+    actorUserId: string;
+    actorRole: string;
+    email: string;
+  }): Promise<{ ok: true; userId: string }> {
+    if (parseAppRoleString(params.actorRole) !== USER_ROLE.SUPER_ADMIN) {
+      throw new ForbiddenException();
+    }
+    const email = params.email.trim().toLowerCase();
+    if (!email.includes('@')) {
+      throw new BadRequestException('Invalid email');
+    }
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: 'insensitive' } },
+      select: { id: true, abacContext: true },
+    });
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    const nextAbac = this.mergeAbacContextWithCustomRole(user.abacContext, null);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { abacContext: nextAbac },
+    });
+    await this.sendWorkspaceEmail({
+      to: email,
+      subject: 'Workspace custom role removed',
+      html: '<p>Your custom workspace role profile has been removed by an administrator.</p><p>Your active access now follows your standard assigned workspace role(s).</p>',
+    });
+    await this.appendSecurityAudit(
+      params.actorUserId,
+      'RBAC_CUSTOM_ROLE_REMOVED',
+      {
+        targetEmail: email,
+        targetUserId: user.id,
+      },
+    );
+    return { ok: true, userId: user.id };
   }
 
   async markInboxRead(userId: string, inboxId: string): Promise<boolean> {

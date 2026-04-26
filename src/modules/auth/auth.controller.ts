@@ -89,7 +89,9 @@ export class AuthController {
       const p = this.jwt.verify<Record<string, unknown>>(bearer);
       const sub = typeof p.sub === 'string' ? p.sub : '';
       const role = typeof p.role === 'string' ? p.role : undefined;
-      const user = await this.auth.getSessionPayload(sub, role);
+      const customRoleId =
+        typeof p.customRoleId === 'string' ? p.customRoleId : undefined;
+      const user = await this.auth.getSessionPayload(sub, role, customRoleId);
       return { user };
     } catch {
       return { user: null };
@@ -108,6 +110,27 @@ export class AuthController {
       typeof body.returnSearch === 'string' ? body.returnSearch : undefined,
     );
     return { ok: true };
+  }
+
+  @Post('supabase/exchange')
+  @RateLimit({ limit: 20, windowMs: 60_000 })
+  async exchangeSupabaseToken(
+    @Req() req: Request,
+    @Body() body: { accessToken?: string },
+  ) {
+    const auth = req.headers.authorization;
+    const bearer =
+      typeof auth === 'string' && auth.startsWith('Bearer ')
+        ? auth.slice(7)
+        : '';
+    const accessToken =
+      (typeof body?.accessToken === 'string' && body.accessToken.trim()) ||
+      bearer;
+    if (!accessToken) {
+      throw new BadRequestException('accessToken required');
+    }
+    const token = await this.auth.exchangeSupabaseAccessToken(accessToken);
+    return { ok: true, token };
   }
 
   @Get('email/verify')

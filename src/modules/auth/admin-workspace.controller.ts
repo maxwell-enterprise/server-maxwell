@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -79,6 +80,35 @@ export class AdminWorkspaceController {
       actorUserId: req.user.sub,
       actorRole: req.user.role,
       email: body.email ?? '',
+    });
+  }
+
+  @Post('users/custom-role')
+  assignCustomRole(
+    @Req() req: { user: JwtUserPayload },
+    @Body()
+    body: { email?: string; name?: string; allowedFeatures?: string[] },
+  ) {
+    return this.workspace.assignCustomRoleToUser({
+      actorUserId: req.user.sub,
+      actorRole: req.user.role,
+      email: String(body?.email ?? ''),
+      name: String(body?.name ?? ''),
+      allowedFeatures: Array.isArray(body?.allowedFeatures)
+        ? body.allowedFeatures.map((v) => String(v))
+        : [],
+    });
+  }
+
+  @Delete('users/custom-role')
+  removeCustomRole(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: { email?: string },
+  ) {
+    return this.workspace.removeCustomRoleFromUser({
+      actorUserId: req.user.sub,
+      actorRole: req.user.role,
+      email: String(body?.email ?? ''),
     });
   }
 
