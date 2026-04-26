@@ -60,12 +60,17 @@ export class GiftAllocation {
   entitlementId: string;
   itemName: string;
   targetEmail?: string | null;
+  recipientPhone?: string | null;
   claimToken: string;
+  tokenExpiresAt?: string | Date | null;
+  deliveryMethod?: string | null;
+  giftMessage?: string | null;
   status: string;
   claimedByUserId?: string | null;
   claimedAt?: string | Date | null;
+  revokedAt?: string | Date | null;
+  revokeReason?: string | null;
   createdAt?: string | Date;
-  tokenExpiresAt?: Date | null;
   senderUserId?: string | null;
   walletItemId?: string | null;
   transferAmount?: number | null;

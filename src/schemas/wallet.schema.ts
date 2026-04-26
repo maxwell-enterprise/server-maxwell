@@ -92,12 +92,12 @@ export const GiftAllocationSchema = z.object({
   id: z.string().uuid(),
   token: z.string().max(100),
   tokenExpiresAt: z.coerce.date(),
-  senderUserId: z.string().uuid(),
-  walletItemId: z.string().uuid(),
+  senderUserId: z.string().min(1).max(120),
+  walletItemId: z.string().min(1).max(120),
   transferAmount: z.number().int().positive().default(1),
   recipientEmail: z.string().email().nullable().optional(),
-  recipientPhone: z.string().max(20).nullable().optional(),
-  recipientUserId: z.string().uuid().nullable().optional(),
+  recipientPhone: z.string().max(50).nullable().optional(),
+  recipientUserId: z.string().min(1).max(120).nullable().optional(),
   deliveryMethod: GiftDeliveryMethodEnum,
   deliverySentAt: z.coerce.date().nullable().optional(),
   giftMessage: z.string().nullable().optional(),
@@ -113,10 +113,11 @@ export type GiftAllocation = z.infer<typeof GiftAllocationSchema>;
 
 // Create Gift Input
 export const CreateGiftSchema = z.object({
-  walletItemId: z.string().uuid(),
+  walletItemId: z.string().min(1).max(120),
   transferAmount: z.number().int().positive().default(1),
+  recipientName: z.string().max(255).optional(),
   recipientEmail: z.string().email().optional(),
-  recipientPhone: z.string().optional(),
+  recipientPhone: z.string().max(50).optional(),
   deliveryMethod: GiftDeliveryMethodEnum,
   giftMessage: z.string().max(500).optional(),
 });
@@ -132,7 +133,7 @@ export type ClaimGiftInput = z.infer<typeof ClaimGiftSchema>;
 
 // Revoke Gift Input
 export const RevokeGiftSchema = z.object({
-  giftId: z.string().uuid(),
+  giftId: z.string().min(1).max(120),
   reason: z.string().optional(),
 });
 

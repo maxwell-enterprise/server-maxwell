@@ -34,10 +34,11 @@ export type WalletItemsAdminQueryDto = z.infer<
 // =============================================================================
 
 export const CreateGiftDtoSchema = z.object({
-  walletItemId: z.string().uuid(),
+  walletItemId: z.string().min(1).max(120),
   transferAmount: z.number().int().positive().default(1),
+  recipientName: z.string().max(255).optional(),
   recipientEmail: z.string().email().optional(),
-  recipientPhone: z.string().optional(),
+  recipientPhone: z.string().max(50).optional(),
   deliveryMethod: GiftDeliveryMethodEnum,
   giftMessage: z.string().max(500).optional(),
 });
@@ -133,10 +134,16 @@ export const GiftAllocationDtoSchema = z.object({
   entitlementId: z.string().min(1).max(120),
   itemName: z.string().min(1).max(255),
   targetEmail: z.string().email().optional(),
+  recipientPhone: z.string().max(50).optional(),
   claimToken: z.string().min(1).max(255),
+  tokenExpiresAt: z.string().optional(),
+  deliveryMethod: GiftDeliveryMethodEnum.optional(),
+  giftMessage: z.string().max(500).optional(),
   status: z.string().min(1).max(50),
   claimedByUserId: z.string().max(100).optional(),
   claimedAt: z.string().optional(),
+  revokedAt: z.string().optional(),
+  revokeReason: z.string().optional(),
   createdAt: z.string().optional(),
 });
 

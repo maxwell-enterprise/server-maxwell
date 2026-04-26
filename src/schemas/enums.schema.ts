@@ -163,6 +163,9 @@ export type TransactionType = z.infer<typeof TransactionTypeEnum>;
 export const WalletItemStatusEnum = z.enum([
   'ACTIVE',
   'LOCKED',
+  'PENDING_CLAIM',
+  'GIFT_PENDING',
+  'CLAIMED',
   'USED',
   'EXPIRED',
   'CANCELLED',

@@ -8,6 +8,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { PoolClient } from 'pg';
 import {
@@ -57,6 +58,10 @@ interface WalletItemMutationInput {
 
 interface GiftAllocationRow extends GiftAllocation {
   internalId: string;
+}
+
+interface LockedGiftAllocationRow extends GiftAllocationRow {
+  entitlementInternalId: string;
 }
 
 interface WalletTransactionRow extends WalletTransaction {
@@ -664,10 +669,16 @@ export class WalletService {
         "entitlementId",
         "itemName",
         "targetEmail",
+        "recipientPhone",
         "claimToken",
+        "tokenExpiresAt",
+        "deliveryMethod",
+        "giftMessage",
         status,
         "claimedByUserId",
         "claimedAt",
+        "revokedAt",
+        "revokeReason",
         "createdAt"
       )
       values (
@@ -679,9 +690,15 @@ export class WalletService {
         $6,
         $7,
         $8,
-        $9,
-        $10::timestamptz,
-        $11::timestamptz
+        $9::timestamptz,
+        $10,
+        $11,
+        $12,
+        $13,
+        $14::timestamptz,
+        $15::timestamptz,
+        $16,
+        $17::timestamptz
       )
       on conflict (public_id) where (public_id is not null) do update
       set "sourceUserId" = excluded."sourceUserId",
@@ -689,22 +706,34 @@ export class WalletService {
           "entitlementId" = excluded."entitlementId",
           "itemName" = excluded."itemName",
           "targetEmail" = excluded."targetEmail",
+          "recipientPhone" = excluded."recipientPhone",
           "claimToken" = excluded."claimToken",
+          "tokenExpiresAt" = excluded."tokenExpiresAt",
+          "deliveryMethod" = excluded."deliveryMethod",
+          "giftMessage" = excluded."giftMessage",
           status = excluded.status,
           "claimedByUserId" = excluded."claimedByUserId",
-          "claimedAt" = excluded."claimedAt"
+          "claimedAt" = excluded."claimedAt",
+          "revokedAt" = excluded."revokedAt",
+          "revokeReason" = excluded."revokeReason"
       returning
         id::text as "internalId",
         coalesce(public_id, id::text) as id,
         "sourceUserId" as "sourceUserId",
         "sourceUserName" as "sourceUserName",
-        $12::text as "entitlementId",
+        $18::text as "entitlementId",
         "itemName" as "itemName",
         "targetEmail" as "targetEmail",
+        "recipientPhone" as "recipientPhone",
         "claimToken" as "claimToken",
+        "tokenExpiresAt" as "tokenExpiresAt",
+        "deliveryMethod" as "deliveryMethod",
+        "giftMessage" as "giftMessage",
         status,
         "claimedByUserId" as "claimedByUserId",
         "claimedAt" as "claimedAt",
+        "revokedAt" as "revokedAt",
+        "revokeReason" as "revokeReason",
         "createdAt" as "createdAt"
       `,
       [
@@ -714,10 +743,16 @@ export class WalletService {
         wallet.internalId,
         gift.itemName,
         gift.targetEmail ?? null,
+        gift.recipientPhone ?? null,
         gift.claimToken,
+        this.toNullableTimestamp(gift.tokenExpiresAt ?? null),
+        gift.deliveryMethod ?? null,
+        gift.giftMessage ?? null,
         gift.status,
         gift.claimedByUserId ?? null,
         this.toNullableTimestamp(gift.claimedAt ?? null),
+        this.toNullableTimestamp(gift.revokedAt ?? null),
+        gift.revokeReason ?? null,
         this.toNullableTimestamp(gift.createdAt ?? new Date().toISOString()),
         gift.entitlementId,
       ],
@@ -993,29 +1028,153 @@ export class WalletService {
     senderId: string,
     dto: CreateGiftDto,
   ): Promise<GiftAllocation> {
-    // 1. Get wallet item, verify ownership
-    const wallet = await this.getWalletItem(dto.walletItemId, senderId);
-
-    // 2. Verify sufficient balance
-    if (wallet.balance < dto.transferAmount) {
-      throw new BadRequestException('Insufficient balance');
-    }
-
-    // 3. Verify wallet is not already locked
-    if (wallet.status === 'LOCKED') {
+    const recipientEmail = dto.recipientEmail?.trim().toLowerCase() || null;
+    const recipientPhone = dto.recipientPhone?.trim() || null;
+    const recipientName = dto.recipientName?.trim() || null;
+    if (dto.transferAmount !== 1) {
       throw new BadRequestException(
-        'Wallet item is already locked for transfer',
+        'Ticket sharing currently supports full-ticket transfer only',
+      );
+    }
+    if (!recipientEmail && !recipientPhone) {
+      throw new BadRequestException(
+        'Recipient email or phone is required to share a ticket',
       );
     }
 
-    // TODO: Begin atomic transaction
-    // 4. Lock the wallet item
-    // 5. Create gift_allocation with token
-    // 6. Log wallet_transaction (TRANSFER_OUT pending)
-    // 7. Send notification (email/whatsapp/link)
-    // TODO: Commit transaction
+    const sender = await this.prisma.user
+      .findUnique({
+        where: { id: senderId.trim() },
+        select: { name: true },
+      })
+      .catch(() => null);
+    const senderName = sender?.name?.trim() || senderId.trim();
 
-    throw new Error('Not implemented - needs database');
+    return this.db.withTransaction(async (client) => {
+      const wallet = await this.lockWalletItemRow(dto.walletItemId, client);
+      this.assertWalletShareable(wallet, senderId);
+
+      const pendingGift = await client.query<{ id: string }>(
+        `
+        select coalesce(public_id, id::text) as id
+        from gift_allocations
+        where "entitlementId" = $1::uuid
+          and status = 'PENDING'
+          and (
+            "tokenExpiresAt" is null
+            or "tokenExpiresAt" > now()
+          )
+        limit 1
+        `,
+        [wallet.internalId],
+      );
+      if (pendingGift.rows[0]?.id) {
+        throw new ConflictException(
+          `Ticket already has a pending share (${pendingGift.rows[0].id})`,
+        );
+      }
+
+      const giftPublicId = this.buildWalletPublicId('GFT');
+      const claimToken = this.buildGiftClaimToken();
+      const tokenExpiresAt = this.addDays(new Date(), 7).toISOString();
+      const updatedMeta = {
+        ...(wallet.meta ?? {}),
+        recipientName,
+        recipientEmail,
+        recipientPhone,
+        pendingClaimIssuedAt: new Date().toISOString(),
+        giftAllocationId: giftPublicId,
+      };
+
+      await this.upsertWalletItem(
+        {
+          id: wallet.id,
+          userId: wallet.userId,
+          type: wallet.type,
+          title: wallet.title,
+          subtitle: wallet.subtitle,
+          expiryDate: wallet.expiryDate ?? null,
+          qrData: wallet.qrData ?? null,
+          status: 'PENDING_CLAIM',
+          isTransferable: wallet.isTransferable,
+          sponsoredBy: wallet.sponsoredBy ?? null,
+          meta: updatedMeta,
+        },
+        client,
+      );
+
+      await client.query(
+        `
+        insert into gift_allocations (
+          public_id,
+          "sourceUserId",
+          "sourceUserName",
+          "entitlementId",
+          "itemName",
+          "targetEmail",
+          "recipientPhone",
+          "claimToken",
+          "tokenExpiresAt",
+          "deliveryMethod",
+          "giftMessage",
+          status,
+          "createdAt"
+        )
+        values (
+          $1,
+          $2,
+          $3,
+          $4::uuid,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9::timestamptz,
+          $10,
+          $11,
+          'PENDING',
+          now()
+        )
+        `,
+        [
+          giftPublicId,
+          senderId.trim(),
+          senderName,
+          wallet.internalId,
+          wallet.title,
+          recipientEmail,
+          recipientPhone,
+          claimToken,
+          tokenExpiresAt,
+          dto.deliveryMethod,
+          dto.giftMessage?.trim() || null,
+        ],
+      );
+
+      await this.insertWalletTransaction(
+        {
+          walletItemId: wallet.internalId,
+          userId: senderId.trim(),
+          transactionType: 'TRANSFER_OUT',
+          amountChange: 0,
+          balanceAfter: 0,
+          referenceId: giftPublicId,
+          referenceName: `Gift pending: ${wallet.title}`,
+        },
+        client,
+      );
+
+      const created = await this.selectGiftAllocations(
+        'where ga.public_id = $1 limit 1',
+        [giftPublicId],
+        client,
+      );
+      const allocation = created[0];
+      if (!allocation) {
+        throw new NotFoundException('Gift allocation was not created');
+      }
+      return allocation;
+    });
   }
 
   /**
@@ -1024,33 +1183,119 @@ export class WalletService {
   async claimGift(
     recipientId: string,
     dto: ClaimGiftDto,
-  ): Promise<MemberWallet> {
-    // 1. Find gift by token
-    const gift = await this.findGiftByToken(dto.token);
-    if (!gift) {
-      throw new NotFoundException('Invalid or expired gift token');
-    }
+  ): Promise<WalletItemContract> {
+    const recipientUser = await this.prisma.user
+      .findUnique({
+        where: { id: recipientId.trim() },
+        select: { email: true, name: true },
+      })
+      .catch(() => null);
+    const recipientEmail = recipientUser?.email?.trim().toLowerCase() || null;
 
-    // 2. Verify not expired
-    if (gift.tokenExpiresAt && new Date() > gift.tokenExpiresAt) {
-      throw new BadRequestException('Gift link has expired');
-    }
+    return this.db.withTransaction(async (client) => {
+      const gift = await this.lockGiftAllocationByToken(dto.token, client);
+      if (!gift) {
+        throw new NotFoundException('Invalid or expired gift token');
+      }
+      if (gift.status !== 'PENDING') {
+        throw new BadRequestException(
+          `Gift is already ${gift.status.toLowerCase()}`,
+        );
+      }
+      if (gift.tokenExpiresAt && new Date(gift.tokenExpiresAt) <= new Date()) {
+        await client.query(
+          `
+          update gift_allocations
+          set status = 'EXPIRED'
+          where id = $1::uuid
+          `,
+          [gift.internalId],
+        );
+        throw new BadRequestException('Gift link has expired');
+      }
+      if (
+        gift.targetEmail &&
+        recipientEmail &&
+        gift.targetEmail.trim().toLowerCase() !== recipientEmail
+      ) {
+        throw new ForbiddenException(
+          'This gift was issued to a different recipient email',
+        );
+      }
 
-    // 3. Verify not already claimed/revoked
-    if (gift.status !== 'PENDING') {
-      throw new BadRequestException(
-        `Gift is already ${gift.status.toLowerCase()}`,
+      const wallet = await this.lockWalletItemRow(gift.entitlementInternalId, client);
+      if (wallet.status !== 'PENDING_CLAIM') {
+        throw new ConflictException(
+          'Shared ticket is no longer available to be claimed',
+        );
+      }
+
+      if (recipientEmail) {
+        await this.ensureShadowMember(
+          recipientEmail,
+          recipientUser?.name?.trim() ||
+            this.readWalletRecipientName(wallet.meta) ||
+            gift.targetEmail?.split('@')[0] ||
+            'Gift Recipient',
+          wallet.meta?.recipientPhone,
+          client,
+        );
+      }
+
+      const claimedMeta = {
+        ...(wallet.meta ?? {}),
+        recipientEmail: gift.targetEmail ?? recipientEmail,
+        recipientPhone:
+          gift.recipientPhone ?? this.readWalletRecipientPhone(wallet.meta),
+        pendingClaimIssuedAt: undefined,
+        giftAllocationId: gift.id,
+        claimedAt: new Date().toISOString(),
+      };
+      delete claimedMeta.pendingClaimIssuedAt;
+
+      const claimedWallet = await this.upsertWalletItem(
+        {
+          id: wallet.id,
+          userId: recipientId.trim(),
+          type: wallet.type,
+          title: wallet.title,
+          subtitle: wallet.subtitle,
+          expiryDate: wallet.expiryDate ?? null,
+          qrData: wallet.qrData ?? null,
+          status: 'ACTIVE',
+          isTransferable: wallet.isTransferable,
+          sponsoredBy: gift.sourceUserName,
+          meta: claimedMeta,
+        },
+        client,
       );
-    }
 
-    // TODO: Begin atomic transaction
-    // 4. Deduct from sender's wallet
-    // 5. Create new wallet item for recipient
-    // 6. Update gift status to CLAIMED
-    // 7. Log wallet_transactions (TRANSFER_OUT for sender, TRANSFER_IN for recipient)
-    // TODO: Commit transaction
+      await client.query(
+        `
+        update gift_allocations
+        set status = 'CLAIMED',
+            "claimedByUserId" = $2,
+            "claimedAt" = now()
+        where id = $1::uuid
+        `,
+        [gift.internalId, recipientId.trim()],
+      );
 
-    throw new Error('Not implemented - needs database');
+      await this.insertWalletTransaction(
+        {
+          walletItemId: wallet.internalId,
+          userId: recipientId.trim(),
+          transactionType: 'TRANSFER_IN',
+          amountChange: 1,
+          balanceAfter: 1,
+          referenceId: gift.id,
+          referenceName: `Gift claimed: ${wallet.title}`,
+        },
+        client,
+      );
+
+      return claimedWallet;
+    });
   }
 
   /**
@@ -1061,28 +1306,81 @@ export class WalletService {
     giftId: string,
     dto: RevokeGiftDto,
   ): Promise<GiftAllocation> {
-    // 1. Find gift
-    const gift = await this.findGiftById(giftId);
-    if (!gift) {
-      throw new NotFoundException('Gift not found');
-    }
+    return this.db.withTransaction(async (client) => {
+      const gift = await this.lockGiftAllocationById(giftId, client);
+      if (!gift) {
+        throw new NotFoundException('Gift not found');
+      }
+      if (gift.sourceUserId !== senderId.trim()) {
+        throw new ForbiddenException('You can only revoke your own gifts');
+      }
+      if (gift.status !== 'PENDING') {
+        throw new BadRequestException('Can only revoke pending gifts');
+      }
 
-    // 2. Verify sender owns this gift
-    if ((gift.sourceUserId ?? gift.senderUserId) !== senderId) {
-      throw new ForbiddenException('You can only revoke your own gifts');
-    }
+      const wallet = await this.lockWalletItemRow(gift.entitlementInternalId, client);
+      const restoredMeta = {
+        ...(wallet.meta ?? {}),
+      };
+      delete restoredMeta.recipientName;
+      delete restoredMeta.recipientEmail;
+      delete restoredMeta.recipientPhone;
+      delete restoredMeta.pendingClaimIssuedAt;
+      delete restoredMeta.giftAllocationId;
+      delete restoredMeta.claimedAt;
 
-    // 3. Verify still pending
-    if (gift.status !== 'PENDING') {
-      throw new BadRequestException('Can only revoke pending gifts');
-    }
+      await this.upsertWalletItem(
+        {
+          id: wallet.id,
+          userId: senderId.trim(),
+          type: wallet.type,
+          title: wallet.title,
+          subtitle: wallet.subtitle,
+          expiryDate: wallet.expiryDate ?? null,
+          qrData: wallet.qrData ?? null,
+          status: 'ACTIVE',
+          isTransferable: wallet.isTransferable,
+          sponsoredBy: null,
+          meta: restoredMeta,
+        },
+        client,
+      );
 
-    // TODO: Begin transaction
-    // 4. Unlock the wallet item
-    // 5. Update gift status to REVOKED
-    // TODO: Commit transaction
+      await client.query(
+        `
+        update gift_allocations
+        set status = 'REVOKED',
+            "revokedAt" = now(),
+            "revokeReason" = $2
+        where id = $1::uuid
+        `,
+        [gift.internalId, dto.reason?.trim() || null],
+      );
 
-    throw new Error('Not implemented - needs database');
+      await this.insertWalletTransaction(
+        {
+          walletItemId: wallet.internalId,
+          userId: senderId.trim(),
+          transactionType: 'TRANSFER_IN',
+          amountChange: 0,
+          balanceAfter: 1,
+          referenceId: gift.id,
+          referenceName: `Gift revoked: ${wallet.title}`,
+        },
+        client,
+      );
+
+      const revoked = await this.selectGiftAllocations(
+        'where ga.public_id = $1 or ga.id::text = $1 limit 1',
+        [giftId.trim()],
+        client,
+      );
+      const allocation = revoked[0];
+      if (!allocation) {
+        throw new NotFoundException('Revoked gift could not be reloaded');
+      }
+      return allocation;
+    });
   }
 
   /**
@@ -1416,10 +1714,16 @@ export class WalletService {
         coalesce(wi.public_id, ga."entitlementId"::text) as "entitlementId",
         ga."itemName" as "itemName",
         ga."targetEmail" as "targetEmail",
+        ga."recipientPhone" as "recipientPhone",
         ga."claimToken" as "claimToken",
+        ga."tokenExpiresAt" as "tokenExpiresAt",
+        ga."deliveryMethod" as "deliveryMethod",
+        ga."giftMessage" as "giftMessage",
         ga.status,
         ga."claimedByUserId" as "claimedByUserId",
         ga."claimedAt" as "claimedAt",
+        ga."revokedAt" as "revokedAt",
+        ga."revokeReason" as "revokeReason",
         ga."createdAt" as "createdAt"
       from gift_allocations ga
       left join wallet_items wi on wi.id = ga."entitlementId"
@@ -1431,8 +1735,284 @@ export class WalletService {
     return result.rows;
   }
 
+  private async getWalletItemRow(
+    identifier: string,
+    executor: SqlExecutor = this.db,
+  ): Promise<WalletItemContractRow> {
+    const result = await executor.query<WalletItemContractRow>(
+      `
+      select
+        wi.id::text as "internalId",
+        coalesce(wi.public_id, wi.id::text) as id,
+        wi."userId",
+        wi.type,
+        wi.title,
+        coalesce(wi.subtitle, '') as subtitle,
+        wi."expiryDate" as "expiryDate",
+        wi."qrData" as "qrData",
+        wi.status,
+        coalesce(wi."isTransferable", false) as "isTransferable",
+        wi."sponsoredBy" as "sponsoredBy",
+        coalesce(wi.meta, '{}'::jsonb) as meta,
+        wi."createdAt" as "createdAt",
+        coalesce(wi."updatedAt", wi."createdAt", now()) as "updatedAt"
+      from wallet_items wi
+      where wi.public_id = $1 or wi.id::text = $1
+      limit 1
+      `,
+      [identifier.trim()],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new NotFoundException(`Wallet item ${identifier} not found`);
+    }
+    return row;
+  }
+
+  private async lockWalletItemRow(
+    identifier: string,
+    executor: SqlExecutor,
+  ): Promise<WalletItemContractRow> {
+    const result = await executor.query<WalletItemContractRow>(
+      `
+      select
+        wi.id::text as "internalId",
+        coalesce(wi.public_id, wi.id::text) as id,
+        wi."userId",
+        wi.type,
+        wi.title,
+        coalesce(wi.subtitle, '') as subtitle,
+        wi."expiryDate" as "expiryDate",
+        wi."qrData" as "qrData",
+        wi.status,
+        coalesce(wi."isTransferable", false) as "isTransferable",
+        wi."sponsoredBy" as "sponsoredBy",
+        coalesce(wi.meta, '{}'::jsonb) as meta,
+        wi."createdAt" as "createdAt",
+        coalesce(wi."updatedAt", wi."createdAt", now()) as "updatedAt"
+      from wallet_items wi
+      where wi.public_id = $1 or wi.id::text = $1
+      for update
+      `,
+      [identifier.trim()],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new NotFoundException(`Wallet item ${identifier} not found`);
+    }
+    return row;
+  }
+
+  private async lockGiftAllocationByToken(
+    token: string,
+    executor: SqlExecutor,
+  ): Promise<LockedGiftAllocationRow | null> {
+    const result = await executor.query<LockedGiftAllocationRow>(
+      `
+      select
+        ga.id::text as "internalId",
+        coalesce(ga.public_id, ga.id::text) as id,
+        ga."sourceUserId" as "sourceUserId",
+        ga."sourceUserName" as "sourceUserName",
+        ga."entitlementId"::text as "entitlementInternalId",
+        coalesce(wi.public_id, ga."entitlementId"::text) as "entitlementId",
+        ga."itemName" as "itemName",
+        ga."targetEmail" as "targetEmail",
+        ga."recipientPhone" as "recipientPhone",
+        ga."claimToken" as "claimToken",
+        ga."tokenExpiresAt" as "tokenExpiresAt",
+        ga."deliveryMethod" as "deliveryMethod",
+        ga."giftMessage" as "giftMessage",
+        ga.status,
+        ga."claimedByUserId" as "claimedByUserId",
+        ga."claimedAt" as "claimedAt",
+        ga."revokedAt" as "revokedAt",
+        ga."revokeReason" as "revokeReason",
+        ga."createdAt" as "createdAt"
+      from gift_allocations ga
+      left join wallet_items wi on wi.id = ga."entitlementId"
+      where ga."claimToken" = $1
+      limit 1
+      for update
+      `,
+      [token.trim()],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private async lockGiftAllocationById(
+    identifier: string,
+    executor: SqlExecutor,
+  ): Promise<LockedGiftAllocationRow | null> {
+    const result = await executor.query<LockedGiftAllocationRow>(
+      `
+      select
+        ga.id::text as "internalId",
+        coalesce(ga.public_id, ga.id::text) as id,
+        ga."sourceUserId" as "sourceUserId",
+        ga."sourceUserName" as "sourceUserName",
+        ga."entitlementId"::text as "entitlementInternalId",
+        coalesce(wi.public_id, ga."entitlementId"::text) as "entitlementId",
+        ga."itemName" as "itemName",
+        ga."targetEmail" as "targetEmail",
+        ga."recipientPhone" as "recipientPhone",
+        ga."claimToken" as "claimToken",
+        ga."tokenExpiresAt" as "tokenExpiresAt",
+        ga."deliveryMethod" as "deliveryMethod",
+        ga."giftMessage" as "giftMessage",
+        ga.status,
+        ga."claimedByUserId" as "claimedByUserId",
+        ga."claimedAt" as "claimedAt",
+        ga."revokedAt" as "revokedAt",
+        ga."revokeReason" as "revokeReason",
+        ga."createdAt" as "createdAt"
+      from gift_allocations ga
+      left join wallet_items wi on wi.id = ga."entitlementId"
+      where ga.public_id = $1 or ga.id::text = $1
+      limit 1
+      for update
+      `,
+      [identifier.trim()],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private assertWalletShareable(
+    wallet: WalletItemContractRow,
+    senderId: string,
+  ): void {
+    if (wallet.userId !== senderId.trim()) {
+      throw new ForbiddenException('You can only share your own tickets');
+    }
+    if (wallet.type !== 'TICKET') {
+      throw new BadRequestException('Only ticket items can be shared');
+    }
+    if (!wallet.isTransferable) {
+      throw new BadRequestException('This ticket is not transferable');
+    }
+    if (['USED', 'EXPIRED', 'CANCELLED'].includes(wallet.status)) {
+      throw new BadRequestException(
+        `This ticket cannot be shared because it is ${wallet.status.toLowerCase()}`,
+      );
+    }
+    if (['LOCKED', 'PENDING_CLAIM', 'GIFT_PENDING'].includes(wallet.status)) {
+      throw new ConflictException('This ticket is already in a transfer flow');
+    }
+  }
+
+  private async ensureShadowMember(
+    rawEmail: string,
+    displayName: string,
+    phone: unknown,
+    executor: SqlExecutor,
+  ): Promise<void> {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email) return;
+    const existing = await executor.query<{ id: string }>(
+      `
+      select id::text as id
+      from members
+      where lower(trim(email)) = $1
+      limit 1
+      `,
+      [email],
+    );
+    if (existing.rows[0]?.id) {
+      return;
+    }
+    const publicId = `MEM-${crypto
+      .randomUUID()
+      .replace(/-/g, '')
+      .slice(0, 12)
+      .toUpperCase()}`;
+    await executor.query(
+      `
+      insert into members (
+        public_id,
+        name,
+        email,
+        phone,
+        category,
+        scholarship,
+        "joinMonth",
+        program,
+        "mentorshipDuration",
+        "nTagStatus",
+        platform,
+        "regInUS",
+        "lifecycleStage",
+        tags,
+        achievements,
+        "earnedDoneTags",
+        engagement,
+        "createdAt",
+        "updatedAt"
+      )
+      values (
+        $1,
+        $2,
+        $3,
+        $4,
+        'Member',
+        false,
+        to_char(now(), 'YYYY-MM'),
+        'Gifted Access',
+        0,
+        '',
+        'Digital',
+        false,
+        'IDENTIFIED',
+        '{}'::text[],
+        '[]'::jsonb,
+        '{}'::text[],
+        $5::jsonb,
+        now(),
+        now()
+      )
+      on conflict (public_id) do nothing
+      `,
+      [
+        publicId,
+        displayName.trim().slice(0, 255) || 'Gift Recipient',
+        email,
+        typeof phone === 'string' ? phone.slice(0, 50) : '',
+        JSON.stringify({
+          lastActiveDate: new Date().toISOString(),
+          eventsAttendedCount: 0,
+          contentCompletionRate: 0,
+          communityReputationScore: 0,
+          leadScore: 0,
+        }),
+      ],
+    );
+  }
+
+  private readWalletRecipientName(
+    meta: Record<string, unknown> | undefined,
+  ): string | null {
+    const value = meta?.recipientName;
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private readWalletRecipientPhone(
+    meta: Record<string, unknown> | undefined,
+  ): string | null {
+    const value = meta?.recipientPhone;
+    return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
   private buildWalletPublicId(prefix = 'WLT'): string {
     return `${prefix}-${crypto.randomUUID().replace(/-/g, '').slice(0, 12).toUpperCase()}`;
+  }
+
+  private buildGiftClaimToken(): string {
+    return `gift_${crypto.randomUUID().replace(/-/g, '')}`;
+  }
+
+  private addDays(date: Date, days: number): Date {
+    const next = new Date(date.getTime());
+    next.setUTCDate(next.getUTCDate() + days);
+    return next;
   }
 
   private toNullableTimestamp(value?: string | Date | null): string | null {
