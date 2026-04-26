@@ -34,7 +34,8 @@ export function assertFinanceControllerOnly(
   user: JwtUserPayload,
   actionLabel = 'Financial operation',
 ): void {
-  assertRole(user, [USER_ROLE.FINANCE], actionLabel);
+  // Super Admin keeps full-system override, Finance remains day-to-day owner.
+  assertRole(user, [USER_ROLE.FINANCE, USER_ROLE.SUPER_ADMIN], actionLabel);
 }
 
 export function assertOperationsOnly(
@@ -52,18 +53,14 @@ export function assertOperationsOrSuperAdmin(
   assertRole(user, [USER_ROLE.OPERATIONS, USER_ROLE.SUPER_ADMIN], actionLabel);
 }
 
-/**
- * Store catalog (products): matches maxwell-refactor `Storefront` `isStoreAdmin`
- * (Operations, Marketing, Super Admin). Narrower than `assertOperationsOnly` so
- * Marketing can manage catalog UI without 403 on create/upload.
- */
+/** Store catalog write (products): Ops owner + Super Admin override. */
 export function assertStoreCatalogManager(
   user: JwtUserPayload,
   actionLabel: string,
 ): void {
   assertRole(
     user,
-    [USER_ROLE.OPERATIONS, USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    [USER_ROLE.OPERATIONS, USER_ROLE.SUPER_ADMIN],
     actionLabel,
   );
 }

@@ -51,7 +51,7 @@ export class StoreSupportController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    this.assertOps(req, 'Pricing rule update');
+    this.assertMarketing(req, 'Pricing rule update');
     return this.storeSupport.upsertPricingRule(id, body ?? {});
   }
 
@@ -61,7 +61,7 @@ export class StoreSupportController {
     @Req() req: { user: JwtUserPayload },
     @Param('id') id: string,
   ) {
-    this.assertOps(req, 'Pricing rule deletion');
+    this.assertMarketing(req, 'Pricing rule deletion');
     return this.storeSupport.deletePricingRule(id);
   }
 
