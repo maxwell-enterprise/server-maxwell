@@ -3,6 +3,7 @@
  */
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -149,6 +150,12 @@ export class WalletController {
     return this.walletService.getGiftAllocations();
   }
 
+  @Get('gifts/inbox')
+  @UseGuards(JwtAuthGuard)
+  getGiftInbox(@Req() req: { user: JwtUserPayload }) {
+    return this.walletService.getGiftInbox(req.user.email);
+  }
+
   @Put('gift-allocations/:id')
   @UseGuards(JwtAuthGuard)
   upsertGiftAllocation(
@@ -241,6 +248,20 @@ export class WalletController {
   ) {
     const userId = String(req.user.sub);
     return this.walletService.claimGift(userId, dto);
+  }
+
+  @Get('gifts/claim')
+  @UseGuards(JwtAuthGuard)
+  claimGiftByQuery(
+    @Req() req: { user: JwtUserPayload },
+    @Query('token') token?: string,
+  ) {
+    const userId = String(req.user.sub);
+    const normalizedToken = token?.trim();
+    if (!normalizedToken) {
+      throw new BadRequestException('Token is required');
+    }
+    return this.walletService.claimGift(userId, { token: normalizedToken });
   }
 
   @Delete('gifts/:id')

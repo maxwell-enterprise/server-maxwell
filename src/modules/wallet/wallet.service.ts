@@ -652,13 +652,34 @@ export class WalletService {
   }
 
   async getGiftAllocations(): Promise<GiftAllocation[]> {
+    await this.ensureGiftAllocationRuntimeColumns();
     return this.selectGiftAllocations('order by ga."createdAt" desc');
+  }
+
+  async getGiftInbox(userEmail: string): Promise<GiftAllocation[]> {
+    await this.ensureGiftAllocationRuntimeColumns();
+    const email = userEmail.trim().toLowerCase();
+    if (!email) {
+      return [];
+    }
+    return this.selectGiftAllocations(
+      `
+      where ga.status = 'PENDING'
+        and (
+          lower(coalesce(ga."targetEmail", '')) = $1
+          or lower(coalesce(wi.meta->>'recipientEmail', '')) = $1
+        )
+      order by ga."createdAt" desc
+      `,
+      [email],
+    );
   }
 
   async upsertGiftAllocation(
     gift: GiftAllocation,
     executor: SqlExecutor = this.db,
   ): Promise<GiftAllocation> {
+    await this.ensureGiftAllocationRuntimeColumns(executor);
     const wallet = await this.resolveWalletOwner(gift.entitlementId, executor);
     const result = await executor.query<GiftAllocationRow>(
       `
@@ -1051,6 +1072,7 @@ export class WalletService {
     const senderName = sender?.name?.trim() || senderId.trim();
 
     return this.db.withTransaction(async (client) => {
+      await this.ensureGiftAllocationRuntimeColumns(client);
       const wallet = await this.lockWalletItemRow(dto.walletItemId, client);
       this.assertWalletShareable(wallet, senderId);
 
@@ -1193,6 +1215,7 @@ export class WalletService {
     const recipientEmail = recipientUser?.email?.trim().toLowerCase() || null;
 
     return this.db.withTransaction(async (client) => {
+      await this.ensureGiftAllocationRuntimeColumns(client);
       const gift = await this.lockGiftAllocationByToken(dto.token, client);
       if (!gift) {
         throw new NotFoundException('Invalid or expired gift token');
@@ -1307,6 +1330,7 @@ export class WalletService {
     dto: RevokeGiftDto,
   ): Promise<GiftAllocation> {
     return this.db.withTransaction(async (client) => {
+      await this.ensureGiftAllocationRuntimeColumns(client);
       const gift = await this.lockGiftAllocationById(giftId, client);
       if (!gift) {
         throw new NotFoundException('Gift not found');
@@ -1387,6 +1411,7 @@ export class WalletService {
    * Get user's sent gifts
    */
   async getSentGifts(userId: string): Promise<GiftAllocation[]> {
+    await this.ensureGiftAllocationRuntimeColumns();
     return this.selectGiftAllocations(
       'where ga."sourceUserId" = $1 order by ga."createdAt" desc',
       [userId],
@@ -1397,6 +1422,7 @@ export class WalletService {
    * Get user's received gifts
    */
   async getReceivedGifts(userId: string): Promise<GiftAllocation[]> {
+    await this.ensureGiftAllocationRuntimeColumns();
     return this.selectGiftAllocations(
       'where ga."claimedByUserId" = $1 order by ga."createdAt" desc',
       [userId],
@@ -1404,6 +1430,7 @@ export class WalletService {
   }
 
   private async findGiftByToken(token: string): Promise<GiftAllocation | null> {
+    await this.ensureGiftAllocationRuntimeColumns();
     const rows = await this.selectGiftAllocations(
       'where ga."claimToken" = $1 limit 1',
       [token],
@@ -1412,6 +1439,7 @@ export class WalletService {
   }
 
   private async findGiftById(id: string): Promise<GiftAllocation | null> {
+    await this.ensureGiftAllocationRuntimeColumns();
     const rows = await this.selectGiftAllocations(
       'where ga.public_id = $1 or ga.id::text = $1 limit 1',
       [id],
@@ -1705,6 +1733,7 @@ export class WalletService {
     params: readonly unknown[] = [],
     executor: SqlExecutor = this.db,
   ): Promise<GiftAllocation[]> {
+    await this.ensureGiftAllocationRuntimeColumns(executor);
     const result = await executor.query<GiftAllocation>(
       `
       select
@@ -1733,6 +1762,57 @@ export class WalletService {
     );
 
     return result.rows;
+  }
+
+  private async ensureGiftAllocationRuntimeColumns(
+    executor: SqlExecutor = this.db,
+  ): Promise<void> {
+    await executor.query(
+      `
+      alter table if exists gift_allocations
+      add column if not exists "recipientPhone" text
+      `,
+    );
+    await executor.query(
+      `
+      alter table if exists gift_allocations
+      add column if not exists "tokenExpiresAt" timestamptz
+      `,
+    );
+    await executor.query(
+      `
+      alter table if exists gift_allocations
+      add column if not exists "deliveryMethod" text
+      `,
+    );
+    await executor.query(
+      `
+      alter table if exists gift_allocations
+      add column if not exists "giftMessage" text
+      `,
+    );
+    await executor.query(
+      `
+      alter table if exists gift_allocations
+      add column if not exists "revokedAt" timestamptz
+      `,
+    );
+    await executor.query(
+      `
+      alter table if exists gift_allocations
+      add column if not exists "revokeReason" text
+      `,
+    );
+    await executor.query(
+      `
+      update gift_allocations
+      set "tokenExpiresAt" = coalesce("tokenExpiresAt", "createdAt" + interval '7 days'),
+          "deliveryMethod" = coalesce(nullif(btrim("deliveryMethod"), ''), 'EMAIL')
+      where "tokenExpiresAt" is null
+         or "deliveryMethod" is null
+         or btrim("deliveryMethod") = ''
+      `,
+    );
   }
 
   private async getWalletItemRow(
@@ -1833,7 +1913,7 @@ export class WalletService {
       left join wallet_items wi on wi.id = ga."entitlementId"
       where ga."claimToken" = $1
       limit 1
-      for update
+      for update of ga
       `,
       [token.trim()],
     );
@@ -1870,7 +1950,7 @@ export class WalletService {
       left join wallet_items wi on wi.id = ga."entitlementId"
       where ga.public_id = $1 or ga.id::text = $1
       limit 1
-      for update
+      for update of ga
       `,
       [identifier.trim()],
     );
