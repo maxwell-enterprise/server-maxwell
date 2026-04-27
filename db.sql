@@ -249,6 +249,7 @@ create table if not exists payment_transactions (
   "orderId" text not null,
   amount numeric(18,2) not null,
   "discountAmount" numeric(18,2),
+  "voucherCode" text,
   "uniqueCode" integer,
   "totalAmount" numeric(18,2) not null,
   "paidAmount" numeric(18,2) not null default 0,
@@ -267,6 +268,10 @@ create table if not exists payment_transactions (
   "proofOfPaymentUrl" text,
   "itemsSnapshot" jsonb
 );
+
+create unique index if not exists uq_discount_redemption_logs_order_discount
+  on discount_redemption_logs ("orderId", "discountCode")
+  where "orderId" is not null and "discountCode" is not null;
 
 create table if not exists payout_transactions (
   id uuid primary key default gen_random_uuid(),

@@ -80,8 +80,30 @@ export class WorkspaceMeController {
   @Post('active-role')
   async switchActiveRole(
     @Req() req: { user: JwtUserPayload },
-    @Body() body: { role?: string },
+    @Body() body: { role?: string; customRoleId?: string },
   ) {
+    const customRoleId = String(body?.customRoleId ?? '').trim();
+    if (customRoleId) {
+      const result = await this.workspace.issueCustomRoleSwitchToken({
+        userId: req.user.sub,
+        targetCustomRoleId: customRoleId,
+        activeRoleHint: req.user.role,
+      });
+      const token = this.auth.signAccessToken(
+        req.user.sub,
+        req.user.email,
+        result.role,
+        { customRoleId: result.customRoleId },
+      );
+      return {
+        ok: true,
+        role: result.role,
+        customRoleId: result.customRoleId,
+        token,
+      };
+    }
+
+    await this.workspace.clearCustomRolePersona(req.user.sub);
     const result = await this.workspace.issueRoleSwitchToken({
       userId: req.user.sub,
       targetRole: String(body?.role ?? ''),
