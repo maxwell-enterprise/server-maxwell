@@ -5,7 +5,7 @@ import {
   ServiceUnavailableException,
   BadRequestException,
 } from '@nestjs/common';
-import { Resend } from 'resend';
+import nodemailer from 'nodemailer';
 import { DatabaseService } from '../../common/database/database.service';
 import {
   assertSupportedEmailTrigger,
@@ -186,7 +186,7 @@ export class CommunicationEmailService {
     const to = vars[recipKey];
 
     try {
-      await this.dispatchWithResend(to, subject, html);
+      await this.dispatchEmail(to, subject, html);
       await this.createLog({
         id: logId,
         templateId,
@@ -215,27 +215,34 @@ export class CommunicationEmailService {
     }
   }
 
-  private async dispatchWithResend(
+  private async dispatchEmail(
     to: string,
     subject: string,
     html: string,
   ): Promise<void> {
-    const resendKey = process.env.RESEND_API_KEY?.trim();
-    const from = process.env.EMAIL_FROM?.trim() ?? 'onboarding@resend.dev';
-    if (!resendKey) {
+    const host = process.env.SMTP_HOST?.trim();
+    const portRaw = Number(process.env.SMTP_PORT ?? 587);
+    const port = Number.isFinite(portRaw) && portRaw > 0 ? portRaw : 587;
+    const user = process.env.SMTP_USER?.trim();
+    const pass = process.env.SMTP_PASS?.trim();
+    const from = process.env.EMAIL_FROM?.trim() ?? user ?? '';
+    if (!host || !user || !pass || !from) {
       throw new ServiceUnavailableException(
-        'Transactional email is not configured (RESEND_API_KEY).',
+        'Transactional email is not configured (SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS/EMAIL_FROM).',
       );
     }
-    const resend = new Resend(resendKey);
-    const { error } = await resend.emails.send({
-      from,
-      to,
-      subject,
-      html,
+    const secure = String(process.env.SMTP_SECURE ?? '').toLowerCase() === 'true';
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: { user, pass },
     });
-    if (error) {
-      throw new BadRequestException(`Email provider error: ${error.message}`);
+    try {
+      await transporter.sendMail({ from, to, subject, html });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new BadRequestException(`Email provider error: ${message}`);
     }
   }
 

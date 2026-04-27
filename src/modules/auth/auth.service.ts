@@ -6,7 +6,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import * as crypto from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
 import { MembersService } from '../members/members.service';
@@ -16,15 +15,7 @@ import {
   parseAppRoleString,
   USER_ROLE,
 } from '../workspace-identity/user-role.constants';
-import { Resend } from 'resend';
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 function buildDefaultAvatarUrl(nameOrEmail: string): string {
   const seed = encodeURIComponent((nameOrEmail || 'User').trim());
@@ -79,12 +70,13 @@ export interface JwtUserPayload {
   sub: string;
   email: string;
   role: string;
+  customRoleId?: string;
 }
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private readonly MAGIC_LINK_TTL_MS = 10 * 60 * 1000;
+  private supabaseAdminClient: SupabaseClient | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -138,7 +130,61 @@ export class AuthService {
     return explicit;
   }
 
+  private getSupabaseAuthConfig():
+    | { url: string; serviceRoleKey: string }
+    | null {
+    const url = process.env.SUPABASE_URL?.trim();
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    if (!url || !serviceRoleKey) return null;
+    return { url, serviceRoleKey };
+  }
+
+  private isSupabaseAuthEnabled(): boolean {
+    const explicit = (process.env.AUTH_PROVIDER ?? '').trim().toLowerCase();
+    if (explicit === 'legacy') return false;
+    return this.getSupabaseAuthConfig() !== null;
+  }
+
+  private getSupabaseAdminClient(): SupabaseClient {
+    const config = this.getSupabaseAuthConfig();
+    if (!config) {
+      throw new UnauthorizedException('Supabase Auth is not configured');
+    }
+    if (!this.supabaseAdminClient) {
+      this.supabaseAdminClient = createClient(config.url, config.serviceRoleKey, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      });
+    }
+    return this.supabaseAdminClient;
+  }
+
+  private buildSupabaseFrontendCallbackUrl(rawReturnSearch?: string): string {
+    const base = this.getFrontendBaseUrl().replace(/\/+$/, '');
+    const params = new URLSearchParams({ provider: 'supabase' });
+    const normalizedReturnSearch = (() => {
+      const raw = String(rawReturnSearch ?? '').trim();
+      if (!raw) return '';
+      if (raw.length > 1500) return '';
+      return raw.startsWith('?') ? raw : `?${raw}`;
+    })();
+    if (normalizedReturnSearch) {
+      params.set('returnTo', normalizedReturnSearch);
+    }
+    return `${base}/auth/callback?${params.toString()}`;
+  }
+
   buildGoogleAuthorizeUrl(): string {
+    if (this.isSupabaseAuthEnabled()) {
+      const cfg = this.getSupabaseAuthConfig();
+      if (!cfg) {
+        throw new UnauthorizedException('Supabase Auth is not configured');
+      }
+      const callback = this.buildSupabaseFrontendCallbackUrl();
+      const url = new URL(`${cfg.url.replace(/\/+$/, '')}/auth/v1/authorize`);
+      url.searchParams.set('provider', 'google');
+      url.searchParams.set('redirect_to', callback);
+      return url.toString();
+    }
     const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
     if (!clientId) {
       throw new UnauthorizedException('Google OAuth is not configured');
@@ -237,6 +283,101 @@ export class AuthService {
       email,
       name: profile.name ?? email.split('@')[0],
       image: profile.picture ?? null,
+    });
+
+    await this.runPostOAuthSideEffects(
+      user.id,
+      email,
+      user.name ?? email.split('@')[0],
+    );
+
+    const fresh = await this.prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+    });
+    return this.signAccessToken(fresh.id, fresh.email!, fresh.appRole);
+  }
+
+  async exchangeSupabaseAccessToken(rawAccessToken: string): Promise<string> {
+    if (!this.isSupabaseAuthEnabled()) {
+      throw new UnauthorizedException('Supabase Auth is not enabled');
+    }
+    const accessToken = String(rawAccessToken ?? '').trim();
+    if (!accessToken) {
+      throw new UnauthorizedException('Supabase access token is required');
+    }
+
+    const supabase = this.getSupabaseAdminClient();
+    const { data, error } = await supabase.auth.getUser(accessToken);
+    if (error || !data?.user) {
+      throw new UnauthorizedException(
+        error?.message || 'Supabase session is invalid or expired',
+      );
+    }
+
+    const supabaseUser = data.user as unknown as {
+      id: string;
+      email?: string | null;
+      user_metadata?: Record<string, unknown> | null;
+      app_metadata?: Record<string, unknown> | null;
+      identities?: Array<Record<string, unknown>> | null;
+    };
+
+    const email = String(supabaseUser.email ?? '')
+      .trim()
+      .toLowerCase();
+    if (!email) {
+      throw new UnauthorizedException('Supabase account has no email');
+    }
+
+    const userMeta =
+      supabaseUser.user_metadata && typeof supabaseUser.user_metadata === 'object'
+        ? supabaseUser.user_metadata
+        : {};
+    const appMeta =
+      supabaseUser.app_metadata && typeof supabaseUser.app_metadata === 'object'
+        ? supabaseUser.app_metadata
+        : {};
+    const identities = Array.isArray(supabaseUser.identities)
+      ? supabaseUser.identities
+      : [];
+
+    const providerRaw = String(
+      appMeta.provider ??
+        identities[0]?.provider ??
+        userMeta.provider ??
+        'email',
+    )
+      .trim()
+      .toLowerCase();
+    const provider = providerRaw || 'email';
+
+    const matchedIdentity =
+      identities.find((i) => String(i?.provider ?? '').trim().toLowerCase() === provider) ??
+      identities[0] ??
+      null;
+    const providerAccountId = String(
+      matchedIdentity?.id ??
+        matchedIdentity?.user_id ??
+        appMeta.provider_id ??
+        supabaseUser.id,
+    ).trim();
+
+    const displayName = String(
+      userMeta.full_name ??
+        userMeta.name ??
+        userMeta.display_name ??
+        email.split('@')[0],
+    ).trim();
+    const avatar = String(
+      userMeta.avatar_url ?? userMeta.picture ?? '',
+    ).trim();
+
+    const user = await this.upsertOAuthUser({
+      provider,
+      providerAccountId: providerAccountId || supabaseUser.id,
+      email,
+      name: displayName || email.split('@')[0],
+      image: avatar || null,
     });
 
     await this.runPostOAuthSideEffects(
@@ -389,16 +530,29 @@ export class AuthService {
     }
   }
 
-  signAccessToken(userId: string, email: string, appRole: string): string {
+  signAccessToken(
+    userId: string,
+    email: string,
+    appRole: string,
+    opts?: { customRoleId?: string },
+  ): string {
     const activeRole = parseAppRoleString(appRole);
-    return this.jwt.sign({
+    const payload: JwtUserPayload = {
       sub: userId,
       email,
       role: activeRole,
-    });
+    };
+    if (typeof opts?.customRoleId === 'string' && opts.customRoleId.trim()) {
+      payload.customRoleId = opts.customRoleId.trim();
+    }
+    return this.jwt.sign(payload);
   }
 
-  async getSessionPayload(userId: string, activeRoleHint?: string): Promise<{
+  async getSessionPayload(
+    userId: string,
+    activeRoleHint?: string,
+    activeCustomRoleIdHint?: string,
+  ): Promise<{
     id: string;
     email: string;
     name: string | null;
@@ -407,6 +561,14 @@ export class AuthService {
     roles: string[];
     phone: string | null;
     abacContext: unknown;
+    customRole: {
+      id: string;
+      name: string;
+      allowedFeatures: string[];
+      createdAt: string;
+      locked: true;
+    } | null;
+    activeCustomRoleId: string | null;
   } | null> {
     const row = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -425,6 +587,13 @@ export class AuthService {
     const activeRole = assignedRoles.includes(parseAppRoleString(activeRoleHint))
       ? parseAppRoleString(activeRoleHint)
       : assignedRoles[0];
+    const { assignment, activeCustomRoleId } =
+      AuthService.readWorkspaceCustomRole(row.abacContext);
+    const hintedCustomId = String(activeCustomRoleIdHint ?? '').trim();
+    const finalActiveCustomRoleId =
+      assignment && hintedCustomId && hintedCustomId === assignment.id
+        ? hintedCustomId
+        : activeCustomRoleId;
     return {
       id: row.id,
       email: row.email,
@@ -434,6 +603,8 @@ export class AuthService {
       roles: assignedRoles,
       phone,
       abacContext: row.abacContext,
+      customRole: assignment,
+      activeCustomRoleId: finalActiveCustomRoleId,
     };
   }
 
@@ -446,142 +617,85 @@ export class AuthService {
     return p.trim();
   }
 
-  async sendMagicLinkEmail(rawEmail: string): Promise<void> {
+  private static readWorkspaceCustomRole(abac: unknown): {
+    assignment: {
+      id: string;
+      name: string;
+      allowedFeatures: string[];
+      createdAt: string;
+      locked: true;
+    } | null;
+    activeCustomRoleId: string | null;
+  } {
+    if (!abac || typeof abac !== 'object' || Array.isArray(abac)) {
+      return { assignment: null, activeCustomRoleId: null };
+    }
+    const ws = (abac as Record<string, unknown>).workspaceCustomRole;
+    if (!ws || typeof ws !== 'object' || Array.isArray(ws)) {
+      return { assignment: null, activeCustomRoleId: null };
+    }
+    const assignmentRaw = (ws as Record<string, unknown>).assignment;
+    if (
+      !assignmentRaw ||
+      typeof assignmentRaw !== 'object' ||
+      Array.isArray(assignmentRaw)
+    ) {
+      return { assignment: null, activeCustomRoleId: null };
+    }
+    const id = String((assignmentRaw as Record<string, unknown>).id ?? '').trim();
+    const name = String((assignmentRaw as Record<string, unknown>).name ?? '').trim();
+    const createdAt = String(
+      (assignmentRaw as Record<string, unknown>).createdAt ?? '',
+    ).trim();
+    const allowedFeaturesRaw = (assignmentRaw as Record<string, unknown>)
+      .allowedFeatures;
+    const allowedFeatures = Array.isArray(allowedFeaturesRaw)
+      ? allowedFeaturesRaw
+          .map((v) => String(v ?? '').trim())
+          .filter((v) => !!v)
+      : [];
+    if (!id || !name || !createdAt || allowedFeatures.length === 0) {
+      return { assignment: null, activeCustomRoleId: null };
+    }
+    const activeCustomRoleId = String(
+      (ws as Record<string, unknown>).activeId ?? '',
+    ).trim();
+    return {
+      assignment: {
+        id,
+        name,
+        allowedFeatures,
+        createdAt,
+        locked: true,
+      },
+      activeCustomRoleId: activeCustomRoleId || null,
+    };
+  }
+
+  async sendMagicLinkEmail(
+    rawEmail: string,
+    rawReturnSearch?: string,
+  ): Promise<void> {
     const email = rawEmail.trim().toLowerCase();
     if (!email.includes('@')) {
       throw new UnauthorizedException('Invalid email');
     }
 
-    const resendKey = process.env.RESEND_API_KEY?.trim();
-    const from = process.env.EMAIL_FROM?.trim() ?? 'onboarding@resend.dev';
-    if (!resendKey) {
-      throw new UnauthorizedException('RESEND_API_KEY is not configured');
+    if (!this.isSupabaseAuthEnabled()) {
+      throw new UnauthorizedException(
+        'Supabase Auth is not configured for magic link login',
+      );
     }
 
-    const token = crypto.randomBytes(32).toString('hex');
-    const expires = new Date(Date.now() + this.MAGIC_LINK_TTL_MS);
-
-    // Keep previous (still-valid) links working. Only clean up expired tokens.
-    await this.prisma.verificationToken.deleteMany({
-      where: { identifier: email, expires: { lt: new Date() } },
+    const supabase = this.getSupabaseAdminClient();
+    const callbackUrl = this.buildSupabaseFrontendCallbackUrl(rawReturnSearch);
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        shouldCreateUser: true,
+        emailRedirectTo: callbackUrl,
+      },
     });
-    await this.prisma.verificationToken.create({
-      data: { identifier: email, token, expires },
-    });
-
-    const verifyUrl = `${this.getAuthBackendOrigin()}/fe/auth/email/verify?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
-
-    const brandRaw =
-      process.env.EMAIL_BRAND_NAME?.trim() || 'Maxwell Leadership Enterprise';
-    const brandEsc = escapeHtml(brandRaw);
-    const fe = this.getFrontendBaseUrl();
-    const siteUrl = (process.env.EMAIL_PUBLIC_BASE_URL?.trim() || fe).replace(
-      /\/+$/,
-      '',
-    );
-    const logoUrl =
-      process.env.EMAIL_LOGO_URL?.trim() || `${siteUrl}/mxwel.png`;
-    const emailSubject =
-      process.env.EMAIL_SUBJECT?.trim() ||
-      'Account access verification — Maxwell Leadership Enterprise';
-
-    let greetingName = 'there';
-    const existingUser = await this.prisma.user.findFirst({
-      where: { email },
-      select: { name: true },
-    });
-    if (existingUser?.name?.trim()) {
-      greetingName = escapeHtml(existingUser.name.trim());
-    }
-
-    const ttlMinutes = Math.max(1, Math.round(this.MAGIC_LINK_TTL_MS / 60_000));
-    const year = new Date().getFullYear();
-
-    const resend = new Resend(resendKey);
-    let sendResult: Awaited<ReturnType<Resend['emails']['send']>>;
-    try {
-      sendResult = await resend.emails.send({
-        from,
-        to: email,
-        subject: emailSubject,
-        html: `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>${escapeHtml(emailSubject)}</title>
-  </head>
-  <body style="margin:0;padding:0;background:#021A54;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;line-height:1.55;color:#0f172a;">
-    <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;background:#021A54;">
-      <tr>
-        <td align="center" style="padding:28px 12px;">
-          <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:600px;background:#ffffff;border-radius:4px;overflow:hidden;">
-            <tr>
-              <td style="padding:28px 24px 20px 24px;text-align:center;background:#ffffff;">
-                <img src="${logoUrl}" width="96" height="96" alt="${brandEsc}" style="display:inline-block;border-radius:4px;border:1px solid #e5e7eb;object-fit:cover;" />
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:0 24px 28px 24px;background:#F0F9FF;">
-                <p style="margin:0 0 14px 0;font-size:15px;color:#0f172a;font-weight:700;">Hello ${greetingName},</p>
-                <p style="margin:0 0 12px 0;font-size:14px;color:#1e293b;">
-                  We’re sending this email to verify a sign-in request for your <strong>${brandEsc}</strong> account. For your security, access is only possible through an official link sent to your registered email address.
-                </p>
-                <p style="margin:0 0 12px 0;font-size:14px;color:#1e293b;">
-                  Click the button below to continue. The link is confidential, may only be used in line with our security policy, and expires automatically after a short period to reduce the risk of misuse.
-                </p>
-                <p style="margin:0 0 22px 0;font-size:14px;color:#1e293b;">
-                  If you didn’t request this link, you can ignore this message—your account remains secure as long as no one else can access your inbox.
-                </p>
-                <table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;">
-                  <tr>
-                    <td align="center" style="padding:0 0 18px 0;">
-                      <a href="${verifyUrl}" style="display:inline-block;background:#021A54;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:4px;font-weight:700;font-size:14px;">Sign in to your account</a>
-                    </td>
-                  </tr>
-                </table>
-                <p style="margin:0 0 18px 0;font-size:12px;color:#475569;text-align:center;">
-                  This link is valid for <strong>${ttlMinutes} minutes</strong>.
-                </p>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:22px 20px;background:#F3F4F6;text-align:center;font-size:12px;color:#4b5563;">
-                <p style="margin:0 0 10px 0;">© ${year} Maxwell Leadership Enterprise. All rights reserved.</p>
-                <p style="margin:0 0 10px 0;">
-                  <a href="${siteUrl}" style="color:#021A54;text-decoration:underline;">Visit website</a>
-                  <span style="color:#9ca3af;"> | </span>
-                  <a href="${siteUrl}/support" style="color:#021A54;text-decoration:underline;">Contact us</a>
-                </p>
-                <p style="margin:0 0 8px 0;">
-                  <a href="${siteUrl}" style="color:#021A54;text-decoration:underline;">Facebook</a>
-                  <span style="color:#9ca3af;"> </span>
-                  <a href="${siteUrl}" style="color:#021A54;text-decoration:underline;">Instagram</a>
-                </p>
-                <p style="margin:0;font-size:11px;color:#6b7280;">
-                  You’re receiving this email because you have an account or sign-in request for <strong>${brandEsc}</strong>. Learn more: <a href="${siteUrl}" style="color:#021A54;text-decoration:underline;">Maxwell Leadership Enterprise</a>
-                </p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`,
-      });
-    } catch (err) {
-      if (isOutboundNetworkFailure(err)) {
-        this.logger.warn(
-          `Magic link email send unreachable: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        throw new ServiceUnavailableException(
-          'Could not reach the email service. Check your network and try again.',
-        );
-      }
-      throw err;
-    }
-    const { error } = sendResult;
     if (error) {
       throw new UnauthorizedException(error.message);
     }

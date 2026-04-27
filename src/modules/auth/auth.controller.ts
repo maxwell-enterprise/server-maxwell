@@ -89,7 +89,9 @@ export class AuthController {
       const p = this.jwt.verify<Record<string, unknown>>(bearer);
       const sub = typeof p.sub === 'string' ? p.sub : '';
       const role = typeof p.role === 'string' ? p.role : undefined;
-      const user = await this.auth.getSessionPayload(sub, role);
+      const customRoleId =
+        typeof p.customRoleId === 'string' ? p.customRoleId : undefined;
+      const user = await this.auth.getSessionPayload(sub, role, customRoleId);
       return { user };
     } catch {
       return { user: null };
@@ -98,19 +100,44 @@ export class AuthController {
 
   @Post('email/send')
   @RateLimit({ limit: 6, windowMs: 60_000, keyBy: 'email' })
-  async sendEmail(@Body() body: { email?: string }) {
+  async sendEmail(@Body() body: { email?: string; returnSearch?: string }) {
     const email = typeof body.email === 'string' ? body.email.trim() : '';
     if (!email) {
       throw new BadRequestException('email required');
     }
-    await this.auth.sendMagicLinkEmail(email);
+    await this.auth.sendMagicLinkEmail(
+      email,
+      typeof body.returnSearch === 'string' ? body.returnSearch : undefined,
+    );
     return { ok: true };
+  }
+
+  @Post('supabase/exchange')
+  @RateLimit({ limit: 20, windowMs: 60_000 })
+  async exchangeSupabaseToken(
+    @Req() req: Request,
+    @Body() body: { accessToken?: string },
+  ) {
+    const auth = req.headers.authorization;
+    const bearer =
+      typeof auth === 'string' && auth.startsWith('Bearer ')
+        ? auth.slice(7)
+        : '';
+    const accessToken =
+      (typeof body?.accessToken === 'string' && body.accessToken.trim()) ||
+      bearer;
+    if (!accessToken) {
+      throw new BadRequestException('accessToken required');
+    }
+    const token = await this.auth.exchangeSupabaseAccessToken(accessToken);
+    return { ok: true, token };
   }
 
   @Get('email/verify')
   async verifyEmail(
     @Query('email') email: string | undefined,
     @Query('token') token: string | undefined,
+    @Query('returnTo') returnTo: string | undefined,
     @Res() res: Response,
   ) {
     const base = this.auth.getFrontendBaseUrl();
@@ -122,9 +149,13 @@ export class AuthController {
     }
     try {
       const jwt = await this.auth.verifyEmailToken(email, token);
+      const returnParam =
+        typeof returnTo === 'string' && returnTo.trim()
+          ? `&returnTo=${encodeURIComponent(returnTo)}`
+          : '';
       return res.redirect(
         302,
-        `${base}/auth/callback?token=${encodeURIComponent(jwt)}`,
+        `${base}/auth/callback?token=${encodeURIComponent(jwt)}${returnParam}`,
       );
     } catch {
       return res.redirect(
