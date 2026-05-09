@@ -119,10 +119,17 @@ export class AppConfigService {
       return false;
     }
 
-    const escapedHost = parsedRule.hostname
-      .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-      .replace(/\\\*/g, '[^.]+');
-    const hostRegex = new RegExp(`^${escapedHost}$`, 'i');
+    // `*` matches one DNS label (e.g. `https://*.vercel.app` → any single subdomain).
+    // Avoid naive `*` → regex swap: a leading `*` must not become the quantifier in `^*\.`.
+    const hostPattern = parsedRule.hostname
+      .split('.')
+      .map((label) =>
+        label === '*'
+          ? '[^.]+'
+          : label.replace(/[.+?^${}()|[\]\\]/g, '\\$&'),
+      )
+      .join('\\.');
+    const hostRegex = new RegExp(`^${hostPattern}$`, 'i');
     if (!hostRegex.test(parsedOrigin.hostname)) {
       return false;
     }

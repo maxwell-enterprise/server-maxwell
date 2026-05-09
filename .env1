@@ -1,0 +1,80 @@
+# =============================================================================
+# MAXWELL BACKEND - PRODUCTION ENV
+# Target: Railway production for server-maxwell
+# Copy these keys to Railway Variables.
+# =============================================================================
+
+# App runtime
+NODE_ENV=production
+HOST=0.0.0.0
+APP_NAME=backend-maxwell
+TZ=Asia/Jakarta
+
+# Railway normally injects PORT. Leave this commented on Railway unless you
+# deploy somewhere that requires a fixed port.
+# PORT=3002
+
+# Browser origins allowed to call the API.
+APP_CORS_ORIGINS=https://maxwellenterpricev2.vercel.app,https://*.vercel.app
+
+# Database. Use the exact URI from Supabase Dashboard -> Database -> Connection string.
+# Keep sslmode=require for Supabase and connection_limit=1 to avoid pool exhaustion.
+DATABASE_URL=postgresql://postgres.CHANGE_ME_PROJECT_REF:CHANGE_ME_DB_PASSWORD@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres?sslmode=require&connection_limit=1
+DB_SSL=true
+DB_POOL_MAX=1
+DB_IDLE_TIMEOUT_MS=5000
+DB_CONNECTION_TIMEOUT_MS=60000
+DB_APPLICATION_NAME=maxwell-backend-production
+
+# Workspace auth and public URLs
+FRONTEND_URL=https://maxwellenterpricev2.vercel.app
+
+
+GOOGLE_REDIRECT_URI=https://server-maxwell-production.up.railway.app/fe/auth/google/callback
+AUTH_PROVIDER=supabase
+JWT_SECRET=CHANGE_ME_LONG_RANDOM_64_CHAR_JWT_SECRET
+APP_ADMIN_EMAILS=CHANGE_ME_ADMIN_EMAIL@example.com
+
+# Supabase server credentials. Service role key must stay server-side only.
+# In Supabase Auth URL allow list, add:
+# https://maxwellenterpricev2.vercel.app/auth/callback
+SUPABASE_URL=https://CHANGE_ME_PROJECT_REF.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=CHANGE_ME_SUPABASE_SERVICE_ROLE_KEY
+SUPABASE_STORAGE_BUCKET=app-images
+
+# If AUTH_PROVIDER=legacy or Supabase Auth is not used, uncomment and fill these.
+# With AUTH_PROVIDER=supabase, configure Google provider inside Supabase Auth.
+# GOOGLE_CLIENT_ID=CHANGE_ME_GOOGLE_CLIENT_ID
+# GOOGLE_CLIENT_SECRET=CHANGE_ME_GOOGLE_CLIENT_SECRET
+
+# SMTP for transactional workspace / communication emails.
+# Supabase Auth magic-link email is configured in Supabase Auth SMTP settings.
+SMTP_HOST=CHANGE_ME_SMTP_HOST
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=CHANGE_ME_SMTP_USERNAME
+SMTP_PASS=CHANGE_ME_SMTP_PASSWORD
+EMAIL_FROM=CHANGE_ME_EMAIL_FROM@your-domain.com
+EMAIL_PUBLIC_BASE_URL=https://maxwellenterpricev2.vercel.app
+EMAIL_BRAND_NAME="Maxwell Leadership Enterprise"
+EMAIL_SUBJECT="Account access verification - Maxwell Leadership Enterprise"
+
+# Midtrans production. These must be production credentials, not sandbox.
+# Midtrans Notification URL:
+# https://server-maxwell-production.up.railway.app/fe/webhooks/midtrans
+MIDTRANS_MERCHANT_ID=CHANGE_ME_MIDTRANS_PRODUCTION_MERCHANT_ID
+MIDTRANS_CLIENT_KEY=CHANGE_ME_MIDTRANS_PRODUCTION_CLIENT_KEY
+MIDTRANS_SERVER_KEY=CHANGE_ME_MIDTRANS_PRODUCTION_SERVER_KEY
+MIDTRANS_IS_PRODUCTION=true
+PAYMENT_PPN_RATE_PERCENT=0
+ALLOW_PAYMENT_SIMULATION=false
+
+# Automation and realtime workers
+DISABLE_AUTOMATION_QUEUE_WORKER=false
+AUTOMATION_QUEUE_BURST_PER_TICK=8
+DISABLE_CAMPAIGN_METRICS_BROADCAST=false
+DISABLE_ACCOUNT_DELETION_BROADCAST=false
+DISABLE_VOUCHER_BROADCAST=false
+
+# Optional internal endpoint secret for POST /fe/internal/members/sync.
+# INTERNAL_MEMBER_SYNC_KEY=CHANGE_ME_SHARED_INTERNAL_MEMBER_SYNC_KEY
