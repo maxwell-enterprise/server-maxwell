@@ -194,10 +194,22 @@ export class AppConfigService {
     };
 
     if (this.env.DATABASE_URL) {
-      return {
-        ...baseConfig,
-        connectionString: this.env.DATABASE_URL,
-      };
+      try {
+        const parsed = new URL(this.env.DATABASE_URL);
+        return {
+          ...baseConfig,
+          host: parsed.hostname,
+          port: parsed.port ? Number(parsed.port) : 5432,
+          user: decodeURIComponent(parsed.username),
+          password: decodeURIComponent(parsed.password),
+          database: parsed.pathname.replace(/^\/+/, '') || 'postgres',
+        };
+      } catch {
+        return {
+          ...baseConfig,
+          connectionString: this.env.DATABASE_URL,
+        };
+      }
     }
 
     return {

@@ -8,6 +8,39 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { parseAppEnv } from './common/config/env.schema';
 
 const appEnv = parseAppEnv(process.env);
+function resolveTypeOrmDatabaseSource():
+  | {
+      url?: never;
+      host: string;
+      port: number;
+      username: string;
+      password: string;
+      database: string;
+    }
+  | { url: string } {
+  if (!appEnv.DATABASE_URL) {
+    return {
+      host: appEnv.DB_HOST!,
+      port: appEnv.DB_PORT,
+      username: appEnv.DB_USERNAME!,
+      password: appEnv.DB_PASSWORD,
+      database: appEnv.DB_DATABASE!,
+    };
+  }
+
+  try {
+    const parsed = new URL(appEnv.DATABASE_URL);
+    return {
+      host: parsed.hostname,
+      port: parsed.port ? Number(parsed.port) : 5432,
+      username: decodeURIComponent(parsed.username),
+      password: decodeURIComponent(parsed.password),
+      database: parsed.pathname.replace(/^\/+/, '') || 'postgres',
+    };
+  } catch {
+    return { url: appEnv.DATABASE_URL };
+  }
+}
 const typeOrmPostgresSsl =
   appEnv.DB_SSL || /supabase\.(com|co)/i.test(appEnv.DATABASE_URL ?? '');
 const typeOrmPoolMax = (() => {
@@ -69,15 +102,7 @@ import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard'
     ScheduleModule.forRoot(),
     TypeOrmModule.forRoot({
       type: 'postgres',
-      ...(appEnv.DATABASE_URL
-        ? { url: appEnv.DATABASE_URL }
-        : {
-            host: appEnv.DB_HOST,
-            port: appEnv.DB_PORT,
-            username: appEnv.DB_USERNAME,
-            password: appEnv.DB_PASSWORD,
-            database: appEnv.DB_DATABASE,
-          }),
+      ...resolveTypeOrmDatabaseSource(),
       ...(typeOrmPostgresSsl ? { ssl: { rejectUnauthorized: false } } : {}),
       extra: {
         max: typeOrmPoolMax,
