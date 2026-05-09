@@ -26,6 +26,7 @@ import { MembersService } from '../members/members.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 import { VoucherBroadcastService } from '../store-support/voucher-broadcast.service';
+import { AutomationsEmitService } from '../automations/automations-emit.service';
 
 @Injectable()
 export class TransactionsService {
@@ -39,6 +40,7 @@ export class TransactionsService {
     private readonly campaigns: CampaignsService,
     private readonly checkoutEntitlements: CheckoutEntitlementsService,
     private readonly voucherBroadcast: VoucherBroadcastService,
+    private readonly automationsEmit: AutomationsEmitService,
   ) {}
 
   // ==========================================================================
@@ -1105,6 +1107,7 @@ export class TransactionsService {
         attributionSource: string | null;
         totalAmount: number;
         customerEmail: string | null;
+        buyerUserId: string | null;
       }>(
         `
         update payment_transactions
@@ -1114,7 +1117,7 @@ export class TransactionsService {
           "balanceDue" = 0
         where "orderId" = $1
           and status <> 'PAID'
-        returning id::text as id, "attributionSource", "totalAmount", "customerEmail"
+        returning id::text as id, "attributionSource", "totalAmount", "customerEmail", "buyerUserId"
         `,
         [dto.order_id],
       );
@@ -1140,6 +1143,29 @@ export class TransactionsService {
           this.logger.error(
             `Checkout entitlements failed after Midtrans webhook (payment ${paidRow.id}): ${
               err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+      if (paidRow) {
+        try {
+          await this.automationsEmit.enqueueTrigger({
+            triggerId: 'PAYMENT_SUCCESS',
+            payload: {
+              memberId: paidRow.buyerUserId ?? undefined,
+              userId: paidRow.buyerUserId ?? undefined,
+              email: paidRow.customerEmail ?? undefined,
+              amount: Number(paidRow.totalAmount) || 0,
+              transaction_id: dto.transaction_id,
+              payment_method: dto.payment_type,
+              order_id: dto.order_id,
+            },
+            description: `Payment success ${dto.order_id}`,
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Automation enqueue PAYMENT_SUCCESS failed for order ${dto.order_id}: ${
+              error instanceof Error ? error.message : String(error)
             }`,
           );
         }

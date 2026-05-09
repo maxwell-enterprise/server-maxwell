@@ -110,6 +110,22 @@ export interface AutomationTriggerDto {
   variables: unknown;
 }
 
+export interface AutomationConnectionSnapshotDto {
+  triggerId: string;
+  communication: {
+    whatsappTemplateLabels: string[];
+    emailTemplateNames: string[];
+  };
+  operations: {
+    workflowNames: string[];
+  };
+  gamification: {
+    rulePoints: number;
+    badgeBonusPoints: number;
+    badgeNames: string[];
+  };
+}
+
 @Injectable()
 export class SystemAdminService implements OnModuleInit {
   constructor(private readonly db: DatabaseService) {}
@@ -173,6 +189,151 @@ export class SystemAdminService implements OnModuleInit {
       iconName: r.icon_name,
       variables: r.variables,
     }));
+  }
+
+  async listAutomationConnections(): Promise<AutomationConnectionSnapshotDto[]> {
+    const triggers = await this.db.query<{ id: string }>(
+      `SELECT id
+       FROM automation_trigger_definitions
+       WHERE is_active = true
+       ORDER BY sort_order ASC, id ASC`,
+    );
+
+    const waRows = await this.db.query<{ linkedTriggerId: string; label: string }>(
+      `SELECT "linkedTriggerId", label
+       FROM whatsapp_templates
+       WHERE "linkedTriggerId" IS NOT NULL
+         AND trim("linkedTriggerId") <> ''`,
+    );
+
+    const emailRows = await this.db.query<{
+      linkedTriggerId: string;
+      name: string;
+    }>(
+      `SELECT "linkedTriggerId", name
+       FROM email_templates
+       WHERE "linkedTriggerId" IS NOT NULL
+         AND trim("linkedTriggerId") <> ''`,
+    );
+
+    const opsRows = await this.db.query<{ name: string; tasks: unknown }>(
+      `SELECT name, tasks
+       FROM ops_templates`,
+    );
+
+    const ruleRows = await this.db.query<{
+      triggerType: string;
+      points: number;
+      isActive: boolean;
+    }>(
+      `SELECT "triggerType", points, "isActive"
+       FROM gamification_rules`,
+    );
+
+    const badgeRows = await this.db.query<{
+      autoTrigger: string | null;
+      pointBonus: number;
+      name: string;
+    }>(
+      `SELECT "autoTrigger", "pointBonus", name
+       FROM gamification_badges
+       WHERE "autoTrigger" IS NOT NULL
+         AND trim("autoTrigger") <> ''`,
+    );
+
+    const normalize = (v: unknown) => String(v ?? '').trim().toUpperCase();
+    const uniqPush = (arr: string[], value: string) => {
+      if (!value) return;
+      if (!arr.includes(value)) arr.push(value);
+    };
+
+    const byTrigger = new Map<string, AutomationConnectionSnapshotDto>();
+    const ensure = (triggerId: string): AutomationConnectionSnapshotDto => {
+      const key = normalize(triggerId);
+      const existing = byTrigger.get(key);
+      if (existing) return existing;
+      const created: AutomationConnectionSnapshotDto = {
+        triggerId: key,
+        communication: {
+          whatsappTemplateLabels: [],
+          emailTemplateNames: [],
+        },
+        operations: {
+          workflowNames: [],
+        },
+        gamification: {
+          rulePoints: 0,
+          badgeBonusPoints: 0,
+          badgeNames: [],
+        },
+      };
+      byTrigger.set(key, created);
+      return created;
+    };
+
+    for (const row of triggers.rows) {
+      ensure(row.id);
+    }
+
+    for (const row of waRows.rows) {
+      const entry = ensure(row.linkedTriggerId);
+      uniqPush(entry.communication.whatsappTemplateLabels, String(row.label ?? ''));
+    }
+
+    for (const row of emailRows.rows) {
+      const entry = ensure(row.linkedTriggerId);
+      uniqPush(entry.communication.emailTemplateNames, String(row.name ?? ''));
+    }
+
+    for (const row of opsRows.rows) {
+      const payload =
+        row.tasks && typeof row.tasks === 'object' && !Array.isArray(row.tasks)
+          ? (row.tasks as Record<string, unknown>)
+          : {};
+      const isActive = payload.isActive !== false;
+      if (!isActive) continue;
+      const triggerType = normalize(payload.triggerType);
+      if (triggerType === 'SYSTEM_EVENT') {
+        const eventId = normalize(payload.triggerEventId);
+        if (!eventId) continue;
+        const entry = ensure(eventId);
+        uniqPush(entry.operations.workflowNames, String(row.name ?? ''));
+      } else if (triggerType === 'PRODUCT_PURCHASE') {
+        // Checkout success is the FE-facing event that represents product purchase.
+        const entry = ensure('PAYMENT_SUCCESS');
+        uniqPush(entry.operations.workflowNames, String(row.name ?? ''));
+      }
+    }
+
+    for (const row of ruleRows.rows) {
+      if (row.isActive === false) continue;
+      const entry = ensure(row.triggerType);
+      entry.gamification.rulePoints += Number(row.points ?? 0);
+      // Alias bridge: payment success maps to purchase complete rule semantics.
+      if (normalize(row.triggerType) === 'PURCHASE_COMPLETE') {
+        const paymentEntry = ensure('PAYMENT_SUCCESS');
+        paymentEntry.gamification.rulePoints += Number(row.points ?? 0);
+      }
+    }
+
+    for (const row of badgeRows.rows) {
+      const entry = ensure(row.autoTrigger);
+      entry.gamification.badgeBonusPoints += Number(row.pointBonus ?? 0);
+      uniqPush(entry.gamification.badgeNames, String(row.name ?? ''));
+      if (normalize(row.autoTrigger) === 'PURCHASE_COMPLETE') {
+        const paymentEntry = ensure('PAYMENT_SUCCESS');
+        paymentEntry.gamification.badgeBonusPoints += Number(row.pointBonus ?? 0);
+        uniqPush(paymentEntry.gamification.badgeNames, String(row.name ?? ''));
+      }
+    }
+
+    const ordered = triggers.rows
+      .map((r) => byTrigger.get(normalize(r.id)))
+      .filter((v): v is AutomationConnectionSnapshotDto => !!v);
+    const extras = [...byTrigger.values()].filter(
+      (row) => !triggers.rows.some((t) => normalize(t.id) === row.triggerId),
+    );
+    return [...ordered, ...extras];
   }
 
   // --- Security logs (system_security_logs) ---

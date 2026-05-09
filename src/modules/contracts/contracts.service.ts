@@ -6,10 +6,14 @@ import {
 import { DbService } from '../../common/db.service';
 import type { ClauseItemDto } from './dto/contracts.dto';
 import type { PatchContractInstanceDto } from './dto/contracts.dto';
+import { AutomationsEmitService } from '../automations/automations-emit.service';
 
 @Injectable()
 export class ContractsService {
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly automationsEmit: AutomationsEmitService,
+  ) {}
 
   async findAllClauses(): Promise<
     Array<{
@@ -153,6 +157,8 @@ export class ContractsService {
     if (!row) {
       throw new NotFoundException(`Contract instance ${id} not found`);
     }
+    const previous = row.document;
+    const prevStatus = String(previous.status ?? '').trim().toUpperCase();
     const merged: Record<string, unknown> = {
       ...row.document,
       ...Object.fromEntries(
@@ -167,6 +173,57 @@ export class ContractsService {
       `,
       [id, JSON.stringify(merged)],
     );
+    const nextStatus = String(merged.status ?? '').trim().toUpperCase();
+    if (nextStatus === 'SIGNED' && prevStatus !== 'SIGNED') {
+      const customerData =
+        merged.customerData &&
+        typeof merged.customerData === 'object' &&
+        !Array.isArray(merged.customerData)
+          ? (merged.customerData as Record<string, unknown>)
+          : {};
+      const signedDate =
+        typeof merged.signedAt === 'string' && merged.signedAt.trim()
+          ? merged.signedAt
+          : new Date().toISOString();
+      try {
+        await this.automationsEmit.enqueueTrigger({
+          triggerId: 'CONTRACT_SIGNED',
+          payload: {
+            memberId:
+              typeof merged.memberId === 'string'
+                ? merged.memberId
+                : typeof customerData.memberId === 'string'
+                  ? customerData.memberId
+                  : undefined,
+            userId:
+              typeof merged.memberId === 'string'
+                ? merged.memberId
+                : typeof customerData.memberId === 'string'
+                  ? customerData.memberId
+                  : undefined,
+            member_name:
+              typeof customerData.name === 'string'
+                ? customerData.name
+                : undefined,
+            email:
+              typeof customerData.email === 'string'
+                ? customerData.email
+                : undefined,
+            signed_date: signedDate,
+            document_name:
+              typeof merged.templateName === 'string'
+                ? merged.templateName
+                : typeof customerData.programName === 'string'
+                  ? customerData.programName
+                  : 'Contract',
+            contract_id: id,
+          },
+          description: `Contract signed ${id}`,
+        });
+      } catch {
+        // best effort
+      }
+    }
     return merged;
   }
 }

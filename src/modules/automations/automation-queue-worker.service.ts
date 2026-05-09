@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { DatabaseService } from '../../common/database/database.service';
 import { CommunicationEmailService } from '../communication/communication-email.service';
+import { AutomationOrchestratorService } from './automation-orchestrator.service';
 
 type QueueRow = {
   id: string;
@@ -28,6 +29,7 @@ export class AutomationQueueWorkerService {
   constructor(
     private readonly db: DatabaseService,
     private readonly email: CommunicationEmailService,
+    private readonly orchestrator: AutomationOrchestratorService,
   ) {}
 
   private workerDisabled(): boolean {
@@ -43,7 +45,19 @@ export class AutomationQueueWorkerService {
     if (this.workerDisabled()) {
       return;
     }
-    await this.runOneTick();
+    try {
+      await this.runOneTick();
+    } catch (error) {
+      if (this.isTransientDbConnectivityError(error)) {
+        const message =
+          error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Automation worker tick skipped due to transient DB connectivity issue: ${message}`,
+        );
+        return;
+      }
+      throw error;
+    }
   }
 
   /** Exposed for tests / manual trigger without waiting for the interval. */
@@ -148,6 +162,26 @@ export class AutomationQueueWorkerService {
       return;
     }
 
+    if (t === 'SIMULATED_TRIGGER') {
+      const nestedTriggerId = String(row.contextData.triggerId ?? '').trim();
+      const nestedPayload =
+        row.contextData.payload &&
+        typeof row.contextData.payload === 'object' &&
+        !Array.isArray(row.contextData.payload)
+          ? (row.contextData.payload as Record<string, unknown>)
+          : row.contextData;
+      if (nestedTriggerId) {
+        await this.orchestrator.processTrigger(nestedTriggerId, nestedPayload);
+      }
+      this.logger.log(`Simulated trigger completed: ${nestedTriggerId || 'UNKNOWN'}`);
+      return;
+    }
+
+    if (t) {
+      await this.orchestrator.processTrigger(t, row.contextData);
+      return;
+    }
+
     throw new Error(
       `No server handler for automation_queue.triggerType="${row.triggerType}". ` +
         `Either extend AutomationQueueWorkerService or process via client worker / manual ops.`,
@@ -168,6 +202,18 @@ export class AutomationQueueWorkerService {
       WHERE id = $1
       `,
       [id, status, errorLog],
+    );
+  }
+
+  private isTransientDbConnectivityError(error: unknown): boolean {
+    const msg = (error instanceof Error ? error.message : String(error))
+      .trim()
+      .toLowerCase();
+    return (
+      msg.includes('connection terminated due to connection timeout') ||
+      msg.includes('connection terminated unexpectedly') ||
+      msg.includes('timeout expired') ||
+      msg.includes('terminating connection due to administrator command')
     );
   }
 }

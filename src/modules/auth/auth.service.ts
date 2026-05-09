@@ -151,8 +151,20 @@ export class AuthService {
       throw new UnauthorizedException('Supabase Auth is not configured');
     }
     if (!this.supabaseAdminClient) {
+      const fetchWithTimeout: typeof fetch = async (input, init) => {
+        const timeoutMs = 30_000;
+        const signal = AbortSignal.timeout(timeoutMs);
+        return fetch(input, {
+          ...init,
+          signal:
+            init && 'signal' in init && init.signal
+              ? AbortSignal.any([init.signal, signal])
+              : signal,
+        });
+      };
       this.supabaseAdminClient = createClient(config.url, config.serviceRoleKey, {
         auth: { autoRefreshToken: false, persistSession: false },
+        global: { fetch: fetchWithTimeout },
       });
     }
     return this.supabaseAdminClient;
@@ -689,15 +701,46 @@ export class AuthService {
 
     const supabase = this.getSupabaseAdminClient();
     const callbackUrl = this.buildSupabaseFrontendCallbackUrl(rawReturnSearch);
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        shouldCreateUser: true,
-        emailRedirectTo: callbackUrl,
-      },
-    });
-    if (error) {
-      throw new UnauthorizedException(error.message);
+    try {
+      const runOtp = () =>
+        supabase.auth.signInWithOtp({
+          email,
+          options: {
+            shouldCreateUser: true,
+            emailRedirectTo: callbackUrl,
+          },
+        });
+      let result = await runOtp();
+      // Transient DNS/connect timeout is common on cold/restricted networks; retry once.
+      if (result.error && isOutboundNetworkFailure(result.error)) {
+        result = await runOtp();
+      }
+      const { error } = result;
+      if (error) {
+        const msg = String(error.message ?? '').trim();
+        throw new UnauthorizedException(
+          msg ||
+            'Magic link provider rejected the request. Check Supabase Auth email provider settings and redirect URL allow-list.',
+        );
+      }
+    } catch (err) {
+      if (err instanceof UnauthorizedException) {
+        throw err;
+      }
+      if (isOutboundNetworkFailure(err)) {
+        this.logger.warn(
+          `Supabase magic link API unreachable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw new ServiceUnavailableException(
+          'Cannot reach Supabase Auth to send magic link (network/DNS timeout).',
+        );
+      }
+      this.logger.error(
+        `Supabase magic link unexpected failure: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw new UnauthorizedException(
+        'Magic link provider configuration is invalid. Check SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and Supabase Auth email provider settings.',
+      );
     }
   }
 

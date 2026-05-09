@@ -77,6 +77,13 @@ export class SystemAdminController {
     return this.systemAdmin.listAutomationTriggers();
   }
 
+  /** Connection snapshot per trigger from WA/Email/SOP/Gamification tables. */
+  @Get('automation-connections')
+  listAutomationConnections(@Req() req: { user: JwtUserPayload }) {
+    this.assertSystemAdmin(req);
+    return this.systemAdmin.listAutomationConnections();
+  }
+
   // --- Security ---
   @Get('security/logs')
   listSecurityLogs(@Req() req: { user: JwtUserPayload }) {

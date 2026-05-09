@@ -11,6 +11,7 @@ import {
   ScanResultDto,
 } from './dto';
 import { DbService } from '../../common/db.service';
+import { AutomationsEmitService } from '../automations/automations-emit.service';
 
 interface EventRow {
   internalId: string;
@@ -68,7 +69,10 @@ export interface ScannerDeviceRow {
 
 @Injectable()
 export class CheckinRuntimeService {
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly automationsEmit: AutomationsEmitService,
+  ) {}
 
   async scanQr(
     dto: ScanQrDto,
@@ -214,6 +218,25 @@ export class CheckinRuntimeService {
       ],
     );
 
+    try {
+      await this.automationsEmit.enqueueTrigger({
+        triggerId: 'EVENT_CHECK_IN',
+        payload: {
+          memberId: member.id,
+          userId: member.id,
+          member_name: member.name,
+          email: member.email ?? undefined,
+          eventId: event.id,
+          event_name: event.name,
+          checkin_time: scannedAt,
+          ticket_tier: ticketTier,
+        },
+        description: `Event check-in ${member.name} @ ${event.name}`,
+      });
+    } catch {
+      // best effort: attendance must still succeed if automation queue is unavailable
+    }
+
     return {
       success: true,
       status: 'SUCCESS',
@@ -284,6 +307,25 @@ export class CheckinRuntimeService {
         verificationCode,
       ],
     );
+
+    try {
+      await this.automationsEmit.enqueueTrigger({
+        triggerId: 'EVENT_CHECK_IN',
+        payload: {
+          memberId: member.id,
+          userId: member.id,
+          member_name: member.name,
+          email: member.email ?? undefined,
+          eventId: event.id,
+          event_name: event.name,
+          checkin_time: scannedAt,
+          ticket_tier: 'GENERAL',
+        },
+        description: `Manual event check-in ${member.name} @ ${event.name}`,
+      });
+    } catch {
+      // best effort
+    }
 
     return {
       success: true,
