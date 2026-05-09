@@ -16,6 +16,7 @@ import { WalletModule } from '../wallet/wallet.module';
 import { ProductsModule } from '../products/products.module';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 import { StoreSupportModule } from '../store-support/store-support.module';
+import { AutomationsModule } from '../automations/automations.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { StoreSupportModule } from '../store-support/store-support.module';
     WalletModule,
     ProductsModule,
     StoreSupportModule,
+    AutomationsModule,
   ],
   controllers: [TransactionsController, WebhooksController],
   providers: [TransactionsService, CheckoutEntitlementsService],

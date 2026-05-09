@@ -7,9 +7,10 @@ import { CheckinRuntimeService } from './checkin.runtime.service';
 import { CheckinController } from './checkin.controller';
 import { AuthModule } from '../auth/auth.module';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AutomationsModule } from '../automations/automations.module';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, AutomationsModule],
   controllers: [CheckinController],
   providers: [CheckinRuntimeService, JwtAuthGuard],
   exports: [CheckinRuntimeService],

@@ -12,6 +12,33 @@ function asString(value: unknown): string {
 export class AutomationsEmitService {
   constructor(private readonly systemAdmin: SystemAdminService) {}
 
+  async enqueueTrigger(body: {
+    triggerId: string;
+    payload: Record<string, unknown>;
+    description?: string;
+  }): Promise<{ ok: true; queueId: string; backgroundJobId: string }> {
+    const triggerId = asString(body.triggerId).trim();
+    const payload =
+      body.payload && typeof body.payload === 'object' ? body.payload : {};
+    if (!triggerId) {
+      throw new BadRequestException('triggerId is required');
+    }
+
+    const queueId = `Q-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+    await this.systemAdmin.upsertAutomationQueueItem(queueId, {
+      triggerType: triggerId,
+      contextData: payload,
+      description: body.description?.trim() || `Triggered ${triggerId}`,
+      status: 'PENDING',
+    });
+    const job = await this.systemAdmin.insertBackgroundJob({
+      type: 'AUTOMATION_TRIGGER',
+      payload: { triggerId, queueId, contextData: payload },
+      status: 'QUEUED',
+    });
+    return { ok: true, queueId, backgroundJobId: job.id };
+  }
+
   async emit(body: {
     triggerId: string;
     payload: Record<string, unknown>;
@@ -89,7 +116,8 @@ export class AutomationsEmitService {
   /**
    * Generic simulator path for Automation Center:
    * - NEW_MEMBER / NEW_MEMBER_REGISTRATION keep existing email queue behavior (`emit`)
-   * - all other triggers are queued as-is for manual/background processing visibility
+   * - all other triggers are wrapped as `SIMULATED_TRIGGER` so worker can complete
+   *   deterministically (no red FAILED noise for triggers without server handlers yet).
    */
   async simulate(body: {
     triggerId: string;
@@ -109,27 +137,10 @@ export class AutomationsEmitService {
         payload,
       });
     }
-
-    const queueId = `Q-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
-    const description = `Simulated trigger ${triggerId}`;
-
-    await this.systemAdmin.upsertAutomationQueueItem(queueId, {
-      triggerType: triggerId,
-      contextData: payload,
-      description,
-      status: 'PENDING',
+    return this.enqueueTrigger({
+      triggerId,
+      payload,
+      description: `Simulated trigger ${triggerId}`,
     });
-
-    const job = await this.systemAdmin.insertBackgroundJob({
-      type: 'SIMULATED_TRIGGER',
-      payload: {
-        triggerId,
-        queueId,
-        contextData: payload,
-      },
-      status: 'QUEUED',
-    });
-
-    return { ok: true, queueId, backgroundJobId: job.id };
   }
 }
