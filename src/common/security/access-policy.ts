@@ -38,6 +38,26 @@ export function assertFinanceControllerOnly(
   assertRole(user, [USER_ROLE.FINANCE, USER_ROLE.SUPER_ADMIN], actionLabel);
 }
 
+/** Any authenticated workspace staff role; excludes Member / Guest consumer personas. */
+export function assertWorkspaceStaffOnly(
+  user: JwtUserPayload,
+  actionLabel = 'Workspace staff operation',
+): void {
+  assertRole(
+    user,
+    [
+      USER_ROLE.SUPER_ADMIN,
+      USER_ROLE.FINANCE,
+      USER_ROLE.OPERATIONS,
+      USER_ROLE.MARKETING,
+      USER_ROLE.SALES,
+      USER_ROLE.FACILITATOR,
+      USER_ROLE.GATE_KEEPER,
+    ],
+    actionLabel,
+  );
+}
+
 export function assertOperationsOnly(
   user: JwtUserPayload,
   actionLabel = 'Operational configuration',
