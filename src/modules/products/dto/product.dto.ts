@@ -61,6 +61,8 @@ export const CreateProductDtoSchema = z
     variants: z.array(ProductVariantDtoSchema).optional(),
     installmentConfig: InstallmentConfigDtoSchema.optional(),
     isActive: z.boolean().default(true),
+    /** PPN/VAT % on list price (0–100). Total = round(price × (1 + rate/100)). */
+    ppnRatePercent: z.coerce.number().min(0).max(100).default(0),
   })
   .superRefine((data, ctx) => {
     // NOTE: `db.sql` allows `products.items` to be an empty jsonb array.
@@ -90,6 +92,7 @@ export const UpdateProductDtoSchema = z
     variants: z.array(ProductVariantDtoSchema).nullable().optional(),
     installmentConfig: InstallmentConfigDtoSchema.nullable().optional(),
     isActive: z.boolean().optional(),
+    ppnRatePercent: z.coerce.number().min(0).max(100).optional(),
   })
   .refine((data) => Object.keys(data).length > 0, {
     message: 'At least one field must be provided',
@@ -110,6 +113,7 @@ export const ProductResponseDtoSchema = z.object({
   variants: z.array(ProductVariantDtoSchema).optional(),
   installmentConfig: InstallmentConfigDtoSchema.optional(),
   isActive: z.boolean().optional(),
+  ppnRatePercent: z.number().optional(),
 });
 
 export type ProductResponseDto = z.infer<typeof ProductResponseDtoSchema>;

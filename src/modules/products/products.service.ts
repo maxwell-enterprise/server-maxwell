@@ -49,6 +49,7 @@ interface ProductRow {
   variants: ProductVariant[] | null;
   installmentConfig: InstallmentConfig | null;
   isActive: boolean;
+  ppnRatePercent: string | number;
 }
 
 type UploadedImageFile = {
@@ -202,6 +203,7 @@ export class ProductsService {
         title,
         description,
         "priceIdr",
+        "ppnRatePercent",
         "compareAtPriceIdr",
         category,
         "imageUrl",
@@ -221,11 +223,12 @@ export class ProductsService {
         $5,
         $6,
         $7,
-        $8::jsonb,
-        $9,
-        $10::jsonb,
+        $8,
+        $9::jsonb,
+        $10,
         $11::jsonb,
-        $12,
+        $12::jsonb,
+        $13,
         now(),
         now()
       )
@@ -235,6 +238,7 @@ export class ProductsService {
         title,
         description,
         "priceIdr" as "priceIdr",
+        coalesce("ppnRatePercent", 0) as "ppnRatePercent",
         "compareAtPriceIdr" as "compareAtPriceIdr",
         category,
         "imageUrl" as "imageUrl",
@@ -249,6 +253,7 @@ export class ProductsService {
         dto.title.trim(),
         dto.description?.trim() || null,
         dto.priceIdr,
+        dto.ppnRatePercent ?? 0,
         dto.compareAtPriceIdr ?? null,
         dto.category,
         dto.imageUrl?.trim() || null,
@@ -309,6 +314,7 @@ export class ProductsService {
         p.title,
         p.description,
         p."priceIdr" as "priceIdr",
+        coalesce(p."ppnRatePercent", 0) as "ppnRatePercent",
         p."compareAtPriceIdr" as "compareAtPriceIdr",
         p.category,
         p."imageUrl" as "imageUrl",
@@ -374,6 +380,10 @@ export class ProductsService {
       params.push(dto.priceIdr);
       fields.push(`"priceIdr" = $${params.length}`);
     }
+    if (dto.ppnRatePercent !== undefined) {
+      params.push(dto.ppnRatePercent);
+      fields.push(`"ppnRatePercent" = $${params.length}`);
+    }
     if (dto.compareAtPriceIdr !== undefined) {
       params.push(dto.compareAtPriceIdr ?? null);
       fields.push(`"compareAtPriceIdr" = $${params.length}`);
@@ -426,6 +436,7 @@ export class ProductsService {
         title,
         description,
         "priceIdr" as "priceIdr",
+        coalesce("ppnRatePercent", 0) as "ppnRatePercent",
         "compareAtPriceIdr" as "compareAtPriceIdr",
         category,
         "imageUrl" as "imageUrl",
@@ -460,6 +471,7 @@ export class ProductsService {
         p.title,
         p.description,
         p."priceIdr" as "priceIdr",
+        coalesce(p."ppnRatePercent", 0) as "ppnRatePercent",
         p."compareAtPriceIdr" as "compareAtPriceIdr",
         p.category,
         p."imageUrl" as "imageUrl",
@@ -515,6 +527,7 @@ export class ProductsService {
       title: row.title,
       description: row.description ?? '',
       priceIdr: Number(row.priceIdr),
+      ppnRatePercent: Number(row.ppnRatePercent ?? 0),
       compareAtPriceIdr:
         row.compareAtPriceIdr === null
           ? undefined
@@ -544,6 +557,10 @@ export class ProductsService {
         update.priceIdr !== undefined
           ? update.priceIdr
           : Number(existing.priceIdr),
+      ppnRatePercent:
+        update.ppnRatePercent !== undefined
+          ? update.ppnRatePercent
+          : Number(existing.ppnRatePercent ?? 0),
       compareAtPriceIdr:
         update.compareAtPriceIdr !== undefined
           ? (update.compareAtPriceIdr ?? undefined)
@@ -569,6 +586,7 @@ export class ProductsService {
   private assertBusinessRules(product: {
     title: string;
     priceIdr: number;
+    ppnRatePercent: number;
     items: ProductItem[];
     hasVariants: boolean;
     variants?: ProductVariantDto[];
@@ -579,6 +597,11 @@ export class ProductsService {
 
     if (product.priceIdr < 0) {
       throw new BadRequestException('Product price must be zero or positive');
+    }
+
+    const ppn = Number(product.ppnRatePercent);
+    if (!Number.isFinite(ppn) || ppn < 0 || ppn > 100) {
+      throw new BadRequestException('PPN rate must be between 0 and 100 percent');
     }
 
     // `db.sql` allows `products.items` to be an empty jsonb array.
