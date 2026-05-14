@@ -1062,6 +1062,10 @@ npm run build
 npm run start:prod
 ```
 
+Setelah mengubah `prisma/schema.prisma`, jalankan `npx prisma generate` (hentikan dulu `npm run start:dev` bila masih jalan), atau `npm run build:with-prisma` jika tidak ada proses Node yang memuat engine Prisma.
+
+**Windows — error `EPERM` ... `query_engine-windows.dll.node`:** biasanya file engine dikunci oleh proses Node yang masih berjalan (dev server, test watch, IDE). Tutup/stop proses tersebut lalu ulangi `npm run build:with-prisma` atau `npx prisma generate`. `npm run build` saja hanya menjalankan TypeScript dan tidak menimpa DLL Prisma.
+
 ### Generate TypeScript Types dari Supabase
 
 ```bash

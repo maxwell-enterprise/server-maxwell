@@ -11,7 +11,8 @@
   "scripts": {
     "typeorm": "typeorm-ts-node-commonjs",
     "postinstall": "prisma generate",
-    "build": "prisma generate && tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json",
+    "build:with-prisma": "prisma generate && tsc -p tsconfig.build.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "start:dev": "nest start --watch",

@@ -744,6 +744,136 @@ export class AuthService {
     }
   }
 
+  /**
+   * Supabase Auth admin: send the standard invite email so the recipient can set a password
+   * and land on the app (see `SUPABASE_GIFT_INVITE_REDIRECT_URL`). Called after a ticket gift
+   * is persisted; failures are logged only and must not roll back the gift.
+   */
+  async sendGiftTicketRecipientSupabaseInvite(params: {
+    email: string;
+    itemName?: string | null;
+    donorName?: string | null;
+  }): Promise<void> {
+    const email = params.email.trim().toLowerCase();
+    if (!email.includes('@')) {
+      return;
+    }
+
+    if (!this.isSupabaseAuthEnabled()) {
+      this.logger.debug(
+        'Gift ticket Supabase invite skipped: Supabase Auth not enabled (set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY, or AUTH_PROVIDER=legacy disables this).',
+      );
+      return;
+    }
+
+    const redirectRaw =
+      process.env.SUPABASE_GIFT_INVITE_REDIRECT_URL?.trim() ||
+      'https://maxwell-refactor.vercel.app';
+    let redirectTo = redirectRaw.replace(/\/+$/, '');
+    if (!URL.canParse(redirectTo)) {
+      this.logger.warn(
+        `Gift ticket Supabase invite skipped: invalid SUPABASE_GIFT_INVITE_REDIRECT_URL`,
+      );
+      return;
+    }
+
+    const supabase = this.getSupabaseAdminClient();
+    const meta: Record<string, unknown> = {
+      invited_via: 'ticket_gift',
+    };
+    if (params.itemName?.trim()) {
+      meta.item_name = params.itemName.trim();
+    }
+    if (params.donorName?.trim()) {
+      meta.donor_name = params.donorName.trim();
+    }
+
+    try {
+      const { error } = await supabase.auth.admin.inviteUserByEmail(email, {
+        redirectTo,
+        data: meta,
+      });
+      if (!error) {
+        return;
+      }
+      const msg = String(error.message ?? '').trim();
+      if (
+        /already been registered|already exists|already registered|duplicate/i.test(
+          msg,
+        )
+      ) {
+        this.logger.log(
+          `Supabase gift invite: user already in Auth, sending magic link email (${email})`,
+        );
+        await this.sendGiftTicketMagicLinkForExistingAuthUser(
+          email,
+          redirectTo,
+        );
+        return;
+      }
+      this.logger.warn(
+        `Supabase gift invite failed for ${email}: ${msg || 'unknown error'}`,
+      );
+    } catch (err) {
+      if (isOutboundNetworkFailure(err)) {
+        this.logger.warn(
+          `Supabase gift invite unreachable for ${email}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+      this.logger.warn(
+        `Supabase gift invite unexpected error for ${email}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * Recipients who already exist in Supabase Auth cannot receive another `inviteUserByEmail`.
+   * In that case we send a **magic link** (OTP email) to the same address so they can sign in
+   * at `emailRedirectTo` (same URL as new invites).
+   */
+  private async sendGiftTicketMagicLinkForExistingAuthUser(
+    email: string,
+    emailRedirectTo: string,
+  ): Promise<void> {
+    const supabase = this.getSupabaseAdminClient();
+    const runOtp = () =>
+      supabase.auth.signInWithOtp({
+        email,
+        options: {
+          shouldCreateUser: false,
+          emailRedirectTo,
+        },
+      });
+    try {
+      let result = await runOtp();
+      if (result.error && isOutboundNetworkFailure(result.error)) {
+        result = await runOtp();
+      }
+      const { error } = result;
+      if (error) {
+        const msg = String(error.message ?? '').trim();
+        this.logger.warn(
+          `Supabase gift magic link (existing Auth user) failed for ${email}: ${msg || 'unknown error'}`,
+        );
+        return;
+      }
+      this.logger.log(
+        `Supabase gift: magic link email sent for existing Auth user ${email}`,
+      );
+    } catch (err) {
+      if (isOutboundNetworkFailure(err)) {
+        this.logger.warn(
+          `Supabase gift magic link unreachable for ${email}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
+      this.logger.warn(
+        `Supabase gift magic link unexpected error for ${email}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   async verifyEmailToken(email: string, token: string): Promise<string> {
     const normalized = email.trim().toLowerCase();
     const row = await this.prisma.verificationToken.findFirst({
