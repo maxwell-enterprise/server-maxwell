@@ -27,7 +27,6 @@ import { CampaignsService } from '../campaigns/campaigns.service';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 import { VoucherBroadcastService } from '../store-support/voucher-broadcast.service';
 import { AutomationsEmitService } from '../automations/automations-emit.service';
-import { applyProductPpnToBaseIdr } from '../../common/pricing/apply-product-ppn';
 
 @Injectable()
 export class TransactionsService {
@@ -80,7 +79,6 @@ export class TransactionsService {
       title: string;
       category: string;
       priceIdr: number;
-      ppnRatePercent: number;
       isActive: boolean;
       hasVariants: boolean;
       variants: unknown;
@@ -93,7 +91,6 @@ export class TransactionsService {
       title: string;
       category: string;
       priceIdr: number;
-      ppnRatePercent: number;
       isActive: boolean;
       hasVariants: boolean;
       variants: unknown;
@@ -106,7 +103,6 @@ export class TransactionsService {
         title,
         category,
         "priceIdr" as "priceIdr",
-        coalesce("ppnRatePercent", 0) as "ppnRatePercent",
         "isActive" as "isActive",
         "hasVariants" as "hasVariants",
         variants
@@ -121,7 +117,6 @@ export class TransactionsService {
         title,
         category,
         "priceIdr" as "priceIdr",
-        coalesce("ppnRatePercent", 0) as "ppnRatePercent",
         "isActive" as "isActive",
         "hasVariants" as "hasVariants",
         variants
@@ -147,7 +142,6 @@ export class TransactionsService {
       priceIdr: number;
       hasVariants: boolean;
       variants: unknown;
-      ppnRatePercent?: number;
     },
     variantId?: string,
   ): number {
@@ -159,35 +153,34 @@ export class TransactionsService {
     const variants = Array.isArray(row.variants) ? row.variants : [];
     const needsVariant = row.hasVariants === true && variants.length > 0;
 
-    let unitBase = base;
-    if (needsVariant) {
-      const vid = variantId?.trim();
-      if (!vid) {
-        throw new BadRequestException(
-          'variantId is required for products with variant pricing',
-        );
-      }
-
-      const v = variants.find(
-        (x: unknown) =>
-          typeof x === 'object' &&
-          x !== null &&
-          'id' in x &&
-          String((x as { id: string }).id) === vid,
-      ) as { priceIdr?: unknown } | undefined;
-
-      if (!v) {
-        throw new BadRequestException(`Unknown variant: ${vid}`);
-      }
-
-      const vp = Number(v.priceIdr);
-      if (!Number.isFinite(vp) || vp < 0) {
-        throw new BadRequestException('Variant price must be zero or positive');
-      }
-      unitBase = vp;
+    if (!needsVariant) {
+      return base;
     }
 
-    return applyProductPpnToBaseIdr(unitBase, row.ppnRatePercent ?? 0);
+    const vid = variantId?.trim();
+    if (!vid) {
+      throw new BadRequestException(
+        'variantId is required for products with variant pricing',
+      );
+    }
+
+    const v = variants.find(
+      (x: unknown) =>
+        typeof x === 'object' &&
+        x !== null &&
+        'id' in x &&
+        String((x as { id: string }).id) === vid,
+    ) as { priceIdr?: unknown } | undefined;
+
+    if (!v) {
+      throw new BadRequestException(`Unknown variant: ${vid}`);
+    }
+
+    const vp = Number(v.priceIdr);
+    if (!Number.isFinite(vp) || vp < 0) {
+      throw new BadRequestException('Variant price must be zero or positive');
+    }
+    return vp;
   }
 
   private async appendSecurityLog(

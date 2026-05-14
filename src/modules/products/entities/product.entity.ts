@@ -40,8 +40,6 @@ export class Product {
   title: string;
   description: string;
   priceIdr: number;
-  /** PPN/VAT % on list price (0–100). */
-  ppnRatePercent?: number;
   compareAtPriceIdr?: number;
   category: ProductCategory;
   imageUrl: string;
