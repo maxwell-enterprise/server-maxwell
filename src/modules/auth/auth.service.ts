@@ -32,6 +32,61 @@ function isLocalUrl(value: string): boolean {
   }
 }
 
+function normalizeSingleRedirectUrl(
+  rawValue: string | undefined,
+  fallback: string,
+): string | null {
+  const candidates = String(rawValue ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const pool = candidates.length > 0 ? candidates : [fallback];
+
+  for (const candidate of pool) {
+    if (!URL.canParse(candidate)) continue;
+    try {
+      const url = new URL(candidate);
+      return url.toString().replace(/\/+$/, '');
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+function formatSupabaseAuthError(error: unknown): string {
+  if (!error || typeof error !== 'object') {
+    return String(error ?? 'unknown error');
+  }
+
+  const candidate = error as {
+    name?: unknown;
+    message?: unknown;
+    status?: unknown;
+    code?: unknown;
+    error_code?: unknown;
+  };
+
+  const parts = [
+    typeof candidate.message === 'string' && candidate.message.trim()
+      ? candidate.message.trim()
+      : null,
+    typeof candidate.code === 'string' && candidate.code.trim()
+      ? `code=${candidate.code.trim()}`
+      : null,
+    typeof candidate.error_code === 'string' && candidate.error_code.trim()
+      ? `error_code=${candidate.error_code.trim()}`
+      : null,
+    typeof candidate.status === 'number' ? `status=${candidate.status}` : null,
+    typeof candidate.name === 'string' && candidate.name.trim()
+      ? `name=${candidate.name.trim()}`
+      : null,
+  ].filter(Boolean);
+
+  return parts.length > 0 ? parts.join(' | ') : 'unknown error';
+}
+
 /**
  * Node/undici `fetch` failures: DNS, firewall, offline, timeout.
  * Message/cause shape varies by Node version — do not rely only on `message === 'fetch failed'`.
@@ -95,6 +150,22 @@ export class AuthService {
       return isLocalUrl(explicit) ? explicit.replace(/\/+$/, '') : 'http://localhost:3000';
     }
     return explicit.replace(/\/+$/, '');
+  }
+
+  private resolveGiftInviteRedirectUrl(): string | null {
+    const configured = normalizeSingleRedirectUrl(
+      process.env.SUPABASE_GIFT_INVITE_REDIRECT_URL,
+      this.getFrontendBaseUrl(),
+    );
+    if (!configured) return null;
+
+    const allowNonLocalInDev =
+      process.env.ALLOW_NON_LOCAL_AUTH_REDIRECT_IN_DEV === 'true';
+    if (process.env.NODE_ENV !== 'production' && !allowNonLocalInDev) {
+      return isLocalUrl(configured) ? configured : this.getFrontendBaseUrl();
+    }
+
+    return configured;
   }
 
   /**
@@ -766,11 +837,8 @@ export class AuthService {
       return;
     }
 
-    const redirectRaw =
-      process.env.SUPABASE_GIFT_INVITE_REDIRECT_URL?.trim() ||
-      'https://maxwell-refactor.vercel.app';
-    let redirectTo = redirectRaw.replace(/\/+$/, '');
-    if (!URL.canParse(redirectTo)) {
+    const redirectTo = this.resolveGiftInviteRedirectUrl();
+    if (!redirectTo) {
       this.logger.warn(
         `Gift ticket Supabase invite skipped: invalid SUPABASE_GIFT_INVITE_REDIRECT_URL`,
       );
@@ -796,7 +864,7 @@ export class AuthService {
       if (!error) {
         return;
       }
-      const msg = String(error.message ?? '').trim();
+      const msg = formatSupabaseAuthError(error);
       if (
         /already been registered|already exists|already registered|duplicate/i.test(
           msg,
@@ -812,7 +880,7 @@ export class AuthService {
         return;
       }
       this.logger.warn(
-        `Supabase gift invite failed for ${email}: ${msg || 'unknown error'}`,
+        `Supabase gift invite failed for ${email}: ${msg || 'unknown error'} (redirectTo=${redirectTo})`,
       );
     } catch (err) {
       if (isOutboundNetworkFailure(err)) {
@@ -822,7 +890,7 @@ export class AuthService {
         return;
       }
       this.logger.warn(
-        `Supabase gift invite unexpected error for ${email}: ${err instanceof Error ? err.message : String(err)}`,
+        `Supabase gift invite unexpected error for ${email}: ${err instanceof Error ? err.message : String(err)} (redirectTo=${redirectTo})`,
       );
     }
   }
@@ -852,9 +920,9 @@ export class AuthService {
       }
       const { error } = result;
       if (error) {
-        const msg = String(error.message ?? '').trim();
+        const msg = formatSupabaseAuthError(error);
         this.logger.warn(
-          `Supabase gift magic link (existing Auth user) failed for ${email}: ${msg || 'unknown error'}`,
+          `Supabase gift magic link (existing Auth user) failed for ${email}: ${msg || 'unknown error'} (redirectTo=${emailRedirectTo})`,
         );
         return;
       }
