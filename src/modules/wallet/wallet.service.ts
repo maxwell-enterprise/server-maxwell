@@ -5,6 +5,7 @@
 
 import {
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   ForbiddenException,
@@ -30,6 +31,7 @@ import {
 import { DbService } from '../../common/db.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembersService } from '../members/members.service';
+import { AuthService } from '../auth/auth.service';
 
 type SqlExecutor = Pick<DbService, 'query'> | Pick<PoolClient, 'query'>;
 
@@ -90,10 +92,13 @@ export interface WalletMemberHubContext {
 
 @Injectable()
 export class WalletService {
+  private readonly logger = new Logger(WalletService.name);
+
   constructor(
     private readonly db: DbService,
     private readonly prisma: PrismaService,
     private readonly members: MembersService,
+    private readonly auth: AuthService,
   ) {}
   // ==========================================================================
   // WALLET ITEMS
@@ -1071,7 +1076,7 @@ export class WalletService {
       .catch(() => null);
     const senderName = sender?.name?.trim() || senderId.trim();
 
-    return this.db.withTransaction(async (client) => {
+    const allocation = await this.db.withTransaction(async (client) => {
       await this.ensureGiftAllocationRuntimeColumns(client);
       const wallet = await this.lockWalletItemRow(dto.walletItemId, client);
       this.assertWalletShareable(wallet, senderId);
@@ -1197,6 +1202,24 @@ export class WalletService {
       }
       return allocation;
     });
+
+    if (recipientEmail) {
+      void this.auth
+        .sendGiftTicketRecipientSupabaseInvite({
+          email: recipientEmail,
+          itemName: allocation.itemName,
+          donorName: allocation.sourceUserName,
+        })
+        .catch((err: unknown) => {
+          this.logger.warn(
+            `Post-gift Supabase invite async error (${recipientEmail}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+    }
+
+    return allocation;
   }
 
   /**
