@@ -1,0 +1,74 @@
+[
+  {
+    "intent": "brand_overview",
+    "examples": [
+      "Apa itu Maxwell Leadership Indonesia?",
+      "Maxwell Leadership Indonesia bergerak di bidang apa?",
+      "Jelaskan tentang Maxwell Leadership Indonesia"
+    ],
+    "response": "Maxwell Leadership Indonesia adalah organisasi pengembangan kepemimpinan berbasis nilai yang menyediakan program certification, mentorship, corporate solutions, event, coaching, training, dan komunitas leadership di Indonesia."
+  },
+  {
+    "intent": "vision_mission",
+    "examples": [
+      "Apa visi Maxwell Leadership Indonesia?",
+      "Apa tujuan Maxwell Leadership Indonesia?",
+      "Kenapa fokus ke Indonesia Emas 2045?"
+    ],
+    "response": "Visi Maxwell Leadership Indonesia adalah menjadi bagian dari gerakan membangkitkan 30 juta pemimpin di Indonesia menuju Indonesia Emas 2045."
+  },
+  {
+    "intent": "certification_program",
+    "examples": [
+      "Apa itu certification program?",
+      "Bagaimana cara jadi certified Maxwell leader?",
+      "Apa benefit sertifikasi Maxwell?"
+    ],
+    "response": "Maxwell Leadership Certification Program adalah program sertifikasi lifetime untuk membekali peserta agar dapat speak, teach, coach, dan train leadership. Benefitnya meliputi guided coaching, Maxwell Mentorship, Maxwell Learning Platform, dan International Maxwell Conference."
+  },
+  {
+    "intent": "mentorship",
+    "examples": [
+      "Apa itu Maxwell Mentorship?",
+      "Kapan mentorship diadakan?",
+      "Di mana lokasi Maxwell Mentorship?"
+    ],
+    "response": "Maxwell Mentorship adalah masterclass leadership on-site selama 8 jam di Jakarta. Lokasi yang tercantum adalah Mall @ Alam Sutera, Tangerang, dengan jam kegiatan 10.00-18.00 WIB."
+  },
+  {
+    "intent": "thrive_to_lead",
+    "examples": [
+      "Apa itu Thrive To Lead?",
+      "Thrive To Lead cocok untuk siapa?",
+      "Berapa biaya Thrive To Lead?"
+    ],
+    "response": "Thrive To Lead adalah program leadership experience 6 minggu untuk business owner, manager, entrepreneur, profesional, dan siapa pun yang ingin upgrade leadership. Program ini membahas Confidence, Consistency, Community, Cash, serta framework Influence, Modeling, dan Multiplying. Commitment fee yang tercantum adalah Rp6.000.000, dengan ketentuan refund tertentu."
+  },
+  {
+    "intent": "corporate_solutions",
+    "examples": [
+      "Apa layanan untuk perusahaan?",
+      "Ada corporate training?",
+      "Bisa coaching untuk CEO?"
+    ],
+    "response": "Corporate Solutions Maxwell Leadership Indonesia mencakup consulting, executive coaching, dan corporate training dalam format workshop, masterclass, atau intensive on-site course sesuai kebutuhan organisasi."
+  },
+  {
+    "intent": "shop_products",
+    "examples": [
+      "Produk apa saja yang dijual?",
+      "Ada buku John Maxwell?",
+      "Berapa harga tumbler?"
+    ],
+    "response": "Maxwell Leadership Store menjual buku leadership, journal, tumbler, polo shirt, jeans jacket, wooden cube, dan leadership wisdom cards. Harga produk bervariasi mulai dari sekitar IDR 90,000 hingga IDR 600,000."
+  },
+  {
+    "intent": "contact",
+    "examples": [
+      "Bagaimana cara kontak admin?",
+      "Email Maxwell Leadership Indonesia apa?",
+      "Mau daftar program"
+    ],
+    "response": "Anda dapat menghubungi Maxwell Leadership Indonesia melalui email info@maxwellleadershipindonesia.com atau tombol WhatsApp yang tersedia di website untuk program tertentu."
+  }
+]

@@ -33,6 +33,15 @@ export class AppConfigService {
     return this.env.PAYMENT_PPN_RATE_PERCENT;
   }
 
+  get geminiApiKey(): string | undefined {
+    const value = this.env.GEMINI_API_KEY?.trim();
+    return value || undefined;
+  }
+
+  get geminiModel(): string {
+    return this.env.GEMINI_MODEL.trim();
+  }
+
   /**
    * Test-only settlement without Midtrans (`simulate-settle`). When env is unset, schema defaults
    * to on for local / Vercel-hosted preview and off for production Node / Vercel Production.

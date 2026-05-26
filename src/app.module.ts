@@ -91,6 +91,7 @@ import { AutomationsModule } from './modules/automations/automations.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
 import { CmsModule } from './modules/cms/cms.module';
 import { AccountSettingsModule } from './modules/account-settings/account-settings.module';
+import { ScoutModule } from './modules/scout/scout.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard';
@@ -145,6 +146,7 @@ import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard'
     CampaignsModule,
     CmsModule,
     AccountSettingsModule,
+    ScoutModule,
   ],
   controllers: [RootController, AppController],
   providers: [
