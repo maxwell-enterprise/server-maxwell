@@ -89,6 +89,12 @@ const updateMemberShape = {
 export const CreateMemberDtoSchema = z.object(createMemberShape);
 export type CreateMemberDto = z.infer<typeof CreateMemberDtoSchema>;
 
+export const PublicScoutLeadDtoSchema = z.object({
+  fullName: z.string().min(2).max(255),
+  email: z.string().email(),
+});
+export type PublicScoutLeadDto = z.infer<typeof PublicScoutLeadDtoSchema>;
+
 export const UpdateMemberDtoSchema = z.object(updateMemberShape);
 export type UpdateMemberDto = z.infer<typeof UpdateMemberDtoSchema>;
 

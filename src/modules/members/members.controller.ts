@@ -15,6 +15,8 @@ import {
   CreateMemberDtoSchema,
   MemberQueryDto,
   MemberQueryDtoSchema,
+  PublicScoutLeadDto,
+  PublicScoutLeadDtoSchema,
   UpdateMemberDto,
   UpdateMemberDtoSchema,
 } from './dto';
@@ -26,6 +28,14 @@ import { assertSalesOnly } from '../../common/security/access-policy';
 @Controller('members')
 export class MembersController {
   constructor(private readonly membersService: MembersService) {}
+
+  @Post('public/scout-leads')
+  createPublicScoutLead(
+    @Body(new ZodValidationPipe(PublicScoutLeadDtoSchema))
+    dto: PublicScoutLeadDto,
+  ) {
+    return this.membersService.createPublicScoutLead(dto);
+  }
 
   @Post()
   @UseGuards(JwtAuthGuard)
