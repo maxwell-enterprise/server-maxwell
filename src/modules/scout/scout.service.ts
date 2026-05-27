@@ -7,6 +7,7 @@ import {
 import { readFile } from 'fs/promises';
 import path from 'path';
 import { AppConfigService } from '../../common/config/app-config.service';
+import { DatabaseService } from '../../common/database/database.service';
 import type { ScoutChatRequestDto, ScoutChatResponseDto } from './dto';
 
 const MAX_AI_REPLIES = 5;
@@ -18,6 +19,15 @@ const SCOUT_AI_UNAVAILABLE_MESSAGE =
   'Scout AI is temporarily unavailable.';
 const MISSING_GEMINI_KEY_MESSAGE =
   'Gemini API key is not configured on the server.';
+const AI_USAGE_FEATURE_NAME = 'LANDING_SCOUT_CHAT';
+const USD_TO_IDR_RATE = 16_300;
+const MODEL_PRICING_USD_PER_1M_TOKENS: Record<
+  string,
+  { input: number; output: number }
+> = {
+  'gemini-2.5-flash-lite': { input: 0.1, output: 0.4 },
+  default: { input: 1.0, output: 2.0 },
+};
 
 const SCOUT_RULES = [
   'You are Maxwell Scout, the chatbot for Maxwell Leadership Indonesia.',
@@ -40,6 +50,18 @@ type GeminiGenerateResponse = {
       }>;
     };
   }>;
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
+};
+
+type ScoutGenerationResult = {
+  reply: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 };
 
 @Injectable()
@@ -47,7 +69,10 @@ export class ScoutService {
   private readonly logger = new Logger(ScoutService.name);
   private knowledgeTextCache: string | null = null;
 
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly db: DatabaseService,
+  ) {}
 
   async chat(dto: ScoutChatRequestDto): Promise<ScoutChatResponseDto> {
     const aiReplyCount = dto.messages.filter((m) => m.sender === 'ai').length;
@@ -65,10 +90,11 @@ export class ScoutService {
 
     const knowledgeText = await this.getKnowledgeText();
     const prompt = this.buildPrompt(dto, knowledgeText);
-    const reply = await this.generateReply(prompt, apiKey);
+    const generation = await this.generateReply(prompt, apiKey);
+    await this.logAiUsage(dto, prompt, generation);
 
     return {
-      reply,
+      reply: generation.reply,
       status: 'ACTIVE',
     };
   }
@@ -104,7 +130,10 @@ export class ScoutService {
     ].join('\n');
   }
 
-  private async generateReply(prompt: string, apiKey: string): Promise<string> {
+  private async generateReply(
+    prompt: string,
+    apiKey: string,
+  ): Promise<ScoutGenerationResult> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20_000);
 
@@ -156,7 +185,22 @@ export class ScoutService {
         );
       }
 
-      return reply;
+      const promptTokens =
+        Number(data.usageMetadata?.promptTokenCount ?? 0) ||
+        this.estimateTokens(prompt);
+      const completionTokens =
+        Number(data.usageMetadata?.candidatesTokenCount ?? 0) ||
+        this.estimateTokens(reply);
+      const totalTokens =
+        Number(data.usageMetadata?.totalTokenCount ?? 0) ||
+        promptTokens + completionTokens;
+
+      return {
+        reply,
+        promptTokens,
+        completionTokens,
+        totalTokens,
+      };
     } catch (error) {
       if (error instanceof ServiceUnavailableException) {
         throw error;
@@ -194,6 +238,75 @@ export class ScoutService {
       );
       this.knowledgeTextCache = '';
       return this.knowledgeTextCache;
+    }
+  }
+
+  private estimateTokens(text: string): number {
+    return Math.ceil((text || '').length / 4);
+  }
+
+  private async logAiUsage(
+    dto: ScoutChatRequestDto,
+    prompt: string,
+    generation: ScoutGenerationResult,
+  ): Promise<void> {
+    const pricing =
+      MODEL_PRICING_USD_PER_1M_TOKENS[this.config.geminiModel] ??
+      MODEL_PRICING_USD_PER_1M_TOKENS.default;
+    const inputCost = (generation.promptTokens / 1_000_000) * pricing.input;
+    const outputCost =
+      (generation.completionTokens / 1_000_000) * pricing.output;
+    const costUSD = inputCost + outputCost;
+    const costIDR = costUSD * USD_TO_IDR_RATE;
+
+    try {
+      await this.db.query(
+        `INSERT INTO ai_usage_logs (
+          id,
+          timestamp,
+          "userId",
+          "featureName",
+          model,
+          prompt,
+          response,
+          "promptTokens",
+          "completionTokens",
+          "totalTokens",
+          "costUSD",
+          "costIDR"
+        ) VALUES (
+          gen_random_uuid(),
+          now(),
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          $6,
+          $7,
+          $8,
+          $9,
+          $10
+        )`,
+        [
+          `guest:${dto.leadEmail.trim().toLowerCase()}`,
+          AI_USAGE_FEATURE_NAME,
+          this.config.geminiModel,
+          prompt.slice(0, 12_000),
+          generation.reply.slice(0, 8_000),
+          generation.promptTokens,
+          generation.completionTokens,
+          generation.totalTokens,
+          costUSD,
+          costIDR,
+        ],
+      );
+    } catch (error) {
+      this.logger.warn(
+        `AI usage logging failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 }
