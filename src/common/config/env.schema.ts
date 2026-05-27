@@ -80,6 +80,8 @@ export const AppEnvSchema = z
     SUPABASE_URL: z.string().url().optional(),
     SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
     SUPABASE_STORAGE_BUCKET: z.string().min(1).default('app-images'),
+    GEMINI_API_KEY: z.string().min(1).optional(),
+    GEMINI_MODEL: z.string().min(1).default('gemini-2.5-flash-lite'),
 
     // Payments
     // PPN/VAT rate used for backend pricing calculation (percent).

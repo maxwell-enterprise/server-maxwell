@@ -12,7 +12,7 @@ import {
 import { CmsService } from './cms.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
-import { assertMarketingOnly } from '../../common/security/access-policy';
+import { assertMarketingOrSuperAdmin } from '../../common/security/access-policy';
 
 /** FE calls `/fe/content/posts` (global prefix `fe`). */
 @Controller('content/posts')
@@ -30,7 +30,7 @@ export class CmsController {
     @Req() req: { user: JwtUserPayload },
     @Body() body: Record<string, unknown>,
   ) {
-    assertMarketingOnly(req.user, 'Content post creation');
+    assertMarketingOrSuperAdmin(req.user, 'Content post creation');
     return this.cms.create(body ?? {});
   }
 
@@ -41,14 +41,24 @@ export class CmsController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    assertMarketingOnly(req.user, 'Content post update');
+    assertMarketingOrSuperAdmin(req.user, 'Content post update');
     return this.cms.update(decodeURIComponent(id), body ?? {});
+  }
+
+  @Post('ai-generate')
+  @UseGuards(JwtAuthGuard)
+  generateAiContent(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: Record<string, unknown>,
+  ) {
+    assertMarketingOrSuperAdmin(req.user, 'AI content generation');
+    return this.cms.generateAiContent(body ?? {}, String(req.user.sub));
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   async remove(@Req() req: { user: JwtUserPayload }, @Param('id') id: string) {
-    assertMarketingOnly(req.user, 'Content post deletion');
+    assertMarketingOrSuperAdmin(req.user, 'Content post deletion');
     await this.cms.remove(decodeURIComponent(id));
     return { ok: true };
   }

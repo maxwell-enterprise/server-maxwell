@@ -11,6 +11,7 @@ import {
   CreateMemberDto,
   CreateMemberDtoSchema,
   MemberQueryDto,
+  PublicScoutLeadDto,
   UpdateMemberDto,
 } from './dto';
 import {
@@ -222,6 +223,48 @@ export class MembersService {
     }
   }
 
+  async createPublicScoutLead(
+    dto: PublicScoutLeadDto,
+  ): Promise<{ created: boolean; member: Member }> {
+    const email = dto.email.trim().toLowerCase();
+    const existingId = await this.findMemberIdByEmail(email);
+
+    if (existingId) {
+      return {
+        created: false,
+        member: await this.findOne(existingId),
+      };
+    }
+
+    const memberDto = CreateMemberDtoSchema.parse({
+      name: dto.fullName.trim(),
+      email,
+      phone: '',
+      category: 'Guest',
+      scholarship: false,
+      joinMonth: new Date().toISOString().slice(0, 7),
+      program: 'Leadership Checkup',
+      mentorshipDuration: 0,
+      nTagStatus: 'Not yet',
+      platform: 'Web',
+      regInUS: false,
+      lifecycleStage: 'GUEST',
+      tags: ['Scout_User', 'Landing_Chat'],
+      engagement: {
+        lastActiveDate: new Date().toISOString(),
+        eventsAttendedCount: 0,
+        contentCompletionRate: 0,
+        communityReputationScore: 0,
+        leadScore: 10,
+      },
+    });
+
+    const member = await this.create(memberDto, {
+      preserveGuestLifecycle: true,
+    });
+    return { created: true, member };
+  }
+
   private lifecycleRank(stage: string): number {
     const key = String(stage ?? '')
       .trim()
@@ -230,7 +273,10 @@ export class MembersService {
     return idx >= 0 ? idx : 0;
   }
 
-  async create(dto: CreateMemberDto): Promise<Member> {
+  async create(
+    dto: CreateMemberDto,
+    options?: { preserveGuestLifecycle?: boolean },
+  ): Promise<Member> {
     await this.assertEmailIsAvailable(dto.email);
 
     const publicId = await this.resolvePublicId(
@@ -238,7 +284,7 @@ export class MembersService {
       dto.name,
       dto.lifecycleStage,
     );
-    const input = this.normalizeCreateInput(dto);
+    const input = this.normalizeCreateInput(dto, options);
 
     const result = await this.db.query<MemberRow>(
       `
@@ -753,12 +799,15 @@ export class MembersService {
     return stage;
   }
 
-  private normalizeCreateInput(dto: CreateMemberDto) {
+  private normalizeCreateInput(
+    dto: CreateMemberDto,
+    options?: { preserveGuestLifecycle?: boolean },
+  ) {
     const email = dto.email.trim().toLowerCase();
-    const lifecycleStage = this.coerceGuestLifecycleWhenEmailPresent(
-      dto.lifecycleStage,
-      email,
-    );
+    const lifecycleStage =
+      options?.preserveGuestLifecycle && dto.lifecycleStage === 'GUEST'
+        ? 'GUEST'
+        : this.coerceGuestLifecycleWhenEmailPresent(dto.lifecycleStage, email);
 
     return {
       name: dto.name.trim(),
