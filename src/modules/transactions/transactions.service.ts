@@ -29,6 +29,7 @@ import { CampaignsService } from '../campaigns/campaigns.service';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 import { VoucherBroadcastService } from '../store-support/voucher-broadcast.service';
 import { AutomationsEmitService } from '../automations/automations-emit.service';
+import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
 
 @Injectable()
 export class TransactionsService {
@@ -44,6 +45,7 @@ export class TransactionsService {
     private readonly checkoutEntitlements: CheckoutEntitlementsService,
     private readonly voucherBroadcast: VoucherBroadcastService,
     private readonly automationsEmit: AutomationsEmitService,
+    private readonly workspace: WorkspaceIdentityService,
   ) {}
 
   // ==========================================================================
@@ -346,6 +348,8 @@ export class TransactionsService {
     const discountId = discountRes.rows[0]?.id;
     if (!discountId) return;
 
+    // Idempotency: rely on uq_discount_redemption_logs_order_discount unique index. ON CONFLICT keeps
+    // concurrent webhook deliveries (Midtrans retries, simulate-settle race) safe without exceptions.
     const inserted = await this.db.query(
       `
       insert into discount_redemption_logs (
@@ -358,7 +362,7 @@ export class TransactionsService {
         "specificDiscount",
         metadata
       )
-      select
+      values (
         gen_random_uuid(),
         $1::uuid,
         $2,
@@ -367,12 +371,10 @@ export class TransactionsService {
         $5::numeric,
         $5::numeric,
         $6::jsonb
-      where not exists (
-        select 1
-        from discount_redemption_logs
-        where "orderId" = $4
-          and "discountCode" = $2
       )
+      on conflict ("orderId", "discountCode")
+        where "orderId" is not null and "discountCode" is not null
+        do nothing
       `,
       [
         discountId,
@@ -386,6 +388,9 @@ export class TransactionsService {
 
     if ((inserted.rowCount ?? 0) === 0) return;
 
+    // Guard against over-shooting maxUsageLimit/maxBudgetLimit under concurrency: increment only if
+    // we still have headroom. Rare in practice, but the unique log + this guard make the pipeline
+    // self-healing if multiple PAID notifications race.
     const updated = await this.db.query<{
       currentUsageCount: number;
       currentBudgetBurned: number;
@@ -396,6 +401,8 @@ export class TransactionsService {
         "currentUsageCount" = coalesce("currentUsageCount", 0) + 1,
         "currentBudgetBurned" = coalesce("currentBudgetBurned", 0) + $2::numeric
       where id = $1::uuid
+        and ("maxUsageLimit" is null or coalesce("currentUsageCount", 0) < "maxUsageLimit")
+        and ("maxBudgetLimit" is null or coalesce("currentBudgetBurned", 0) + $2::numeric <= "maxBudgetLimit")
       returning
         "currentUsageCount",
         "currentBudgetBurned"
@@ -410,6 +417,21 @@ export class TransactionsService {
         usageCount: Number(snapshot.currentUsageCount) || 0,
         budgetBurned: Number(snapshot.currentBudgetBurned) || 0,
       });
+    }
+
+    if (payment.buyerUserId) {
+      try {
+        await this.workspace.markVoucherConsumedForUser(
+          payment.buyerUserId,
+          voucherCode,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Failed to mark sticky voucher consumed for user ${payment.buyerUserId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
     }
   }
 
@@ -530,12 +552,22 @@ export class TransactionsService {
     });
 
     const subtotal = Math.round(subtotalRaw);
+    let buyerEmail: string | null = dto.guestEmail?.trim() || null;
+    if (!buyerEmail && userId) {
+      buyerEmail = await this.findMemberEmail(userId);
+    }
+    await this.assertVoucherNotAlreadyRedeemed(
+      dto.voucherCode,
+      userId,
+      buyerEmail,
+    );
     const pricing = await this.calculatePricing(
       dto,
       products,
       subtotal,
       userId,
       buyerRole,
+      buyerEmail,
     );
 
     const discountAmount = pricing.discountAmount;
@@ -547,10 +579,8 @@ export class TransactionsService {
     }
 
     // 3. Tentukan email customer
-    let customerEmail: string | null = null;
-    if (dto.guestEmail) {
-      customerEmail = dto.guestEmail;
-    } else if (userId) {
+    let customerEmail: string | null = buyerEmail;
+    if (!customerEmail && userId) {
       customerEmail = await this.findMemberEmail(userId);
     }
     if (!customerEmail) {
@@ -798,12 +828,22 @@ export class TransactionsService {
     });
 
     const subtotal = Math.round(subtotalRaw);
+    let buyerEmail: string | null = dto.guestEmail?.trim() || null;
+    if (!buyerEmail && userId) {
+      buyerEmail = await this.findMemberEmail(userId);
+    }
+    await this.assertVoucherNotAlreadyRedeemed(
+      dto.voucherCode,
+      userId,
+      buyerEmail,
+    );
     const pricing = await this.calculatePricing(
       dto,
       products,
       subtotal,
       userId,
       buyerRole,
+      buyerEmail,
     );
 
     const discountAmount = pricing.discountAmount;
@@ -815,10 +855,8 @@ export class TransactionsService {
     }
 
     // 3) Determine customer email
-    let customerEmail: string | null = null;
-    if (dto.guestEmail) {
-      customerEmail = dto.guestEmail;
-    } else if (userId) {
+    let customerEmail: string | null = buyerEmail;
+    if (!customerEmail && userId) {
       customerEmail = await this.findMemberEmail(userId);
     }
     if (!customerEmail) {
@@ -1353,6 +1391,27 @@ export class TransactionsService {
     return res.rows[0]?.exists ?? false;
   }
 
+  private async assertVoucherNotAlreadyRedeemed(
+    voucherCode: string | undefined,
+    userId: string | null,
+    buyerEmail: string | null,
+  ): Promise<void> {
+    const code = voucherCode?.trim().toUpperCase();
+    if (!code) return;
+    if (!userId && !buyerEmail) return;
+    if (
+      await this.workspace.hasUserRedeemedVoucher({
+        userId,
+        email: buyerEmail,
+        code,
+      })
+    ) {
+      throw new BadRequestException(
+        'Kamu sudah pernah menggunakan voucher ini (maksimal 1x per akun).',
+      );
+    }
+  }
+
   private async calculatePricing(
     dto: CheckoutDto,
     products: Array<{
@@ -1367,13 +1426,12 @@ export class TransactionsService {
     subtotal: number,
     userId: string | null,
     buyerRole: string = 'GUEST',
+    buyerEmail: string | null = null,
   ): Promise<{
     discountAmount: number;
     taxAmount: number;
     totalAmount: number;
   }> {
-    // NOTE: userId reserved for future ABAC voucher checks on the server.
-    // The goal is to ensure totals sent to Midtrans always come from BE calculations.
     let discountAmount = 0;
 
     if (dto.voucherCode) {
@@ -1383,6 +1441,8 @@ export class TransactionsService {
         dto.items,
         products,
         buyerRole,
+        userId,
+        buyerEmail,
       );
     }
 
@@ -1411,6 +1471,8 @@ export class TransactionsService {
       variants: unknown;
     }>,
     buyerRole: string = 'GUEST',
+    buyerUserId: string | null = null,
+    buyerEmail: string | null = null,
   ): Promise<number> {
     const discountRes = await this.db.query<{
       type: string;
@@ -1447,6 +1509,15 @@ export class TransactionsService {
 
     const discount = discountRes.rows[0];
     if (!discount) return 0;
+
+    if (buyerUserId || buyerEmail) {
+      const alreadyUsed = await this.workspace.hasUserRedeemedVoucher({
+        userId: buyerUserId,
+        email: buyerEmail,
+        code,
+      });
+      if (alreadyUsed) return 0;
+    }
 
     const now = new Date();
     if (discount.validFrom && discount.validFrom > now) return 0;
@@ -1822,7 +1893,15 @@ export class TransactionsService {
       }
       if (String(row.status).toUpperCase() === 'PAID') {
         await this.recordVoucherRedemptionForPayment(transactionId);
-        await this.checkoutEntitlements.processForPaymentId(transactionId);
+        void this.checkoutEntitlements
+          .processForPaymentId(transactionId)
+          .catch((err) => {
+            this.logger.error(
+              `Checkout entitlements failed for already-PAID payment ${transactionId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
         return {
           paymentStatus: 'PAID',
           totalAmount: Number(row.totalAmount) || 0,
@@ -1840,7 +1919,15 @@ export class TransactionsService {
       Number(paidRow.totalAmount) || 0,
     );
     await this.recordVoucherRedemptionForPayment(transactionId);
-    await this.checkoutEntitlements.processForPaymentId(transactionId);
+    void this.checkoutEntitlements
+      .processForPaymentId(transactionId)
+      .catch((err) => {
+        this.logger.error(
+          `Checkout entitlements failed after simulate-settle (payment ${transactionId}): ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
     await this.appendSecurityLog('PAYMENT_SIMULATION_SETTLED', {
       transactionId,
       orderId: paidRow.orderId,

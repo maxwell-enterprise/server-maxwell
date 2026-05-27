@@ -955,6 +955,99 @@ export class WorkspaceIdentityService {
 
   // --- Voucher persistence (per-user; stored in User.abacContext) ---
 
+  /** True when this user (or same receipt email on a prior PAID order) already redeemed the code. */
+  async hasUserRedeemedVoucher(params: {
+    userId?: string | null;
+    email?: string | null;
+    code: string;
+  }): Promise<boolean> {
+    const code = params.code.trim().toUpperCase();
+    if (!code) return false;
+
+    const userId = params.userId?.trim();
+    if (userId) {
+      const byUser = await this.prisma.$queryRaw<Array<{ one: number }>>`
+        SELECT 1 AS one
+        FROM discount_redemption_logs
+        WHERE upper("discountCode") = ${code}
+          AND "userId" = ${userId}
+        LIMIT 1
+      `;
+      if (byUser.length > 0) return true;
+    }
+
+    const email = params.email?.trim().toLowerCase();
+    if (email) {
+      const byEmail = await this.prisma.$queryRaw<Array<{ one: number }>>`
+        SELECT 1 AS one
+        FROM discount_redemption_logs drl
+        INNER JOIN payment_transactions pt ON pt."orderId" = drl."orderId"
+        WHERE upper(drl."discountCode") = ${code}
+          AND lower(coalesce(pt."customerEmail", '')) = ${email}
+        LIMIT 1
+      `;
+      if (byEmail.length > 0) return true;
+    }
+
+    return false;
+  }
+
+  async markVoucherConsumedForUser(userId: string, code?: string): Promise<void> {
+    const row = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { abacContext: true },
+    });
+    if (!row) return;
+    const current = (row.abacContext ?? null) as Record<string, unknown> | null;
+    const v = (current as { commerceVoucher?: Record<string, unknown> } | null)
+      ?.commerceVoucher;
+    if (!v || typeof v !== 'object') return;
+
+    const activeCode =
+      typeof v.code === 'string' ? v.code.trim().toUpperCase() : '';
+    if (!activeCode) return;
+    if (code && activeCode !== code.trim().toUpperCase()) return;
+
+    const next = {
+      ...(typeof current === 'object' && current ? current : {}),
+      commerceVoucher: {
+        ...v,
+        status: 'CONSUMED',
+        consumedAt: new Date().toISOString(),
+      },
+    };
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { abacContext: next },
+    });
+  }
+
+  async getVoucherEligibilityForUser(
+    userId: string,
+    email: string | undefined,
+    code: string,
+  ): Promise<{ eligible: boolean; reason?: string }> {
+    const normalized = code.trim().toUpperCase();
+    if (!normalized) {
+      return { eligible: false, reason: 'Kode voucher wajib diisi.' };
+    }
+    if (
+      await this.hasUserRedeemedVoucher({
+        userId,
+        email,
+        code: normalized,
+      })
+    ) {
+      return {
+        eligible: false,
+        reason:
+          'Kamu sudah pernah menggunakan voucher ini (maksimal 1x per akun).',
+      };
+    }
+    return { eligible: true };
+  }
+
   async getActiveVoucherForUser(userId: string): Promise<{
     code: string;
     productId?: string;
@@ -962,7 +1055,7 @@ export class WorkspaceIdentityService {
   } | null> {
     const row = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { abacContext: true },
+      select: { abacContext: true, email: true },
     });
     const ctx = (row?.abacContext ?? null) as any;
     const v = ctx?.commerceVoucher;
@@ -970,6 +1063,18 @@ export class WorkspaceIdentityService {
     if (v.status && String(v.status).toUpperCase() !== 'ACTIVE') return null;
     const code = typeof v.code === 'string' ? v.code.trim() : '';
     if (!code) return null;
+
+    if (
+      await this.hasUserRedeemedVoucher({
+        userId,
+        email: row?.email ?? undefined,
+        code,
+      })
+    ) {
+      await this.markVoucherConsumedForUser(userId, code);
+      return null;
+    }
+
     return {
       code,
       productId: typeof v.productId === 'string' ? v.productId : undefined,
@@ -987,7 +1092,60 @@ export class WorkspaceIdentityService {
   }): Promise<{ ok: true; voucher: { code: string; productId?: string } }> {
     const code = params.code.trim().toUpperCase();
     if (!code) {
-      throw new BadRequestException('voucher code required');
+      throw new BadRequestException('Kode voucher wajib diisi.');
+    }
+
+    // Validate the voucher row exists and is currently usable. The `discounts` table is not in
+    // the Prisma schema (managed via raw SQL in store-support); raw query is the canonical access.
+    const voucherRows = await this.prisma.$queryRaw<
+      Array<{
+        validFrom: Date;
+        validUntil: Date;
+        maxUsageLimit: number | null;
+        currentUsageCount: number;
+        maxBudgetLimit: string | null;
+        currentBudgetBurned: string | null;
+      }>
+    >`
+      SELECT
+        "validFrom",
+        "validUntil",
+        "maxUsageLimit",
+        "currentUsageCount",
+        "maxBudgetLimit"::text AS "maxBudgetLimit",
+        "currentBudgetBurned"::text AS "currentBudgetBurned"
+      FROM discounts
+      WHERE upper(code) = ${code}
+      LIMIT 1
+    `;
+    const voucher = voucherRows[0];
+    if (!voucher) {
+      throw new BadRequestException(`Kode voucher "${code}" tidak ditemukan.`);
+    }
+
+    const now = new Date();
+    if (voucher.validFrom && voucher.validFrom > now) {
+      throw new BadRequestException(
+        `Voucher belum berlaku sampai ${voucher.validFrom.toISOString().slice(0, 10)}.`,
+      );
+    }
+    if (voucher.validUntil && voucher.validUntil < now) {
+      throw new BadRequestException(
+        `Voucher sudah berakhir pada ${voucher.validUntil.toISOString().slice(0, 10)}.`,
+      );
+    }
+    if (
+      voucher.maxUsageLimit !== null &&
+      voucher.currentUsageCount >= voucher.maxUsageLimit
+    ) {
+      throw new BadRequestException('Kuota voucher sudah habis.');
+    }
+    if (
+      voucher.maxBudgetLimit !== null &&
+      voucher.currentBudgetBurned !== null &&
+      Number(voucher.currentBudgetBurned) >= Number(voucher.maxBudgetLimit)
+    ) {
+      throw new BadRequestException('Budget promo voucher ini sudah habis.');
     }
 
     const row = await this.prisma.user.findUnique({
@@ -995,6 +1153,18 @@ export class WorkspaceIdentityService {
       select: { abacContext: true, email: true },
     });
     if (!row) throw new NotFoundException('User not found');
+
+    if (
+      await this.hasUserRedeemedVoucher({
+        userId: params.userId,
+        email: row.email ?? undefined,
+        code,
+      })
+    ) {
+      throw new BadRequestException(
+        'Kamu sudah pernah menggunakan voucher ini (maksimal 1x per akun).',
+      );
+    }
     const current = (row.abacContext ?? null) as any;
     const next = {
       ...(typeof current === 'object' && current ? current : {}),

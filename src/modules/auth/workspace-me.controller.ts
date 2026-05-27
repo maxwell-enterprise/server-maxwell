@@ -7,6 +7,7 @@ import {
   Post,
   Param,
   Patch,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
@@ -44,6 +45,18 @@ export class WorkspaceMeController {
   async getVoucher(@Req() req: { user: JwtUserPayload }) {
     const v = await this.workspace.getActiveVoucherForUser(req.user.sub);
     return { voucher: v };
+  }
+
+  @Get('voucher/eligibility')
+  async voucherEligibility(
+    @Req() req: { user: JwtUserPayload },
+    @Query('code') code?: string,
+  ) {
+    return this.workspace.getVoucherEligibilityForUser(
+      req.user.sub,
+      req.user.email,
+      String(code ?? ''),
+    );
   }
 
   @Post('voucher/claim')
