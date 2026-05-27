@@ -17,11 +17,13 @@ import { ProductsModule } from '../products/products.module';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 import { StoreSupportModule } from '../store-support/store-support.module';
 import { AutomationsModule } from '../automations/automations.module';
+import { WorkspaceIdentityModule } from '../workspace-identity/workspace-identity.module';
 
 @Module({
   imports: [
     MidtransModule,
     AuthModule,
+    WorkspaceIdentityModule,
     MembersModule,
     CampaignsModule,
     WalletModule,
