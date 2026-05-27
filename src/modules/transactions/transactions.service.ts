@@ -15,9 +15,11 @@ import type { PoolClient } from 'pg';
 import { Transaction, TransactionItem, Refund } from './entities';
 import {
   CheckoutDto,
+  CheckoutConfigResponseDto,
   TransactionQueryDto,
   CreateRefundDto,
   MidtransWebhookDto,
+  UpdateCheckoutConfigDto,
 } from './dto';
 import { DbService } from '../../common/db.service';
 import { AppConfigService } from '../../common/config/app-config.service';
@@ -31,6 +33,7 @@ import { AutomationsEmitService } from '../automations/automations-emit.service'
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
+  private static readonly CHECKOUT_SETTINGS_ID = 'CHECKOUT_SETTINGS';
 
   constructor(
     private readonly db: DbService,
@@ -69,6 +72,55 @@ export class TransactionsService {
       .slice(0, 24)
       .toUpperCase();
     return `ORD-${purpose.toUpperCase()}-${digest}`;
+  }
+
+  async getCheckoutConfig(): Promise<CheckoutConfigResponseDto> {
+    return {
+      ppnRatePercent: await this.resolveCheckoutPpnRatePercent(),
+    };
+  }
+
+  async updateCheckoutConfig(
+    dto: UpdateCheckoutConfigDto,
+  ): Promise<CheckoutConfigResponseDto> {
+    const next = Math.max(0, Math.min(100, Number(dto.ppnRatePercent) || 0));
+    await this.db.query(
+      `
+      insert into system_settings (id, config, "updatedAt")
+      values ($1, jsonb_build_object('ppnRatePercent', $2::numeric), now())
+      on conflict (id) do update set
+        config = coalesce(system_settings.config, '{}'::jsonb) || excluded.config,
+        "updatedAt" = now()
+      `,
+      [TransactionsService.CHECKOUT_SETTINGS_ID, next],
+    );
+    return { ppnRatePercent: next };
+  }
+
+  private async resolveCheckoutPpnRatePercent(): Promise<number> {
+    try {
+      const result = await this.db.query<{ ppnRatePercent: unknown }>(
+        `
+        select config ->> 'ppnRatePercent' as "ppnRatePercent"
+        from system_settings
+        where id = $1
+        limit 1
+        `,
+        [TransactionsService.CHECKOUT_SETTINGS_ID],
+      );
+      const raw = result.rows[0]?.ppnRatePercent;
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        return Math.max(0, Math.min(100, parsed));
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Checkout config fallback to env: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return this.config.paymentPpnRatePercent;
   }
 
   /** Row from `products` for server-side pricing (anti-tamper). */
@@ -1335,7 +1387,7 @@ export class TransactionsService {
     }
 
     const taxableAmount = Math.max(0, subtotal - Math.round(discountAmount));
-    const ppnRate = this.config.paymentPpnRatePercent / 100;
+    const ppnRate = (await this.resolveCheckoutPpnRatePercent()) / 100;
     const taxAmount = Math.round(taxableAmount * ppnRate);
     const totalAmount = taxableAmount + taxAmount;
 

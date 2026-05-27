@@ -6,6 +6,7 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Body,
   Param,
   Query,
@@ -22,25 +23,47 @@ import {
   MidtransWebhookDtoSchema,
   PublicTransactionStatusDtoSchema,
   SimulatePaymentSettleDtoSchema,
+  UpdateCheckoutConfigDtoSchema,
 } from './dto';
 import type {
   CheckoutDto,
+  CheckoutConfigResponseDto,
   TransactionQueryDto,
   CreateRefundDto,
   MidtransWebhookDto,
   PublicTransactionStatusDto,
   SimulatePaymentSettleDto,
+  UpdateCheckoutConfigDto,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../auth/optional-jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import { RateLimit } from '../../common/security/rate-limit.decorator';
-import { assertFinanceControllerOnly } from '../../common/security/access-policy';
+import {
+  assertFinanceControllerOnly,
+  assertWorkspaceStaffOnly,
+} from '../../common/security/access-policy';
 
 @Controller('transactions')
 export class TransactionsController {
   constructor(private readonly transactionsService: TransactionsService) {}
+
+  @Get('checkout-config')
+  getCheckoutConfig(): Promise<CheckoutConfigResponseDto> {
+    return this.transactionsService.getCheckoutConfig();
+  }
+
+  @Patch('checkout-config')
+  @UseGuards(JwtAuthGuard)
+  patchCheckoutConfig(
+    @Req() req: { user: JwtUserPayload },
+    @Body(new ZodValidationPipe(UpdateCheckoutConfigDtoSchema))
+    dto: UpdateCheckoutConfigDto,
+  ): Promise<CheckoutConfigResponseDto> {
+    assertWorkspaceStaffOnly(req.user, 'Checkout PPN configuration');
+    return this.transactionsService.updateCheckoutConfig(dto);
+  }
 
   /**
    * Checkout / Create transaction

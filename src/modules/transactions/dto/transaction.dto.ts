@@ -36,6 +36,20 @@ export const CheckoutDtoSchema = z.object({
 
 export type CheckoutDto = z.infer<typeof CheckoutDtoSchema>;
 
+export const CheckoutConfigResponseDtoSchema = z.object({
+  ppnRatePercent: z.number().min(0).max(100),
+});
+
+export type CheckoutConfigResponseDto = z.infer<
+  typeof CheckoutConfigResponseDtoSchema
+>;
+
+export const UpdateCheckoutConfigDtoSchema = z.object({
+  ppnRatePercent: z.coerce.number().min(0).max(100),
+});
+
+export type UpdateCheckoutConfigDto = z.infer<typeof UpdateCheckoutConfigDtoSchema>;
+
 // =============================================================================
 // TRANSACTION QUERY DTO
 // =============================================================================
