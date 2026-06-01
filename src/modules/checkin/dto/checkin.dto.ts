@@ -108,3 +108,11 @@ export const ManualCheckinDtoSchema = z.object({
 });
 
 export type ManualCheckinDto = z.infer<typeof ManualCheckinDtoSchema>;
+
+export const SelfCheckinDtoSchema = z.object({
+  eventId: z.string().min(1),
+  method: z.enum(['SELF_SCAN', 'LINK_CLICKED']).default('SELF_SCAN'),
+  venueQr: z.string().min(1).optional(),
+});
+
+export type SelfCheckinDto = z.infer<typeof SelfCheckinDtoSchema>;

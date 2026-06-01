@@ -20,6 +20,7 @@ import {
   OfflineSyncBatchDtoSchema,
   CheckinQueryDtoSchema,
   ManualCheckinDtoSchema,
+  SelfCheckinDtoSchema,
 } from './dto';
 import type {
   ScanQrDto,
@@ -27,6 +28,7 @@ import type {
   OfflineSyncBatchDto,
   CheckinQueryDto,
   ManualCheckinDto,
+  SelfCheckinDto,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -159,6 +161,25 @@ export class CheckinController {
       dto.memberId,
       dto.eventId,
       dto.method,
+    );
+  }
+
+  /**
+   * Member-safe attendance recording for self scan and online join.
+   */
+  @Post('self')
+  @UseGuards(JwtAuthGuard)
+  selfCheckin(
+    @Req() req: { user: JwtUserPayload },
+    @Body(new ZodValidationPipe(SelfCheckinDtoSchema))
+    dto: SelfCheckinDto,
+  ) {
+    return this.checkinService.selfCheckin(
+      String(req.user.sub),
+      req.user.email,
+      dto.eventId,
+      dto.method,
+      dto.venueQr,
     );
   }
 

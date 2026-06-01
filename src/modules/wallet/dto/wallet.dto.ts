@@ -127,6 +127,19 @@ export type WalletTransactionLogDto = z.infer<
   typeof WalletTransactionLogDtoSchema
 >;
 
+export const RedeemEventCreditDtoSchema = z.object({
+  walletItemId: z.string().min(1).max(120),
+  eventId: z.string().min(1).max(120),
+  assignee: z.object({
+    type: z.enum(['MYSELF', 'GUEST', 'DRAFT']),
+    name: z.string().max(255).optional().default(''),
+    email: z.string().email().optional().or(z.literal('')).default(''),
+    phone: z.string().max(50).optional().default(''),
+  }),
+});
+
+export type RedeemEventCreditDto = z.infer<typeof RedeemEventCreditDtoSchema>;
+
 export const GiftAllocationDtoSchema = z.object({
   id: z.string().min(1).max(120),
   sourceUserId: z.string().min(1).max(100),

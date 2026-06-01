@@ -20,6 +20,7 @@ import {
   ClaimGiftDtoSchema,
   CreateGiftDtoSchema,
   GiftAllocationDtoSchema,
+  RedeemEventCreditDtoSchema,
   RevokeGiftDtoSchema,
   TeamMemberDtoSchema,
   TeamMembersQueryDtoSchema,
@@ -36,6 +37,7 @@ import type {
   ClaimGiftDto,
   CreateGiftDto,
   GiftAllocationDto,
+  RedeemEventCreditDto,
   RevokeGiftDto,
   TeamMemberDto,
   TeamMembersQueryDto,
@@ -98,6 +100,20 @@ export class WalletController {
   @Get('items/:id')
   getWalletItemContract(@Param('id') id: string) {
     return this.walletService.getWalletItemContractById(id);
+  }
+
+  @Post('redeem-event-credit')
+  @UseGuards(JwtAuthGuard)
+  redeemEventCredit(
+    @Req() req: { user: JwtUserPayload },
+    @Body(new ZodValidationPipe(RedeemEventCreditDtoSchema))
+    dto: RedeemEventCreditDto,
+  ) {
+    return this.walletService.redeemEventCredit(
+      String(req.user.sub),
+      req.user.email,
+      dto,
+    );
   }
 
   @Put('items/bulk')
