@@ -27,6 +27,7 @@ import {
   ClaimGiftDto,
   RevokeGiftDto,
   WalletHistoryQueryDto,
+  RedeemEventCreditDto,
 } from './dto';
 import { DbService } from '../../common/db.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -72,6 +73,23 @@ interface WalletTransactionRow extends WalletTransaction {
 
 interface TeamMemberRow extends CorporateTeamMemberContract {
   internalId: string;
+}
+
+interface EventRedeemRow {
+  internalId: string;
+  id: string;
+  name: string;
+  date: string | Date | null;
+  location: string | null;
+  locationMode: string | null;
+  onlineMeetingLink: string | null;
+  creditTags: string[] | null;
+  tiers:
+    | Array<{
+        id: string;
+        name: string;
+      }>
+    | null;
 }
 
 export interface WalletMemberHubContext {
@@ -598,6 +616,264 @@ export class WalletService {
       }
       return results;
     });
+  }
+
+  async redeemEventCredit(
+    userId: string,
+    userEmail: string,
+    dto: RedeemEventCreditDto,
+  ): Promise<WalletItemContract> {
+    const senderName = await this.resolveAppUserName(userId);
+    const redemption = await this.db.withTransaction(async (client) => {
+      const pass = await this.lockWalletItemRow(dto.walletItemId, client);
+      if (pass.userId !== userId.trim()) {
+        throw new ForbiddenException(
+          'You can only redeem event credits from your own wallet',
+        );
+      }
+      if (pass.type !== 'CREDIT_PASS') {
+        throw new BadRequestException('Selected wallet item is not a credit pass');
+      }
+      if (pass.status !== 'ACTIVE') {
+        throw new BadRequestException(
+          `Credit pass is ${pass.status.toLowerCase()} and cannot be redeemed`,
+        );
+      }
+
+      const event = await this.findRedeemableEvent(dto.eventId, client);
+      this.assertPassCanAccessEvent(pass.meta, event);
+
+      const assigneeType = dto.assignee.type;
+      const assigneeName =
+        dto.assignee.name?.trim() ||
+        (assigneeType === 'MYSELF' ? await this.resolveAppUserName(userId, client) : '');
+      const assigneeEmail =
+        dto.assignee.email?.trim() ||
+        (assigneeType === 'MYSELF' ? userEmail.trim().toLowerCase() : '');
+      const assigneePhone = dto.assignee.phone?.trim() || '';
+
+      if (assigneeType === 'GUEST' && (!assigneeName || !assigneeEmail)) {
+        throw new BadRequestException(
+          'Guest redemption requires recipient name and email',
+        );
+      }
+
+      const unlimited = Boolean(pass.meta?.isUnlimited);
+      const currentCredits = this.readPassCredits(pass.meta);
+      if (!unlimited && currentCredits < 1) {
+        throw new BadRequestException('Insufficient credits');
+      }
+
+      const nextCredits = unlimited ? currentCredits : currentCredits - 1;
+      const updatedPassMeta = {
+        ...(pass.meta ?? {}),
+        credits: nextCredits,
+        balance: nextCredits,
+        lastRedeemedEventId: event.id,
+        lastRedeemedAt: new Date().toISOString(),
+      };
+
+      await this.upsertWalletItem(
+        {
+          id: pass.id,
+          userId: pass.userId,
+          type: pass.type,
+          title: pass.title,
+          subtitle: pass.subtitle,
+          expiryDate: pass.expiryDate ?? null,
+          qrData: pass.qrData ?? null,
+          status: pass.status,
+          isTransferable: pass.isTransferable,
+          sponsoredBy: pass.sponsoredBy ?? null,
+          meta: updatedPassMeta,
+        },
+        client,
+      );
+
+      await this.insertWalletTransaction(
+        {
+          walletItemId: pass.internalId,
+          userId: pass.userId,
+          transactionType: 'USAGE',
+          amountChange: unlimited ? 0 : -1,
+          balanceAfter: nextCredits,
+          referenceId: event.id,
+          referenceName: `Redeemed for ${event.name}`,
+        },
+        client,
+      );
+
+      const targetTier = this.resolveRedeemedTicketTier(pass.meta, event);
+      const ticketPublicId = this.buildWalletPublicId('W-TKT');
+      const ticketMeta: Record<string, unknown> = {
+        eventId: event.id,
+        location: event.location ?? null,
+        locationMode: event.locationMode ?? null,
+        onlineMeetingLink: event.onlineMeetingLink ?? null,
+        targetTier,
+        sourceCreditPassId: pass.id,
+        sourceCreditTag:
+          typeof pass.meta?.creditTag === 'string' ? pass.meta.creditTag : null,
+      };
+
+      if (assigneeType === 'DRAFT') {
+        ticketMeta.redemptionMode = 'DRAFT';
+      } else {
+        ticketMeta.recipientName = assigneeName;
+        ticketMeta.recipientEmail = assigneeEmail;
+        ticketMeta.recipientPhone = assigneePhone;
+      }
+
+      let guestGift:
+        | {
+            publicId: string;
+            recipientEmail: string;
+            itemName: string;
+          }
+        | undefined;
+
+      if (assigneeType === 'GUEST') {
+        const giftPublicId = this.buildWalletPublicId('GFT');
+        ticketMeta.pendingClaimIssuedAt = new Date().toISOString();
+        ticketMeta.giftAllocationId = giftPublicId;
+        guestGift = {
+          publicId: giftPublicId,
+          recipientEmail: assigneeEmail,
+          itemName: event.name,
+        };
+      }
+
+      const ticket = await this.upsertWalletItem(
+        {
+          id: ticketPublicId,
+          userId: userId.trim(),
+          type: 'TICKET',
+          title: event.name,
+          subtitle:
+            assigneeType === 'MYSELF'
+              ? targetTier
+              : assigneeType === 'DRAFT'
+                ? 'Draft - assign later'
+                : `Guest: ${assigneeName}`,
+          expiryDate: this.toNullableTimestamp(event.date),
+          qrData: `TICKET:${event.id}:${userId.trim()}:${ticketPublicId}`,
+          status: assigneeType === 'GUEST' ? 'PENDING_CLAIM' : 'ACTIVE',
+          isTransferable: assigneeType !== 'MYSELF',
+          sponsoredBy: assigneeType === 'MYSELF' ? null : userId.trim(),
+          meta: ticketMeta,
+        },
+        client,
+      );
+      const issuedWallet = await this.resolveWalletOwner(ticket.id, client);
+
+      await this.insertWalletTransaction(
+        {
+          walletItemId: issuedWallet.internalId,
+          userId: userId.trim(),
+          transactionType: 'ISSUANCE',
+          amountChange: 1,
+          balanceAfter: 1,
+          referenceId: event.id,
+          referenceName: `Ticket issued for ${event.name}`,
+        },
+        client,
+      );
+
+      if (assigneeType === 'GUEST' && assigneeEmail && guestGift) {
+        await this.ensureGiftAllocationRuntimeColumns(client);
+        const claimToken = this.buildGiftClaimToken();
+        const tokenExpiresAt = this.addDays(new Date(), 7).toISOString();
+        await client.query(
+          `
+          insert into gift_allocations (
+            public_id,
+            "sourceUserId",
+            "sourceUserName",
+            "entitlementId",
+            "itemName",
+            "targetEmail",
+            "recipientPhone",
+            "claimToken",
+            "tokenExpiresAt",
+            "deliveryMethod",
+            "giftMessage",
+            status,
+            "createdAt"
+          )
+          values (
+            $1,
+            $2,
+            $3,
+            $4::uuid,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9::timestamptz,
+            'EMAIL',
+            $10,
+            'PENDING',
+            now()
+          )
+          `,
+          [
+            guestGift.publicId,
+            userId.trim(),
+            senderName,
+            issuedWallet.internalId,
+            event.name,
+            assigneeEmail,
+            assigneePhone || null,
+            claimToken,
+            tokenExpiresAt,
+            `Redeemed for ${assigneeName}`,
+          ],
+        );
+
+        await this.insertWalletTransaction(
+          {
+            walletItemId: issuedWallet.internalId,
+            userId: userId.trim(),
+            transactionType: 'TRANSFER_OUT',
+            amountChange: 0,
+            balanceAfter: 0,
+            referenceId: guestGift.publicId,
+            referenceName: `Guest claim pending: ${event.name}`,
+          },
+          client,
+        );
+
+        await this.ensureShadowMember(
+          assigneeEmail,
+          assigneeName || assigneeEmail,
+          assigneePhone,
+          client,
+        );
+      }
+
+      return {
+        ticket,
+        guestGift,
+      };
+    });
+
+    if (redemption.guestGift?.recipientEmail) {
+      void this.auth
+        .sendGiftTicketRecipientSupabaseInvite({
+          email: redemption.guestGift.recipientEmail,
+          itemName: redemption.guestGift.itemName,
+          donorName: senderName,
+        })
+        .catch((err: unknown) => {
+          this.logger.warn(
+            `Post-redeem guest invite async error (${redemption.guestGift?.recipientEmail}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        });
+    }
+
+    return redemption.ticket;
   }
 
   async getWalletHistory(userId: string): Promise<WalletTransaction[]> {
@@ -2102,6 +2378,113 @@ export class WalletService {
   ): string | null {
     const value = meta?.recipientPhone;
     return typeof value === 'string' && value.trim() ? value.trim() : null;
+  }
+
+  private async findRedeemableEvent(
+    identifier: string,
+    executor: SqlExecutor = this.db,
+  ): Promise<EventRedeemRow> {
+    const result = await executor.query<EventRedeemRow>(
+      `
+      select
+        e.id::text as "internalId",
+        coalesce(e.public_id, e.id::text) as id,
+        e.name,
+        e.date,
+        e.location,
+        e."locationMode" as "locationMode",
+        e."onlineMeetingLink" as "onlineMeetingLink",
+        e."creditTags" as "creditTags",
+        e.tiers
+      from events e
+      where e.public_id = $1 or e.id::text = $1
+      limit 1
+      `,
+      [identifier.trim()],
+    );
+
+    const event = result.rows[0];
+    if (!event) {
+      throw new NotFoundException(`Event ${identifier} not found`);
+    }
+    return event;
+  }
+
+  private assertPassCanAccessEvent(
+    meta: Record<string, unknown> | undefined,
+    event: EventRedeemRow,
+  ): void {
+    const passTag =
+      typeof meta?.creditTag === 'string'
+        ? meta.creditTag.trim()
+        : typeof meta?.tag === 'string'
+          ? meta.tag.trim()
+          : '';
+    const eventTags = (event.creditTags ?? [])
+      .map((tag) => (typeof tag === 'string' ? tag.trim() : ''))
+      .filter(Boolean);
+
+    if (eventTags.length > 0 && passTag && !eventTags.includes(passTag)) {
+      throw new BadRequestException(
+        'This credit pass cannot be redeemed for the selected event',
+      );
+    }
+  }
+
+  private readPassCredits(meta: Record<string, unknown> | undefined): number {
+    const candidates = [meta?.credits, meta?.balance, meta?.initialBalance];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+        return candidate;
+      }
+      if (typeof candidate === 'string' && candidate.trim()) {
+        const parsed = Number(candidate);
+        if (Number.isFinite(parsed)) {
+          return parsed;
+        }
+      }
+    }
+    return 0;
+  }
+
+  private resolveRedeemedTicketTier(
+    meta: Record<string, unknown> | undefined,
+    event: EventRedeemRow,
+  ): string {
+    const directTier =
+      typeof meta?.targetTier === 'string' && meta.targetTier.trim()
+        ? meta.targetTier.trim()
+        : '';
+    if (directTier) {
+      return directTier;
+    }
+
+    const firstTier = event.tiers?.[0];
+    if (firstTier?.id?.trim()) {
+      return firstTier.id.trim();
+    }
+    if (firstTier?.name?.trim()) {
+      return firstTier.name.trim();
+    }
+
+    return 'GENERAL';
+  }
+
+  private async resolveAppUserName(
+    userId: string,
+    executor: SqlExecutor = this.db,
+  ): Promise<string> {
+    const result = await executor.query<{ name: string | null }>(
+      `
+      select coalesce(nullif(trim(name), ''), nullif(trim(email), '')) as name
+      from "User"
+      where id = $1
+      limit 1
+      `,
+      [userId.trim()],
+    );
+
+    return result.rows[0]?.name?.trim() || 'Member';
   }
 
   private buildWalletPublicId(prefix = 'WLT'): string {
