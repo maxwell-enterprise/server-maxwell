@@ -12,6 +12,7 @@ import {
   WebhooksController,
 } from './transactions.controller';
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { PaidConversionsModule } from '../paid-conversions/paid-conversions.module';
 import { WalletModule } from '../wallet/wallet.module';
 import { ProductsModule } from '../products/products.module';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
@@ -26,6 +27,7 @@ import { WorkspaceIdentityModule } from '../workspace-identity/workspace-identit
     WorkspaceIdentityModule,
     MembersModule,
     CampaignsModule,
+    PaidConversionsModule,
     WalletModule,
     ProductsModule,
     StoreSupportModule,

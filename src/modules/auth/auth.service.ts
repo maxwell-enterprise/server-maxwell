@@ -643,6 +643,11 @@ export class AuthService {
     role: string;
     roles: string[];
     phone: string | null;
+    jobTitle: string | null;
+    company: string | null;
+    domicile: string | null;
+    instagram: string | null;
+    linkedinUrl: string | null;
     abacContext: unknown;
     customRole: {
       id: string;
@@ -660,12 +665,21 @@ export class AuthService {
         email: true,
         name: true,
         image: true,
+        phone: true,
+        jobTitle: true,
+        company: true,
+        domicile: true,
+        instagram: true,
+        linkedinUrl: true,
         appRole: true,
         abacContext: true,
       },
     });
     if (!row?.email) return null;
-    const phone = AuthService.readSelfProfilePhone(row.abacContext);
+    const phone =
+      (typeof row.phone === 'string' && row.phone.trim()
+        ? row.phone.trim()
+        : null) ?? AuthService.readSelfProfilePhone(row.abacContext);
     const assignedRoles = parseAppRoleList(row.appRole);
     const activeRole = assignedRoles.includes(parseAppRoleString(activeRoleHint))
       ? parseAppRoleString(activeRoleHint)
@@ -685,6 +699,11 @@ export class AuthService {
       role: activeRole,
       roles: assignedRoles,
       phone,
+      jobTitle: row.jobTitle?.trim() || null,
+      company: row.company?.trim() || null,
+      domicile: row.domicile?.trim() || null,
+      instagram: row.instagram?.trim() || null,
+      linkedinUrl: row.linkedinUrl?.trim() || null,
       abacContext: row.abacContext,
       customRole: assignment,
       activeCustomRoleId: finalActiveCustomRoleId,

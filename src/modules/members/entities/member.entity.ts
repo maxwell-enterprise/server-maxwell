@@ -15,6 +15,7 @@ export interface SocialProfile {
   occupation: string;
   businessType: string;
   communities: string[];
+  instagram?: string;
 }
 
 export interface MemberEngagement {
@@ -41,6 +42,8 @@ export class Member {
   lifecycleStage: MemberLifecycleStage;
   company?: string;
   jobTitle?: string;
+  domicile?: string;
+  instagram?: string;
   industry?: string;
   tags?: string[];
   address?: MemberAddress;

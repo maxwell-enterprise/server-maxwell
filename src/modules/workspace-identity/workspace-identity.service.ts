@@ -1,11 +1,14 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
+  forwardRef,
 } from '@nestjs/common';
+import { MembersService } from '../members/members.service';
 import { Prisma } from '@prisma/client';
 import nodemailer from 'nodemailer';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -56,6 +59,8 @@ export class WorkspaceIdentityService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accountDeletionBroadcast: AccountDeletionBroadcastService,
+    @Inject(forwardRef(() => MembersService))
+    private readonly members: MembersService,
   ) {}
 
   private get accountDeletionRequestDelegate(): AccountDeletionRequestDelegate {
@@ -1238,6 +1243,11 @@ export class WorkspaceIdentityService {
       email?: string;
       image?: string | null;
       phone?: string;
+      jobTitle?: string;
+      company?: string;
+      domicile?: string;
+      instagram?: string;
+      linkedinUrl?: string;
     },
   ): Promise<{
     ok: true;
@@ -1247,13 +1257,40 @@ export class WorkspaceIdentityService {
       email: string;
       avatarUrl: string | null;
       phone: string | null;
+      jobTitle: string | null;
+      company: string | null;
+      domicile: string | null;
+      instagram: string | null;
+      linkedinUrl: string | null;
     };
   }> {
+    const normalizeOptionalText = (
+      value: string | undefined,
+      maxLen: number,
+      label: string,
+    ): string | null | undefined => {
+      if (value === undefined) return undefined;
+      const trimmed = String(value).trim();
+      if (!trimmed) return null;
+      if (trimmed.length > maxLen) {
+        throw new BadRequestException(`${label} is too long`);
+      }
+      return trimmed;
+    };
+
     const nextName = input.fullName?.trim();
     const nextEmail = input.email?.trim().toLowerCase();
     const nextImageRaw = input.image;
-    const nextPhoneRaw =
-      input.phone !== undefined ? String(input.phone).trim() : undefined;
+    const nextPhoneRaw = normalizeOptionalText(input.phone, 40, 'Phone number');
+    const nextJobTitle = normalizeOptionalText(input.jobTitle, 255, 'Job title');
+    const nextCompany = normalizeOptionalText(input.company, 255, 'Company');
+    const nextDomicile = normalizeOptionalText(input.domicile, 255, 'Domicile');
+    const nextInstagram = normalizeOptionalText(input.instagram, 120, 'Instagram');
+    const nextLinkedinUrl = normalizeOptionalText(
+      input.linkedinUrl,
+      500,
+      'LinkedIn URL',
+    );
 
     if (nextName !== undefined && nextName.length < 2) {
       throw new BadRequestException('Full name must be at least 2 characters');
@@ -1261,9 +1298,22 @@ export class WorkspaceIdentityService {
     if (nextEmail !== undefined && !nextEmail.includes('@')) {
       throw new BadRequestException('Invalid email address');
     }
-    if (nextPhoneRaw !== undefined && nextPhoneRaw.length > 40) {
-      throw new BadRequestException('Phone number is too long');
-    }
+
+    const requireProfileField = (
+      value: string | null | undefined,
+      label: string,
+    ): void => {
+      if (value === undefined || value === null || !String(value).trim()) {
+        throw new BadRequestException(`${label} is required`);
+      }
+    };
+
+    requireProfileField(nextName, 'Full name');
+    requireProfileField(nextEmail, 'Email');
+    requireProfileField(nextPhoneRaw, 'Phone');
+    requireProfileField(nextJobTitle, 'Job title');
+    requireProfileField(nextCompany, 'Company');
+    requireProfileField(nextDomicile, 'Domicile');
 
     let nextImage: string | null | undefined = undefined;
     if (nextImageRaw !== undefined) {
@@ -1288,13 +1338,17 @@ export class WorkspaceIdentityService {
       }
     }
 
+    const previousUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, abacContext: true },
+    });
+    const lookupEmail =
+      previousUser?.email?.trim().toLowerCase() ?? nextEmail ?? '';
+
     try {
       let mergedAbac: Prisma.InputJsonValue | undefined = undefined;
       if (nextPhoneRaw !== undefined) {
-        const existing = await this.prisma.user.findUnique({
-          where: { id: userId },
-          select: { abacContext: true },
-        });
+        const existing = previousUser;
         const currentCtx =
           existing?.abacContext &&
           typeof existing.abacContext === 'object' &&
@@ -1307,7 +1361,7 @@ export class WorkspaceIdentityService {
           !Array.isArray(currentCtx.selfProfile)
             ? { ...(currentCtx.selfProfile as Record<string, unknown>) }
             : {};
-        prevSelf.phone = nextPhoneRaw.length > 0 ? nextPhoneRaw : null;
+        prevSelf.phone = nextPhoneRaw;
         mergedAbac = {
           ...currentCtx,
           selfProfile: prevSelf,
@@ -1320,6 +1374,14 @@ export class WorkspaceIdentityService {
           ...(nextName !== undefined ? { name: nextName } : {}),
           ...(nextEmail !== undefined ? { email: nextEmail } : {}),
           ...(nextImage !== undefined ? { image: nextImage } : {}),
+          ...(nextPhoneRaw !== undefined ? { phone: nextPhoneRaw } : {}),
+          ...(nextJobTitle !== undefined ? { jobTitle: nextJobTitle } : {}),
+          ...(nextCompany !== undefined ? { company: nextCompany } : {}),
+          ...(nextDomicile !== undefined ? { domicile: nextDomicile } : {}),
+          ...(nextInstagram !== undefined ? { instagram: nextInstagram } : {}),
+          ...(nextLinkedinUrl !== undefined
+            ? { linkedinUrl: nextLinkedinUrl }
+            : {}),
           ...(mergedAbac !== undefined ? { abacContext: mergedAbac } : {}),
         },
         select: {
@@ -1327,19 +1389,29 @@ export class WorkspaceIdentityService {
           email: true,
           name: true,
           image: true,
+          phone: true,
+          jobTitle: true,
+          company: true,
+          domicile: true,
+          instagram: true,
+          linkedinUrl: true,
           abacContext: true,
         },
       });
 
-      const phoneFromCtx = (() => {
-        const abac = row.abacContext;
-        if (!abac || typeof abac !== 'object' || Array.isArray(abac))
-          return null;
-        const sp = (abac as Record<string, unknown>).selfProfile;
-        if (!sp || typeof sp !== 'object' || Array.isArray(sp)) return null;
-        const p = (sp as Record<string, unknown>).phone;
-        return typeof p === 'string' && p.trim() ? p.trim() : null;
-      })();
+      const phoneResolved =
+        (typeof row.phone === 'string' && row.phone.trim()
+          ? row.phone.trim()
+          : null) ??
+        (() => {
+          const abac = row.abacContext;
+          if (!abac || typeof abac !== 'object' || Array.isArray(abac))
+            return null;
+          const sp = (abac as Record<string, unknown>).selfProfile;
+          if (!sp || typeof sp !== 'object' || Array.isArray(sp)) return null;
+          const p = (sp as Record<string, unknown>).phone;
+          return typeof p === 'string' && p.trim() ? p.trim() : null;
+        })();
 
       await this.appendSecurityAudit(userId, 'SELF_PROFILE_UPDATED', {
         changed: {
@@ -1347,7 +1419,24 @@ export class WorkspaceIdentityService {
           email: nextEmail !== undefined,
           image: nextImage !== undefined,
           phone: nextPhoneRaw !== undefined,
+          jobTitle: nextJobTitle !== undefined,
+          company: nextCompany !== undefined,
+          domicile: nextDomicile !== undefined,
+          instagram: nextInstagram !== undefined,
+          linkedinUrl: nextLinkedinUrl !== undefined,
         },
+      });
+
+      await this.members.syncFromWorkspaceUserProfile({
+        lookupEmail,
+        fullName: row.name ?? nextName ?? '',
+        email: row.email ?? nextEmail ?? '',
+        phone: phoneResolved ?? nextPhoneRaw ?? '',
+        jobTitle: row.jobTitle?.trim() || nextJobTitle || '',
+        company: row.company?.trim() || nextCompany || '',
+        domicile: row.domicile?.trim() || nextDomicile || '',
+        instagram: row.instagram?.trim() || nextInstagram,
+        linkedinUrl: row.linkedinUrl?.trim() || nextLinkedinUrl,
       });
 
       return {
@@ -1357,7 +1446,12 @@ export class WorkspaceIdentityService {
           fullName: row.name ?? row.email?.split('@')[0] ?? 'User',
           email: row.email ?? '',
           avatarUrl: row.image,
-          phone: phoneFromCtx,
+          phone: phoneResolved,
+          jobTitle: row.jobTitle?.trim() || null,
+          company: row.company?.trim() || null,
+          domicile: row.domicile?.trim() || null,
+          instagram: row.instagram?.trim() || null,
+          linkedinUrl: row.linkedinUrl?.trim() || null,
         },
       };
     } catch (error) {

@@ -38,6 +38,8 @@ interface MemberRow {
   lifecycleStage: MemberLifecycleStage;
   company: string | null;
   jobTitle: string | null;
+  domicile: string | null;
+  instagram: string | null;
   industry: string | null;
   tags: string[] | null;
   address: MemberAddress | null;
@@ -188,6 +190,103 @@ export class MembersService {
    * Wallet grants still use Prisma `User.id` when the buyer has a workspace account;
    * this ensures `members` always has a lead for ops/reporting after a paid order.
    */
+  /**
+   * Mirror Account Settings (`User` profile) into CRM `members` by email.
+   * Creates an IDENTIFIED row when missing; never changes lifecycle stage on update.
+   */
+  async syncFromWorkspaceUserProfile(input: {
+    lookupEmail: string;
+    fullName: string;
+    email: string;
+    phone: string;
+    jobTitle: string;
+    company: string;
+    domicile: string;
+    instagram?: string | null;
+    linkedinUrl?: string | null;
+  }): Promise<void> {
+    try {
+      const lookupEmail = input.lookupEmail.trim().toLowerCase();
+      const email = input.email.trim().toLowerCase();
+      if (!email.includes('@')) return;
+
+      const phone = input.phone.trim();
+      const name = input.fullName.trim().slice(0, 255);
+      const jobTitle = input.jobTitle.trim().slice(0, 255);
+      const company = input.company.trim().slice(0, 255);
+      const domicile = input.domicile.trim().slice(0, 255);
+      const instagram = input.instagram?.trim().slice(0, 120) || null;
+      const linkedinUrl = input.linkedinUrl?.trim().slice(0, 500) || null;
+
+      const memberId = await this.findMemberIdByEmail(lookupEmail || email);
+
+      const buildAddress = (
+        existing?: MemberAddress | null,
+      ): MemberAddress => ({
+        ...(existing ?? {}),
+        city: domicile,
+        country: existing?.country?.trim() || 'Indonesia',
+      });
+
+      const buildSocialProfile = (
+        existing?: SocialProfile | null,
+      ): SocialProfile => {
+        const profile: SocialProfile = {
+          igVerified: existing?.igVerified ?? false,
+          igFollowers: existing?.igFollowers ?? 0,
+          businessAccounts: existing?.businessAccounts ?? [],
+          occupation: existing?.occupation ?? '',
+          businessType: existing?.businessType ?? '',
+          communities: existing?.communities ?? [],
+        };
+        if (instagram) {
+          profile.instagram = instagram;
+        }
+        return profile;
+      };
+
+      if (memberId) {
+        const existing = await this.findOne(memberId);
+        await this.update(memberId, {
+          name,
+          ...(email !== existing.email.trim().toLowerCase() ? { email } : {}),
+          phone,
+          jobTitle,
+          company,
+          domicile,
+          instagram: instagram ?? undefined,
+          linkedinUrl: linkedinUrl ?? undefined,
+          address: buildAddress(existing.address),
+          socialProfile: buildSocialProfile(existing.socialProfile),
+        });
+        return;
+      }
+
+      const dto = CreateMemberDtoSchema.parse({
+        name,
+        email,
+        phone,
+        joinMonth: new Date().toISOString().slice(0, 7),
+        lifecycleStage: 'IDENTIFIED',
+        platform: 'Workspace',
+        company,
+        jobTitle,
+        domicile,
+        instagram: instagram ?? undefined,
+        linkedinUrl: linkedinUrl ?? undefined,
+        address: buildAddress(),
+        socialProfile: buildSocialProfile(),
+      });
+      await this.create(dto);
+    } catch (err) {
+      this.logger.warn(
+        `syncFromWorkspaceUserProfile(${input.email}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   async ensureCrmMemberForPurchaseEmail(
     rawEmail: string,
     displayName?: string | null,
@@ -304,6 +403,8 @@ export class MembersService {
         "lifecycleStage",
         company,
         "jobTitle",
+        domicile,
+        instagram,
         industry,
         tags,
         address,
@@ -336,17 +437,19 @@ export class MembersService {
         $14,
         $15,
         $16,
-        $17::text[],
-        $18::jsonb,
-        $19::jsonb,
-        $20,
-        $21,
+        $17,
+        $18,
+        $19::text[],
+        $20::jsonb,
+        $21::jsonb,
         $22,
         $23,
-        $24::jsonb,
-        $25::text[],
+        $24,
+        $25,
         $26::jsonb,
-        $27,
+        $27::text[],
+        $28::jsonb,
+        $29,
         now(),
         now()
       )
@@ -367,6 +470,8 @@ export class MembersService {
         "lifecycleStage" as "lifecycleStage",
         company,
         "jobTitle" as "jobTitle",
+        domicile,
+        instagram,
         industry,
         tags,
         address,
@@ -398,6 +503,8 @@ export class MembersService {
         input.lifecycleStage,
         input.company,
         input.jobTitle,
+        input.domicile,
+        input.instagram,
         input.industry,
         input.tags,
         JSON.stringify(input.address),
@@ -475,6 +582,8 @@ export class MembersService {
         m."lifecycleStage" as "lifecycleStage",
         m.company,
         m."jobTitle" as "jobTitle",
+        m.domicile,
+        m.instagram,
         m.industry,
         m.tags,
         m.address,
@@ -580,6 +689,14 @@ export class MembersService {
       params.push(dto.jobTitle?.trim() || null);
       fields.push(`"jobTitle" = $${params.length}`);
     }
+    if (dto.domicile !== undefined) {
+      params.push(dto.domicile?.trim() || null);
+      fields.push(`domicile = $${params.length}`);
+    }
+    if (dto.instagram !== undefined) {
+      params.push(dto.instagram?.trim() || null);
+      fields.push(`instagram = $${params.length}`);
+    }
     if (dto.industry !== undefined) {
       params.push(dto.industry?.trim() || null);
       fields.push(`industry = $${params.length}`);
@@ -657,6 +774,8 @@ export class MembersService {
         "lifecycleStage" as "lifecycleStage",
         company,
         "jobTitle" as "jobTitle",
+        domicile,
+        instagram,
         industry,
         tags,
         address,
@@ -698,6 +817,8 @@ export class MembersService {
         m."lifecycleStage" as "lifecycleStage",
         m.company,
         m."jobTitle" as "jobTitle",
+        m.domicile,
+        m.instagram,
         m.industry,
         m.tags,
         m.address,
@@ -824,6 +945,8 @@ export class MembersService {
       lifecycleStage,
       company: dto.company?.trim() || null,
       jobTitle: dto.jobTitle?.trim() || null,
+      domicile: dto.domicile?.trim() || null,
+      instagram: dto.instagram?.trim() || null,
       industry: dto.industry?.trim() || null,
       tags: dto.tags,
       address: dto.address ?? null,
@@ -915,6 +1038,8 @@ export class MembersService {
       lifecycleStage: row.lifecycleStage,
       company: row.company ?? undefined,
       jobTitle: row.jobTitle ?? undefined,
+      domicile: row.domicile ?? undefined,
+      instagram: row.instagram ?? undefined,
       industry: row.industry ?? undefined,
       tags: row.tags ?? [],
       address: row.address ?? undefined,

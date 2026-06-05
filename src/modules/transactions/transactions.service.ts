@@ -26,6 +26,7 @@ import { AppConfigService } from '../../common/config/app-config.service';
 import { MidtransService } from '../midtrans/midtrans.service';
 import { MembersService } from '../members/members.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { PaidConversionsService } from '../paid-conversions/paid-conversions.service';
 import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 import { VoucherBroadcastService } from '../store-support/voucher-broadcast.service';
 import { AutomationsEmitService } from '../automations/automations-emit.service';
@@ -42,6 +43,7 @@ export class TransactionsService {
     private readonly config: AppConfigService,
     private readonly members: MembersService,
     private readonly campaigns: CampaignsService,
+    private readonly paidConversions: PaidConversionsService,
     private readonly checkoutEntitlements: CheckoutEntitlementsService,
     private readonly voucherBroadcast: VoucherBroadcastService,
     private readonly automationsEmit: AutomationsEmitService,
@@ -497,6 +499,7 @@ export class TransactionsService {
 
   /** Same side effects as Midtrans webhook when a transaction becomes PAID (lifecycle, campaign). */
   private async onCheckoutPaidSideEffects(
+    paymentId: string,
     customerEmail: string | null | undefined,
     attributionSource: string | null,
     totalAmount: number,
@@ -508,6 +511,15 @@ export class TransactionsService {
       attributionSource,
       totalAmount,
     );
+    try {
+      await this.paidConversions.recordForPayment(paymentId);
+    } catch (err) {
+      this.logger.error(
+        `Paid conversion record failed for payment ${paymentId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 
   /**
@@ -697,6 +709,7 @@ export class TransactionsService {
 
     if (isFreeCheckout) {
       await this.onCheckoutPaidSideEffects(
+        payment.id,
         customerEmail,
         attributionSource,
         totalAmount,
@@ -941,6 +954,7 @@ export class TransactionsService {
             [row.orderId],
           );
           await this.onCheckoutPaidSideEffects(
+            row.id,
             row.customerEmail,
             row.attributionSource ?? null,
             0,
@@ -1083,6 +1097,7 @@ export class TransactionsService {
 
     if (isFreeSnap) {
       await this.onCheckoutPaidSideEffects(
+        payment.id,
         customerEmail,
         attributionSource,
         totalAmount,
@@ -1213,15 +1228,11 @@ export class TransactionsService {
       );
 
       const paidRow = paid.rows[0];
-      if (paidRow?.customerEmail?.trim()) {
-        void this.members.promoteLifecycleAtLeastByEmail(
+      if (paidRow) {
+        await this.onCheckoutPaidSideEffects(
+          paidRow.id,
           paidRow.customerEmail,
-          'MEMBER',
-        );
-      }
-      if (paidRow?.attributionSource) {
-        await this.recordCampaignConversionForPayment(
-          paidRow.attributionSource,
+          paidRow.attributionSource ?? null,
           Number(paidRow.totalAmount) || 0,
         );
       }
@@ -1914,6 +1925,7 @@ export class TransactionsService {
     }
 
     await this.onCheckoutPaidSideEffects(
+      transactionId,
       paidRow.customerEmail,
       paidRow.attributionSource ?? null,
       Number(paidRow.totalAmount) || 0,
