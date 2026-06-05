@@ -3,7 +3,9 @@
  */
 
 import {
+  BadRequestException,
   Controller,
+  ForbiddenException,
   Get,
   Post,
   Body,
@@ -32,6 +34,10 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import { assertSuperAdminOnly } from '../../common/security/access-policy';
+import {
+  parseAppRoleString,
+  USER_ROLE,
+} from '../workspace-identity/user-role.constants';
 
 @Controller('users')
 export class UsersController {
@@ -70,6 +76,58 @@ export class UsersController {
   @Get('me')
   getMe() {
     return { message: 'Not implemented - needs auth' };
+  }
+
+  /**
+   * Tribe members for the signed-in facilitator (JWT `sub`).
+   * GET /users/me/downline
+   */
+  @Get('me/downline')
+  @UseGuards(JwtAuthGuard)
+  getMyDownline(@Req() req: { user: JwtUserPayload }) {
+    const id = this.requireSessionUserId(req.user);
+    return this.usersService.getDownline(id, req.user.email);
+  }
+
+  /**
+   * Mentoring sessions for the signed-in facilitator.
+   * GET /users/me/tribe/sessions
+   */
+  @Get('me/tribe/sessions')
+  @UseGuards(JwtAuthGuard)
+  getMyTribeSessions(@Req() req: { user: JwtUserPayload }) {
+    const id = this.requireSessionUserId(req.user);
+    return this.usersService.getTribeMentoringSessions(id, req.user.email);
+  }
+
+  /**
+   * Get facilitator's tribe members (CRM downline)
+   * GET /users/:id/downline
+   */
+  @Get(':id/downline')
+  @UseGuards(JwtAuthGuard)
+  getDownline(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+  ) {
+    const facilitatorId = this.normalizeFacilitatorId(id);
+    this.assertTribeSelfOrSuperAdmin(req.user, facilitatorId);
+    return this.usersService.getDownline(facilitatorId);
+  }
+
+  /**
+   * Mentoring session logs for My Tribe
+   * GET /users/:id/tribe/sessions
+   */
+  @Get(':id/tribe/sessions')
+  @UseGuards(JwtAuthGuard)
+  getTribeSessions(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+  ) {
+    const facilitatorId = this.normalizeFacilitatorId(id);
+    this.assertTribeSelfOrSuperAdmin(req.user, facilitatorId);
+    return this.usersService.getTribeMentoringSessions(facilitatorId);
   }
 
   /**
@@ -127,12 +185,31 @@ export class UsersController {
     return this.usersService.remove(id);
   }
 
-  /**
-   * Get facilitator's downline
-   * GET /users/:id/downline
-   */
-  @Get(':id/downline')
-  getDownline(@Param('id', ParseUUIDPipe) id: string) {
-    return this.usersService.getDownline(id);
+  private requireSessionUserId(user: JwtUserPayload): string {
+    const id = String(user?.sub ?? '').trim();
+    if (!id) {
+      throw new BadRequestException('Invalid session user id');
+    }
+    return id;
+  }
+
+  private normalizeFacilitatorId(raw: string): string {
+    const id = String(raw ?? '').trim();
+    if (!id) {
+      throw new BadRequestException('Facilitator id is required');
+    }
+    return id;
+  }
+
+  private assertTribeSelfOrSuperAdmin(
+    user: JwtUserPayload,
+    facilitatorId: string,
+  ): void {
+    const role = parseAppRoleString(user?.role);
+    if (role === USER_ROLE.SUPER_ADMIN) return;
+    if (String(user?.sub ?? '').trim() === facilitatorId) return;
+    throw new ForbiddenException(
+      'You may only access your own tribe data',
+    );
   }
 }

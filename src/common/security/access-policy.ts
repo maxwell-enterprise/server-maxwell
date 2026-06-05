@@ -58,11 +58,16 @@ export function assertWorkspaceStaffOnly(
   );
 }
 
+/** Ops-owned surfaces; Super Admin break-glass override. */
 export function assertOperationsOnly(
   user: JwtUserPayload,
   actionLabel = 'Operational configuration',
 ): void {
-  assertRole(user, [USER_ROLE.OPERATIONS], actionLabel);
+  assertRole(
+    user,
+    [USER_ROLE.OPERATIONS, USER_ROLE.SUPER_ADMIN],
+    actionLabel,
+  );
 }
 
 /** Event / ops surfaces: Operations owns day-to-day; Super Admin break-glass. */
@@ -85,11 +90,16 @@ export function assertStoreCatalogManager(
   );
 }
 
+/** Marketing-owned surfaces; Super Admin break-glass override. */
 export function assertMarketingOnly(
   user: JwtUserPayload,
   actionLabel = 'Marketing configuration',
 ): void {
-  assertRole(user, [USER_ROLE.MARKETING], actionLabel);
+  assertRole(
+    user,
+    [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    actionLabel,
+  );
 }
 
 /** Marketing-owned surfaces; Super Admin may act for ops / break-glass. */
@@ -100,18 +110,36 @@ export function assertMarketingOrSuperAdmin(
   assertRole(user, [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN], actionLabel);
 }
 
+/** Sales-owned surfaces; Super Admin break-glass override. */
 export function assertSalesOnly(
   user: JwtUserPayload,
   actionLabel = 'Sales operation',
 ): void {
-  assertRole(user, [USER_ROLE.SALES], actionLabel);
+  assertRole(user, [USER_ROLE.SALES, USER_ROLE.SUPER_ADMIN], actionLabel);
 }
 
+/** Sales-owned member intake; Facilitator may register their own tribe members. */
+export function assertSalesOrFacilitator(
+  user: JwtUserPayload,
+  actionLabel = 'Member registration',
+): void {
+  assertRole(
+    user,
+    [USER_ROLE.SALES, USER_ROLE.FACILITATOR, USER_ROLE.SUPER_ADMIN],
+    actionLabel,
+  );
+}
+
+/** Check-in surfaces; Super Admin break-glass override. */
 export function assertOpsOrGateKeeper(
   user: JwtUserPayload,
   actionLabel = 'Check-in operation',
 ): void {
-  assertRole(user, [USER_ROLE.OPERATIONS, USER_ROLE.GATE_KEEPER], actionLabel);
+  assertRole(
+    user,
+    [USER_ROLE.OPERATIONS, USER_ROLE.GATE_KEEPER, USER_ROLE.SUPER_ADMIN],
+    actionLabel,
+  );
 }
 
 /** CRM / marketing / ops emit + client background worker (automation queue). */

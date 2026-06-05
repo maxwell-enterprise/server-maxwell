@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -23,7 +24,11 @@ import {
 import { MembersService } from './members.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
-import { assertSalesOnly } from '../../common/security/access-policy';
+import {
+  assertSalesOnly,
+} from '../../common/security/access-policy';
+import { parseAppRoleString, USER_ROLE } from '../workspace-identity/user-role.constants';
+import { ForbiddenException } from '@nestjs/common';
 
 @Controller('members')
 export class MembersController {
@@ -39,13 +44,46 @@ export class MembersController {
 
   @Post()
   @UseGuards(JwtAuthGuard)
-  create(
+  async create(
     @Req() req: { user: JwtUserPayload },
     @Body(new ZodValidationPipe(CreateMemberDtoSchema))
     dto: CreateMemberDto,
   ) {
-    assertSalesOnly(req.user, 'Member registration');
-    return this.membersService.create(dto);
+    const role = parseAppRoleString(req.user?.role);
+    const roleAllowed =
+      role === USER_ROLE.SALES || role === USER_ROLE.SUPER_ADMIN;
+    const lifecycleAllowed = req.user?.email
+      ? await this.membersService.hasLifecycleAtLeastByEmail(
+          req.user.email,
+          'FACILITATOR',
+        )
+      : false;
+    if (!roleAllowed && !lifecycleAllowed) {
+      throw new ForbiddenException(
+        'Member registration requires Sales or Super Admin role, or CRM lifecycle FACILITATOR',
+      );
+    }
+    const finalDto =
+      lifecycleAllowed && !dto.nTagStatus?.trim()
+        ? {
+            ...dto,
+            nTagStatus: req.user.sub,
+          }
+        : dto;
+    return this.membersService.create(finalDto);
+  }
+
+  @Post('me/referral/claim')
+  @UseGuards(JwtAuthGuard)
+  async claimReferral(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: { ref?: string },
+  ) {
+    const ref = typeof body?.ref === 'string' ? body.ref.trim() : '';
+    if (!ref) {
+      throw new BadRequestException('ref required');
+    }
+    return this.membersService.claimReferralForEmail(req.user.email, ref);
   }
 
   @Get()
@@ -69,7 +107,18 @@ export class MembersController {
     @Body(new ZodValidationPipe(UpdateMemberDtoSchema))
     dto: UpdateMemberDto,
   ) {
+    const role = parseAppRoleString(req.user?.role);
+    if (
+      (dto.facilitatorName !== undefined || dto.facilitatorType !== undefined) &&
+      role !== USER_ROLE.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException(
+        'Facilitator assignment update requires Super Admin role',
+      );
+    }
     assertSalesOnly(req.user, 'Member update');
-    return this.membersService.update(identifier, dto);
+    return this.membersService.update(identifier, dto, {
+      preserveExplicitFacilitatorType: false,
+    });
   }
 }
