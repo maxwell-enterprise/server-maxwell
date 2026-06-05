@@ -41,6 +41,8 @@ export class Member {
   lifecycleStage: MemberLifecycleStage;
   company?: string;
   jobTitle?: string;
+  domicile?: string;
+  instagram?: string;
   industry?: string;
   tags?: string[];
   address?: MemberAddress;
@@ -48,6 +50,9 @@ export class Member {
   birthDate?: string;
   gender?: string;
   linkedinUrl?: string;
+  facilitatorName?: string;
+  facilitatorType?: string;
+  inheritanceChain?: string[];
   serviceLevel?: string;
   achievements?: unknown[];
   earnedDoneTags?: string[];

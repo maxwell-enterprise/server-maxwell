@@ -7,6 +7,11 @@ import {
 } from '@nestjs/common';
 import { MemberLifecycleStage } from '../../schemas/enums.schema';
 import { DbService } from '../../common/db.service';
+import { PrismaService } from '../../prisma/prisma.service';
+import {
+  hasAssignedRole,
+  USER_ROLE,
+} from '../workspace-identity/user-role.constants';
 import {
   CreateMemberDto,
   CreateMemberDtoSchema,
@@ -38,6 +43,8 @@ interface MemberRow {
   lifecycleStage: MemberLifecycleStage;
   company: string | null;
   jobTitle: string | null;
+  domicile: string | null;
+  instagram: string | null;
   industry: string | null;
   tags: string[] | null;
   address: MemberAddress | null;
@@ -45,6 +52,9 @@ interface MemberRow {
   birthDate: string | Date | null;
   gender: string | null;
   linkedinUrl: string | null;
+  facilitatorName: string | null;
+  facilitatorType: string | null;
+  inheritanceChain: string[] | null;
   serviceLevel: string | null;
   achievements: unknown[] | null;
   earnedDoneTags: string[] | null;
@@ -67,7 +77,10 @@ const LIFECYCLE_ORDER: MemberLifecycleStage[] = [
 export class MembersService {
   private readonly logger = new Logger(MembersService.name);
 
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   /**
    * Monotonic promotion: sets `lifecycleStage` to `minStage` only if the member is
@@ -183,6 +196,26 @@ export class MembersService {
     return { publicId: row.publicId, name: row.name };
   }
 
+  async hasLifecycleAtLeastByEmail(
+    rawEmail: string,
+    minStage: MemberLifecycleStage,
+  ): Promise<boolean> {
+    const email = rawEmail.trim().toLowerCase();
+    if (!email) return false;
+    const res = await this.db.query<{ lifecycleStage: string }>(
+      `
+      select coalesce(m."lifecycleStage", 'GUEST')::text as "lifecycleStage"
+      from members m
+      where lower(trim(m.email)) = $1
+      limit 1
+      `,
+      [email],
+    );
+    const row = res.rows[0];
+    if (!row?.lifecycleStage) return false;
+    return this.lifecycleRank(row.lifecycleStage) >= this.lifecycleRank(minStage);
+  }
+
   /**
    * Idempotent CRM row for a purchase email (commerce “shadow” / auto-provision).
    * Wallet grants still use Prisma `User.id` when the buyer has a workspace account;
@@ -210,6 +243,7 @@ export class MembersService {
         lifecycleStage: 'IDENTIFIED',
         platform: 'Store',
         program: 'Online purchase',
+        facilitatorType: 'INHERIT',
       });
       await this.create(dto);
       this.logger.log(`CRM member provisioned for purchase email ${email}`);
@@ -217,6 +251,50 @@ export class MembersService {
       if (e instanceof ConflictException) return;
       this.logger.warn(
         `ensureCrmMemberForPurchaseEmail(${email}): ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
+
+  async ensureCrmMemberForWorkspaceEmail(
+    rawEmail: string,
+    options?: {
+      displayName?: string | null;
+      program?: string;
+      platform?: string;
+    },
+  ): Promise<void> {
+    const email = rawEmail?.trim().toLowerCase();
+    if (!email?.includes('@')) return;
+    const existing = await this.findMemberIdByEmail(email);
+    if (existing) return;
+    try {
+      const workspaceUser = await this.prisma.user.findUnique({
+        where: { email },
+        select: { name: true },
+      });
+      const name = (
+        options?.displayName?.trim() ||
+        workspaceUser?.name?.trim() ||
+        email.split('@')[0] ||
+        'Member'
+      ).slice(0, 255);
+      const dto = CreateMemberDtoSchema.parse({
+        name,
+        email,
+        phone: '',
+        joinMonth: new Date().toISOString().slice(0, 7),
+        lifecycleStage: 'IDENTIFIED',
+        platform: options?.platform?.trim() || 'Web',
+        program: options?.program?.trim() || 'Workspace signup',
+      });
+      await this.create(dto);
+      this.logger.log(`CRM member provisioned for workspace email ${email}`);
+    } catch (e) {
+      if (e instanceof ConflictException) return;
+      this.logger.warn(
+        `ensureCrmMemberForWorkspaceEmail(${email}): ${
           e instanceof Error ? e.message : String(e)
         }`,
       );
@@ -304,6 +382,8 @@ export class MembersService {
         "lifecycleStage",
         company,
         "jobTitle",
+        domicile,
+        instagram,
         industry,
         tags,
         address,
@@ -311,6 +391,8 @@ export class MembersService {
         "birthDate",
         gender,
         "linkedinUrl",
+        facilitator_name,
+        facilitator_type,
         "serviceLevel",
         achievements,
         "earnedDoneTags",
@@ -336,17 +418,21 @@ export class MembersService {
         $14,
         $15,
         $16,
-        $17::text[],
-        $18::jsonb,
-        $19::jsonb,
-        $20,
-        $21,
+        $17,
+        $18,
+        $19::text[],
+        $20::jsonb,
+        $21::jsonb,
         $22,
         $23,
-        $24::jsonb,
-        $25::text[],
-        $26::jsonb,
+        $24,
+        $25,
+        $26,
         $27,
+        $28::jsonb,
+        $29::text[],
+        $30::jsonb,
+        $31,
         now(),
         now()
       )
@@ -367,6 +453,8 @@ export class MembersService {
         "lifecycleStage" as "lifecycleStage",
         company,
         "jobTitle" as "jobTitle",
+        domicile,
+        instagram,
         industry,
         tags,
         address,
@@ -374,6 +462,8 @@ export class MembersService {
         "birthDate" as "birthDate",
         gender,
         "linkedinUrl" as "linkedinUrl",
+        facilitator_name as "facilitatorName",
+        facilitator_type as "facilitatorType",
         "serviceLevel" as "serviceLevel",
         achievements,
         "earnedDoneTags" as "earnedDoneTags",
@@ -398,6 +488,8 @@ export class MembersService {
         input.lifecycleStage,
         input.company,
         input.jobTitle,
+        input.domicile,
+        input.instagram,
         input.industry,
         input.tags,
         JSON.stringify(input.address),
@@ -405,6 +497,8 @@ export class MembersService {
         input.birthDate,
         input.gender,
         input.linkedinUrl,
+        input.facilitatorName,
+        input.facilitatorType,
         input.serviceLevel,
         JSON.stringify(input.achievements),
         input.earnedDoneTags,
@@ -475,6 +569,8 @@ export class MembersService {
         m."lifecycleStage" as "lifecycleStage",
         m.company,
         m."jobTitle" as "jobTitle",
+        m.domicile,
+        m.instagram,
         m.industry,
         m.tags,
         m.address,
@@ -482,6 +578,8 @@ export class MembersService {
         m."birthDate" as "birthDate",
         m.gender,
         m."linkedinUrl" as "linkedinUrl",
+        m.facilitator_name as "facilitatorName",
+        m.facilitator_type as "facilitatorType",
         m."serviceLevel" as "serviceLevel",
         m.achievements,
         m."earnedDoneTags" as "earnedDoneTags",
@@ -504,7 +602,11 @@ export class MembersService {
     return this.toMember(row);
   }
 
-  async update(identifier: string, dto: UpdateMemberDto): Promise<Member> {
+  async update(
+    identifier: string,
+    dto: UpdateMemberDto,
+    options?: { preserveExplicitFacilitatorType?: boolean },
+  ): Promise<Member> {
     const existing = await this.findRowByIdentifier(identifier);
 
     if (dto.id && dto.id !== existing.id && dto.id !== existing.internalId) {
@@ -517,6 +619,29 @@ export class MembersService {
 
     const fields: string[] = [];
     const params: unknown[] = [];
+    const preserveExplicitFacilitatorType =
+      options?.preserveExplicitFacilitatorType === true;
+    const requestedFacilitatorName = dto.facilitatorName?.trim() || '';
+    let manualFacilitatorName: string | null | undefined;
+    let manualFacilitatorType: string | null | undefined;
+
+    if (!preserveExplicitFacilitatorType && dto.facilitatorName !== undefined) {
+      if (requestedFacilitatorName) {
+        const facilitator = await this.resolveManualFacilitatorByName(
+          requestedFacilitatorName,
+        );
+        const existingFacilitatorName = existing.facilitatorName?.trim() || '';
+        const sameFacilitator =
+          existingFacilitatorName.toLowerCase() ===
+          facilitator.name.trim().toLowerCase();
+        manualFacilitatorName = facilitator.name.trim();
+        manualFacilitatorType = sameFacilitator
+          ? existing.facilitatorType?.trim() || null
+          : existingFacilitatorName
+            ? 'MOVE'
+            : 'ASSIGN';
+      }
+    }
 
     if (dto.name !== undefined) {
       params.push(dto.name.trim());
@@ -580,6 +705,14 @@ export class MembersService {
       params.push(dto.jobTitle?.trim() || null);
       fields.push(`"jobTitle" = $${params.length}`);
     }
+    if (dto.domicile !== undefined) {
+      params.push(dto.domicile?.trim() || null);
+      fields.push(`domicile = $${params.length}`);
+    }
+    if (dto.instagram !== undefined) {
+      params.push(dto.instagram?.trim() || null);
+      fields.push(`instagram = $${params.length}`);
+    }
     if (dto.industry !== undefined) {
       params.push(dto.industry?.trim() || null);
       fields.push(`industry = $${params.length}`);
@@ -607,6 +740,22 @@ export class MembersService {
     if (dto.linkedinUrl !== undefined) {
       params.push(dto.linkedinUrl?.trim() || null);
       fields.push(`"linkedinUrl" = $${params.length}`);
+    }
+    if (dto.facilitatorName !== undefined) {
+      params.push(
+        preserveExplicitFacilitatorType
+          ? requestedFacilitatorName || null
+          : manualFacilitatorName ?? null,
+      );
+      fields.push(`facilitator_name = $${params.length}`);
+    }
+    if (preserveExplicitFacilitatorType && dto.facilitatorType !== undefined) {
+      params.push(dto.facilitatorType?.trim() || null);
+      fields.push(`facilitator_type = $${params.length}`);
+    }
+    if (!preserveExplicitFacilitatorType && manualFacilitatorType !== undefined) {
+      params.push(manualFacilitatorType);
+      fields.push(`facilitator_type = $${params.length}`);
     }
     if (dto.serviceLevel !== undefined) {
       params.push(dto.serviceLevel?.trim() || null);
@@ -657,6 +806,8 @@ export class MembersService {
         "lifecycleStage" as "lifecycleStage",
         company,
         "jobTitle" as "jobTitle",
+        domicile,
+        instagram,
         industry,
         tags,
         address,
@@ -664,6 +815,8 @@ export class MembersService {
         "birthDate" as "birthDate",
         gender,
         "linkedinUrl" as "linkedinUrl",
+        facilitator_name as "facilitatorName",
+        facilitator_type as "facilitatorType",
         "serviceLevel" as "serviceLevel",
         achievements,
         "earnedDoneTags" as "earnedDoneTags",
@@ -698,6 +851,8 @@ export class MembersService {
         m."lifecycleStage" as "lifecycleStage",
         m.company,
         m."jobTitle" as "jobTitle",
+        m.domicile,
+        m.instagram,
         m.industry,
         m.tags,
         m.address,
@@ -705,6 +860,8 @@ export class MembersService {
         m."birthDate" as "birthDate",
         m.gender,
         m."linkedinUrl" as "linkedinUrl",
+        m.facilitator_name as "facilitatorName",
+        m.facilitator_type as "facilitatorType",
         m."serviceLevel" as "serviceLevel",
         m.achievements,
         m."earnedDoneTags" as "earnedDoneTags",
@@ -824,6 +981,8 @@ export class MembersService {
       lifecycleStage,
       company: dto.company?.trim() || null,
       jobTitle: dto.jobTitle?.trim() || null,
+      domicile: dto.domicile?.trim() || null,
+      instagram: dto.instagram?.trim() || null,
       industry: dto.industry?.trim() || null,
       tags: dto.tags,
       address: dto.address ?? null,
@@ -831,6 +990,11 @@ export class MembersService {
       birthDate: this.normalizeBirthDate(dto.birthDate),
       gender: dto.gender?.trim() || null,
       linkedinUrl: dto.linkedinUrl?.trim() || null,
+      facilitatorName: dto.facilitatorName?.trim() || null,
+      facilitatorType:
+        dto.facilitatorType?.trim() ||
+        (dto.facilitatorName?.trim() ? 'REGISTER' : null),
+      inheritanceChain: dto.inheritanceChain ?? null,
       serviceLevel: dto.serviceLevel?.trim() || null,
       achievements: dto.achievements,
       earnedDoneTags: dto.earnedDoneTags,
@@ -839,8 +1003,72 @@ export class MembersService {
     };
   }
 
-  private normalizeJoinMonth(value: string): string {
-    const trimmed = value.trim();
+  async claimReferralForEmail(
+    rawEmail: string,
+    rawRef: string,
+  ): Promise<{ applied: boolean; facilitatorName?: string; linkageKey?: string }> {
+    const email = rawEmail.trim().toLowerCase();
+    const ref = rawRef.trim();
+    if (!email || !ref) {
+      return { applied: false };
+    }
+
+    await this.ensureCrmMemberForWorkspaceEmail(email, {
+      program: 'Referral signup',
+      platform: 'Web',
+    });
+
+    const claimantInternalId = await this.findMemberIdByEmail(email);
+    if (!claimantInternalId) {
+      return { applied: false };
+    }
+
+    const claimantRow = await this.findRowByIdentifier(claimantInternalId);
+    const facilitator = await this.resolveReferralFacilitator(ref);
+    if (!facilitator) {
+      return { applied: false };
+    }
+
+    if (
+      facilitator.email &&
+      facilitator.email.trim().toLowerCase() === email
+    ) {
+      return { applied: false };
+    }
+
+    const sameFacilitator =
+      (claimantRow.facilitatorType ?? '').trim().toUpperCase() === 'REFERRAL' &&
+      (claimantRow.facilitatorName ?? '').trim() === facilitator.facilitatorName &&
+      (claimantRow.nTagStatus ?? '').trim() === facilitator.linkageKey;
+    if (sameFacilitator) {
+      return {
+        applied: false,
+        facilitatorName: facilitator.facilitatorName,
+        linkageKey: facilitator.linkageKey,
+      };
+    }
+
+    await this.update(claimantInternalId, {
+      facilitatorName: facilitator.facilitatorName,
+      facilitatorType: 'REFERRAL',
+      nTagStatus: facilitator.linkageKey,
+    }, {
+      preserveExplicitFacilitatorType: true,
+    });
+
+    return {
+      applied: true,
+      facilitatorName: facilitator.facilitatorName,
+      linkageKey: facilitator.linkageKey,
+    };
+  }
+
+  private normalizeJoinMonth(value?: string): string {
+    const trimmed = value?.trim() || '';
+
+    if (!trimmed) {
+      return new Date().toISOString().slice(0, 7);
+    }
 
     if (/^\d{4}-\d{2}(-\d{2})/.test(trimmed)) {
       return trimmed.slice(0, 7);
@@ -898,6 +1126,205 @@ export class MembersService {
       .replace(/^-+|-+$/g, '');
   }
 
+  private async resolveReferralFacilitator(
+    rawRef: string,
+  ): Promise<{ linkageKey: string; facilitatorName: string; email: string | null } | null> {
+    const ref = rawRef.trim();
+    if (!ref) return null;
+
+    const workspaceUser = await this.prisma.user.findUnique({
+      where: { id: ref },
+      select: { id: true, name: true, email: true, appRole: true },
+    });
+    if (workspaceUser?.email) {
+      const isFacilitatorByRole =
+        hasAssignedRole(workspaceUser.appRole, USER_ROLE.FACILITATOR) ||
+        hasAssignedRole(workspaceUser.appRole, USER_ROLE.SUPER_ADMIN);
+      const isFacilitatorByLifecycle = await this.hasLifecycleAtLeastByEmail(
+        workspaceUser.email,
+        'FACILITATOR',
+      );
+      const isFacilitator = isFacilitatorByRole || isFacilitatorByLifecycle;
+      if (isFacilitator) {
+        return {
+          linkageKey: workspaceUser.id,
+          facilitatorName:
+            workspaceUser.name?.trim() || workspaceUser.email.trim(),
+          email: workspaceUser.email.trim().toLowerCase(),
+        };
+      }
+    }
+
+    const result = await this.db.query<{
+      memberId: string;
+      name: string;
+      email: string | null;
+      lifecycleStage: string;
+    }>(
+      `
+      select
+        coalesce(nullif(trim(m.public_id), ''), m.id::text) as "memberId",
+        m.name,
+        m.email,
+        coalesce(m."lifecycleStage", 'GUEST')::text as "lifecycleStage"
+      from members m
+      where m.public_id = $1 or m.id::text = $1
+      limit 1
+      `,
+      [ref],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    if (this.lifecycleRank(row.lifecycleStage) < this.lifecycleRank('FACILITATOR')) {
+      return null;
+    }
+    return {
+      linkageKey: row.memberId,
+      facilitatorName: row.name,
+      email: row.email?.trim().toLowerCase() || null,
+    };
+  }
+
+  private async resolveManualFacilitatorByName(
+    rawName: string,
+  ): Promise<{ id: string; name: string }> {
+    const name = rawName.trim();
+    if (!name) {
+      throw new BadRequestException('Facilitator name is required');
+    }
+
+    const result = await this.db.query<{ id: string; name: string }>(
+      `
+      select
+        coalesce(m.public_id, m.id::text) as id,
+        m.name
+      from members m
+      where lower(trim(m.name)) = lower(trim($1))
+        and m."lifecycleStage" = 'FACILITATOR'
+      order by m."createdAt" desc
+      limit 2
+      `,
+      [name],
+    );
+
+    if (result.rows.length === 0) {
+      throw new BadRequestException(
+        'Selected facilitator was not found in FACILITATOR lifecycle',
+      );
+    }
+    if (result.rows.length > 1) {
+      throw new BadRequestException(
+        'Selected facilitator name is ambiguous. Please use a unique facilitator name.',
+      );
+    }
+
+    return result.rows[0];
+  }
+
+  /**
+   * Tribe mentees for a facilitator. Matches `members.nTagStatus` against JWT `sub`
+   * and the facilitator's own CRM `public_id` (common when SQL used workspace uuid).
+   */
+  async getTribeMembers(
+    facilitatorUserId: string,
+    facilitatorEmail?: string | null,
+  ): Promise<TribeDownlineMember[]> {
+    const userId = facilitatorUserId?.trim() ?? '';
+    const email = facilitatorEmail?.trim().toLowerCase() ?? '';
+    if (!userId && !email) return [];
+
+    const result = await this.db.query<TribeDownlineMemberRow>(
+      `
+      with facilitator_keys as (
+        select distinct key from (
+          select $1::text as key
+          union all
+          select coalesce(nullif(trim(f.public_id), ''), f.id::text)
+          from members f
+          where $2 <> '' and lower(trim(f.email)) = $2
+        ) keys(key)
+        where key is not null and btrim(key) <> ''
+      )
+      select
+        coalesce(nullif(trim(m.public_id), ''), m.id::text) as "memberId",
+        m.name,
+        m.email,
+        coalesce(m.phone, '') as phone,
+        coalesce(m.program, '') as program,
+        coalesce(m."joinMonth", '') as "joinMonth",
+        coalesce(m."lifecycleStage", 'MEMBER') as "lifecycleStage",
+        coalesce(m.tags, '{}'::text[]) as tags,
+        m.engagement,
+        m.company,
+        m."jobTitle" as "jobTitle",
+        m.facilitator_name as "facilitatorName",
+        m.facilitator_type as "facilitatorType"
+      from members m
+      where m."nTagStatus" in (select key from facilitator_keys)
+      order by m.name asc
+      `,
+      [userId, email],
+    );
+
+    return result.rows.map((row) => this.mapTribeDownlineRow(row));
+  }
+
+  async getTribeMentoringSessions(
+    facilitatorUserId: string,
+    facilitatorEmail?: string | null,
+  ): Promise<TribeMentoringSessionRow[]> {
+    const userId = facilitatorUserId?.trim() ?? '';
+    const email = facilitatorEmail?.trim().toLowerCase() ?? '';
+    if (!userId && !email) return [];
+
+    const result = await this.db.query<TribeMentoringSessionRow>(
+      `
+      with facilitator_keys as (
+        select distinct key from (
+          select $1::text as key
+          union all
+          select coalesce(nullif(trim(f.public_id), ''), f.id::text)
+          from members f
+          where $2 <> '' and lower(trim(f.email)) = $2
+        ) keys(key)
+        where key is not null and btrim(key) <> ''
+      )
+      select
+        s.id::text as id,
+        s."facilitatorId",
+        coalesce(s."facilitatorName", '') as "facilitatorName",
+        coalesce(s."eventName", '') as "eventName",
+        coalesce(s."memberId", '') as "memberId",
+        coalesce(s."memberName", '') as "memberName",
+        coalesce(s.notes, '') as notes,
+        s."createdAt"
+      from tribe_mentoring_sessions s
+      where s."facilitatorId" in (select key from facilitator_keys)
+      order by s."createdAt" desc
+      `,
+      [userId, email],
+    );
+    return result.rows;
+  }
+
+  private mapTribeDownlineRow(row: TribeDownlineMemberRow): TribeDownlineMember {
+    return {
+      memberId: row.memberId,
+      name: row.name,
+      email: row.email,
+      phone: row.phone,
+      program: row.program,
+      joinDate: row.joinMonth,
+      lifecycleStage: row.lifecycleStage,
+      tags: row.tags ?? [],
+      engagement: row.engagement ?? null,
+      company: row.company ?? null,
+      jobTitle: row.jobTitle ?? null,
+      facilitatorName: row.facilitatorName ?? null,
+      facilitatorType: row.facilitatorType ?? null,
+    };
+  }
+
   private toMember(row: MemberRow): Member {
     return {
       id: row.id,
@@ -915,6 +1342,8 @@ export class MembersService {
       lifecycleStage: row.lifecycleStage,
       company: row.company ?? undefined,
       jobTitle: row.jobTitle ?? undefined,
+      domicile: row.domicile ?? undefined,
+      instagram: row.instagram ?? undefined,
       industry: row.industry ?? undefined,
       tags: row.tags ?? [],
       address: row.address ?? undefined,
@@ -922,6 +1351,9 @@ export class MembersService {
       birthDate: this.formatDate(row.birthDate),
       gender: row.gender ?? undefined,
       linkedinUrl: row.linkedinUrl ?? undefined,
+      facilitatorName: row.facilitatorName ?? undefined,
+      facilitatorType: row.facilitatorType ?? undefined,
+      inheritanceChain: row.inheritanceChain ?? undefined,
       serviceLevel: row.serviceLevel ?? undefined,
       achievements: row.achievements ?? [],
       earnedDoneTags: row.earnedDoneTags ?? [],
@@ -941,4 +1373,47 @@ export class MembersService {
 
     return value.slice(0, 10);
   }
+}
+
+export interface TribeDownlineMember {
+  memberId: string;
+  name: string;
+  email: string;
+  phone: string;
+  program: string;
+  joinDate: string;
+  lifecycleStage: string;
+  tags: string[];
+  engagement: Record<string, unknown> | null;
+  company: string | null;
+  jobTitle: string | null;
+  facilitatorName: string | null;
+  facilitatorType: string | null;
+}
+
+interface TribeDownlineMemberRow {
+  memberId: string;
+  name: string;
+  email: string;
+  phone: string;
+  program: string;
+  joinMonth: string;
+  lifecycleStage: string;
+  tags: string[] | null;
+  engagement: Record<string, unknown> | null;
+  company: string | null;
+  jobTitle: string | null;
+  facilitatorName: string | null;
+  facilitatorType: string | null;
+}
+
+export interface TribeMentoringSessionRow {
+  id: string;
+  facilitatorId: string;
+  facilitatorName: string;
+  eventName: string;
+  memberId: string;
+  memberName: string;
+  notes: string;
+  createdAt: string | Date;
 }
