@@ -94,6 +94,11 @@ export class WorkspaceMeController {
       email?: string;
       image?: string | null;
       phone?: string;
+      jobTitle?: string;
+      company?: string;
+      domicile?: string;
+      instagram?: string;
+      linkedinUrl?: string;
     },
   ) {
     return this.workspace.updateMyProfile(req.user.sub, {
@@ -101,6 +106,11 @@ export class WorkspaceMeController {
       email: body?.email,
       image: body?.image,
       phone: body?.phone,
+      jobTitle: body?.jobTitle,
+      company: body?.company,
+      domicile: body?.domicile,
+      instagram: body?.instagram,
+      linkedinUrl: body?.linkedinUrl,
     });
   }
 

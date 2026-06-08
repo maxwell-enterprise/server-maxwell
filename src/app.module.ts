@@ -89,6 +89,7 @@ import { CommunicationModule } from './modules/communication/communication.modul
 import { SystemAdminModule } from './modules/system-admin/system-admin.module';
 import { AutomationsModule } from './modules/automations/automations.module';
 import { CampaignsModule } from './modules/campaigns/campaigns.module';
+import { PaidConversionsModule } from './modules/paid-conversions/paid-conversions.module';
 import { CmsModule } from './modules/cms/cms.module';
 import { AccountSettingsModule } from './modules/account-settings/account-settings.module';
 import { ScoutModule } from './modules/scout/scout.module';
@@ -144,6 +145,7 @@ import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard'
     SystemAdminModule,
     AutomationsModule,
     CampaignsModule,
+    PaidConversionsModule,
     CmsModule,
     AccountSettingsModule,
     ScoutModule,
