@@ -30,6 +30,7 @@ import {
   RedeemEventCreditDto,
 } from './dto';
 import { DbService } from '../../common/db.service';
+import { appendInvitationEmailLog } from '../../common/logging/invitation-email-log';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MembersService } from '../members/members.service';
 import { AuthService } from '../auth/auth.service';
@@ -1480,19 +1481,60 @@ export class WalletService {
     });
 
     if (recipientEmail) {
+      void appendInvitationEmailLog({
+        event: 'manage_invitation_email_dispatch_queued',
+        status: 'queued',
+        targetEmail: recipientEmail,
+        giftId: allocation.id,
+        itemName: allocation.itemName,
+        donorName: allocation.sourceUserName,
+        metadata: {
+          deliveryMethod: dto.deliveryMethod,
+          walletItemId: dto.walletItemId,
+        },
+      });
       void this.auth
         .sendGiftTicketRecipientSupabaseInvite({
+          giftId: allocation.id,
           email: recipientEmail,
           itemName: allocation.itemName,
           donorName: allocation.sourceUserName,
         })
         .catch((err: unknown) => {
+          void appendInvitationEmailLog({
+            event: 'manage_invitation_email_dispatch_failed',
+            status: 'failed',
+            targetEmail: recipientEmail,
+            giftId: allocation.id,
+            itemName: allocation.itemName,
+            donorName: allocation.sourceUserName,
+            reason: err instanceof Error ? err.message : String(err),
+            metadata: {
+              deliveryMethod: dto.deliveryMethod,
+              walletItemId: dto.walletItemId,
+            },
+          });
           this.logger.warn(
             `Post-gift Supabase invite async error (${recipientEmail}): ${
               err instanceof Error ? err.message : String(err)
             }`,
           );
         });
+    } else {
+      void appendInvitationEmailLog({
+        event: 'manage_invitation_email_dispatch_skipped',
+        status: 'skipped',
+        targetEmail: null,
+        giftId: allocation.id,
+        itemName: allocation.itemName,
+        donorName: allocation.sourceUserName,
+        reason: 'recipient email not provided',
+        metadata: {
+          deliveryMethod: dto.deliveryMethod,
+          walletItemId: dto.walletItemId,
+          recipientPhoneProvided: Boolean(recipientPhone),
+        },
+      });
     }
 
     return allocation;

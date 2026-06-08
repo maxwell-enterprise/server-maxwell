@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
+import { appendInvitationEmailLog } from '../../common/logging/invitation-email-log';
 import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
 import { MembersService } from '../members/members.service';
 import { CreateMemberDtoSchema } from '../members/dto';
@@ -821,16 +822,35 @@ export class AuthService {
    * is persisted; failures are logged only and must not roll back the gift.
    */
   async sendGiftTicketRecipientSupabaseInvite(params: {
+    giftId?: string | null;
     email: string;
     itemName?: string | null;
     donorName?: string | null;
   }): Promise<void> {
     const email = params.email.trim().toLowerCase();
     if (!email.includes('@')) {
+      await appendInvitationEmailLog({
+        event: 'manage_invitation_email_dispatch_skipped',
+        status: 'skipped',
+        targetEmail: email || params.email,
+        giftId: params.giftId ?? null,
+        itemName: params.itemName ?? null,
+        donorName: params.donorName ?? null,
+        reason: 'invalid recipient email',
+      });
       return;
     }
 
     if (!this.isSupabaseAuthEnabled()) {
+      await appendInvitationEmailLog({
+        event: 'manage_invitation_email_dispatch_skipped',
+        status: 'skipped',
+        targetEmail: email,
+        giftId: params.giftId ?? null,
+        itemName: params.itemName ?? null,
+        donorName: params.donorName ?? null,
+        reason: 'supabase auth not enabled',
+      });
       this.logger.debug(
         'Gift ticket Supabase invite skipped: Supabase Auth not enabled (set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY, or AUTH_PROVIDER=legacy disables this).',
       );
@@ -839,6 +859,15 @@ export class AuthService {
 
     const redirectTo = this.resolveGiftInviteRedirectUrl();
     if (!redirectTo) {
+      await appendInvitationEmailLog({
+        event: 'manage_invitation_email_dispatch_skipped',
+        status: 'skipped',
+        targetEmail: email,
+        giftId: params.giftId ?? null,
+        itemName: params.itemName ?? null,
+        donorName: params.donorName ?? null,
+        reason: 'invalid gift invite redirect url',
+      });
       this.logger.warn(
         `Gift ticket Supabase invite skipped: invalid SUPABASE_GIFT_INVITE_REDIRECT_URL`,
       );
@@ -856,12 +885,37 @@ export class AuthService {
       meta.donor_name = params.donorName.trim();
     }
 
+    await appendInvitationEmailLog({
+      event: 'manage_invitation_email_dispatch_started',
+      status: 'started',
+      targetEmail: email,
+      giftId: params.giftId ?? null,
+      itemName: params.itemName ?? null,
+      donorName: params.donorName ?? null,
+      metadata: {
+        redirectTo,
+        provider: 'supabase_invite',
+      },
+    });
+
     try {
       const { error } = await supabase.auth.admin.inviteUserByEmail(email, {
         redirectTo,
         data: meta,
       });
       if (!error) {
+        await appendInvitationEmailLog({
+          event: 'manage_invitation_email_dispatch_sent',
+          status: 'sent',
+          targetEmail: email,
+          giftId: params.giftId ?? null,
+          itemName: params.itemName ?? null,
+          donorName: params.donorName ?? null,
+          metadata: {
+            redirectTo,
+            provider: 'supabase_invite',
+          },
+        });
         return;
       }
       const msg = formatSupabaseAuthError(error);
@@ -870,25 +924,82 @@ export class AuthService {
           msg,
         )
       ) {
+        await appendInvitationEmailLog({
+          event: 'manage_invitation_email_dispatch_fallback_magic_link',
+          status: 'fallback',
+          targetEmail: email,
+          giftId: params.giftId ?? null,
+          itemName: params.itemName ?? null,
+          donorName: params.donorName ?? null,
+          reason: msg || 'recipient already exists in auth',
+          metadata: {
+            redirectTo,
+            provider: 'supabase_invite',
+          },
+        });
         this.logger.log(
           `Supabase gift invite: user already in Auth, sending magic link email (${email})`,
         );
         await this.sendGiftTicketMagicLinkForExistingAuthUser(
           email,
           redirectTo,
+          params.giftId ?? null,
+          params.itemName ?? null,
+          params.donorName ?? null,
         );
         return;
       }
+      await appendInvitationEmailLog({
+        event: 'manage_invitation_email_dispatch_failed',
+        status: 'failed',
+        targetEmail: email,
+        giftId: params.giftId ?? null,
+        itemName: params.itemName ?? null,
+        donorName: params.donorName ?? null,
+        reason: msg || 'unknown error',
+        metadata: {
+          redirectTo,
+          provider: 'supabase_invite',
+        },
+      });
       this.logger.warn(
         `Supabase gift invite failed for ${email}: ${msg || 'unknown error'} (redirectTo=${redirectTo})`,
       );
     } catch (err) {
       if (isOutboundNetworkFailure(err)) {
+        await appendInvitationEmailLog({
+          event: 'manage_invitation_email_dispatch_failed',
+          status: 'failed',
+          targetEmail: email,
+          giftId: params.giftId ?? null,
+          itemName: params.itemName ?? null,
+          donorName: params.donorName ?? null,
+          reason: err instanceof Error ? err.message : String(err),
+          metadata: {
+            redirectTo,
+            provider: 'supabase_invite',
+            failureType: 'network',
+          },
+        });
         this.logger.warn(
           `Supabase gift invite unreachable for ${email}: ${err instanceof Error ? err.message : String(err)}`,
         );
         return;
       }
+      await appendInvitationEmailLog({
+        event: 'manage_invitation_email_dispatch_failed',
+        status: 'failed',
+        targetEmail: email,
+        giftId: params.giftId ?? null,
+        itemName: params.itemName ?? null,
+        donorName: params.donorName ?? null,
+        reason: err instanceof Error ? err.message : String(err),
+        metadata: {
+          redirectTo,
+          provider: 'supabase_invite',
+          failureType: 'unexpected',
+        },
+      });
       this.logger.warn(
         `Supabase gift invite unexpected error for ${email}: ${err instanceof Error ? err.message : String(err)} (redirectTo=${redirectTo})`,
       );
@@ -903,6 +1014,9 @@ export class AuthService {
   private async sendGiftTicketMagicLinkForExistingAuthUser(
     email: string,
     emailRedirectTo: string,
+    giftId?: string | null,
+    itemName?: string | null,
+    donorName?: string | null,
   ): Promise<void> {
     const supabase = this.getSupabaseAdminClient();
     const runOtp = () =>
@@ -921,21 +1035,74 @@ export class AuthService {
       const { error } = result;
       if (error) {
         const msg = formatSupabaseAuthError(error);
+        await appendInvitationEmailLog({
+          event: 'manage_invitation_email_magic_link_failed',
+          status: 'failed',
+          targetEmail: email,
+          giftId: giftId ?? null,
+          itemName: itemName ?? null,
+          donorName: donorName ?? null,
+          reason: msg || 'unknown error',
+          metadata: {
+            redirectTo: emailRedirectTo,
+            provider: 'supabase_magic_link',
+          },
+        });
         this.logger.warn(
           `Supabase gift magic link (existing Auth user) failed for ${email}: ${msg || 'unknown error'} (redirectTo=${emailRedirectTo})`,
         );
         return;
       }
+      await appendInvitationEmailLog({
+        event: 'manage_invitation_email_magic_link_sent',
+        status: 'sent',
+        targetEmail: email,
+        giftId: giftId ?? null,
+        itemName: itemName ?? null,
+        donorName: donorName ?? null,
+        metadata: {
+          redirectTo: emailRedirectTo,
+          provider: 'supabase_magic_link',
+        },
+      });
       this.logger.log(
         `Supabase gift: magic link email sent for existing Auth user ${email}`,
       );
     } catch (err) {
       if (isOutboundNetworkFailure(err)) {
+        await appendInvitationEmailLog({
+          event: 'manage_invitation_email_magic_link_failed',
+          status: 'failed',
+          targetEmail: email,
+          giftId: giftId ?? null,
+          itemName: itemName ?? null,
+          donorName: donorName ?? null,
+          reason: err instanceof Error ? err.message : String(err),
+          metadata: {
+            redirectTo: emailRedirectTo,
+            provider: 'supabase_magic_link',
+            failureType: 'network',
+          },
+        });
         this.logger.warn(
           `Supabase gift magic link unreachable for ${email}: ${err instanceof Error ? err.message : String(err)}`,
         );
         return;
       }
+      await appendInvitationEmailLog({
+        event: 'manage_invitation_email_magic_link_failed',
+        status: 'failed',
+        targetEmail: email,
+        giftId: giftId ?? null,
+        itemName: itemName ?? null,
+        donorName: donorName ?? null,
+        reason: err instanceof Error ? err.message : String(err),
+        metadata: {
+          redirectTo: emailRedirectTo,
+          provider: 'supabase_magic_link',
+          failureType: 'unexpected',
+        },
+      });
       this.logger.warn(
         `Supabase gift magic link unexpected error for ${email}: ${err instanceof Error ? err.message : String(err)}`,
       );
