@@ -4,6 +4,7 @@ import {
   AppConfigService,
   DatabaseRuntimeConfig,
 } from '../config/app-config.service';
+import { toRlsRoleString } from '../../modules/workspace-identity/user-role.constants';
 
 export interface DatabaseHealth extends DatabaseRuntimeConfig {
   status: 'ok' | 'error';
@@ -109,7 +110,7 @@ export class DatabaseService implements OnModuleDestroy {
       )
         ? userId.trim()
         : DatabaseService.NIL_UUID;
-    const normalizedRole = String(role ?? 'Guest').trim() || 'Guest';
+    const normalizedRole = toRlsRoleString(role);
 
     return this.withTransaction(async (client) => {
       await client.query(

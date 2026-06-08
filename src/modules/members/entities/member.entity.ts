@@ -51,6 +51,9 @@ export class Member {
   birthDate?: string;
   gender?: string;
   linkedinUrl?: string;
+  facilitatorName?: string;
+  facilitatorType?: string;
+  inheritanceChain?: string[];
   serviceLevel?: string;
   achievements?: unknown[];
   earnedDoneTags?: string[];

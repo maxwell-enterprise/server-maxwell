@@ -15,10 +15,18 @@ import {
   UpdateUserRoleDto,
 } from './dto';
 import { DbService } from '../../common/db.service';
+import {
+  MembersService,
+  type TribeDownlineMember,
+  type TribeMentoringSessionRow,
+} from '../members/members.service';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly members: MembersService,
+  ) {}
 
   /**
    * Create a new user
@@ -302,34 +310,22 @@ export class UsersService {
     return this.findOne(userId);
   }
 
-  /**
-   * Get user's downline (for facilitators)
-   */
-  async getDownline(facilitatorId: string): Promise<User[]> {
-    const result = await this.db.query<User>(
-      `
-      select
-        m.id,
-        m.email,
-        m.phone,
-        m.name as "fullName",
-        null::text as "nickname",
-        null::text as "avatarUrl",
-        'MEMBER'::text as role,
-        coalesce(m."lifecycleStage", 'MEMBER') as "lifecycleStage",
-        true as "isActive",
-        true as "isVerified",
-        m.company,
-        m."jobTitle",
-        0 as "totalPoints",
-        1 as "currentLevel",
-        m."createdAt" as "createdAt",
-        m."updatedAt" as "updatedAt"
-      from members m
-      where m."nTagStatus" = $1
-      `,
-      [facilitatorId],
+  /** @deprecated Prefer `MembersService.getTribeMembers` via `/me/tribe/members`. */
+  async getDownline(
+    facilitatorId: string,
+    facilitatorEmail?: string | null,
+  ): Promise<TribeDownlineMember[]> {
+    return this.members.getTribeMembers(facilitatorId, facilitatorEmail);
+  }
+
+  /** @deprecated Prefer `MembersService.getTribeMentoringSessions` via `/me/tribe/sessions`. */
+  async getTribeMentoringSessions(
+    facilitatorId: string,
+    facilitatorEmail?: string | null,
+  ): Promise<TribeMentoringSessionRow[]> {
+    return this.members.getTribeMentoringSessions(
+      facilitatorId,
+      facilitatorEmail,
     );
-    return result.rows;
   }
 }

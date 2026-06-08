@@ -14,6 +14,7 @@ import {
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { AuthService } from './auth.service';
 import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
+import { MembersService } from '../members/members.service';
 import type { JwtUserPayload } from './auth.service';
 
 @Controller('me')
@@ -22,7 +23,20 @@ export class WorkspaceMeController {
   constructor(
     private readonly workspace: WorkspaceIdentityService,
     private readonly auth: AuthService,
+    private readonly members: MembersService,
   ) {}
+
+  /** My Tribe — mentees linked via `members.nTagStatus`. */
+  @Get('tribe/members')
+  getTribeMembers(@Req() req: { user: JwtUserPayload }) {
+    return this.members.getTribeMembers(req.user.sub, req.user.email);
+  }
+
+  /** My Tribe — mentoring session logs. */
+  @Get('tribe/sessions')
+  getTribeSessions(@Req() req: { user: JwtUserPayload }) {
+    return this.members.getTribeMentoringSessions(req.user.sub, req.user.email);
+  }
 
   @Get('rbac-tasks')
   rbacTasks(@Req() req: { user: JwtUserPayload }) {

@@ -140,6 +140,23 @@ export function assertAssignableRole(value: string): UserRoleString {
   return parsed;
 }
 
+/** Map canonical JWT/app roles to PostgreSQL RLS `app.user_role` enum-style values. */
+export function toRlsRoleString(value: string | null | undefined): string {
+  const canonical = parseAppRoleString(value);
+  const RLS_ROLE: Record<UserRoleString, string> = {
+    [USER_ROLE.SUPER_ADMIN]: 'SUPER_ADMIN',
+    [USER_ROLE.FINANCE]: 'FINANCE',
+    [USER_ROLE.OPERATIONS]: 'OPERATIONS',
+    [USER_ROLE.MARKETING]: 'MARKETING',
+    [USER_ROLE.SALES]: 'SALES',
+    [USER_ROLE.FACILITATOR]: 'FACILITATOR',
+    [USER_ROLE.GATE_KEEPER]: 'GATE_KEEPER',
+    [USER_ROLE.MEMBER]: 'MEMBER',
+    [USER_ROLE.GUEST]: 'GUEST',
+  };
+  return RLS_ROLE[canonical] ?? canonical.toUpperCase().replace(/ /g, '_');
+}
+
 export function assertAssignableRoleList(values: readonly string[]): UserRoleString[] {
   const normalized = Array.from(
     new Set(values.map((value) => assertAssignableRole(String(value ?? '')))),
