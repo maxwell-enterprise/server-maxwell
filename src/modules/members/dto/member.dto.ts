@@ -16,6 +16,7 @@ export const SocialProfileDtoSchema = z.object({
   occupation: z.string().default(''),
   businessType: z.string().default(''),
   communities: z.array(z.string()).default([]),
+  instagram: z.string().max(120).optional(),
 });
 
 export const MemberEngagementDtoSchema = z.object({
@@ -43,7 +44,7 @@ const createMemberShape = {
   company: z.string().max(255).optional(),
   jobTitle: z.string().max(255).optional(),
   domicile: z.string().max(255).optional(),
-  instagram: z.string().max(255).optional(),
+  instagram: z.string().max(120).optional(),
   industry: z.string().max(100).optional(),
   tags: z.array(z.string()).default([]),
   address: MemberAddressDtoSchema.optional(),
@@ -78,7 +79,7 @@ const updateMemberShape = {
   company: z.string().max(255).optional(),
   jobTitle: z.string().max(255).optional(),
   domicile: z.string().max(255).optional(),
-  instagram: z.string().max(255).optional(),
+  instagram: z.string().max(120).optional(),
   industry: z.string().max(100).optional(),
   tags: z.array(z.string()).optional(),
   address: MemberAddressDtoSchema.optional(),

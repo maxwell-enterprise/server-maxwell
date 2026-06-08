@@ -221,6 +221,103 @@ export class MembersService {
    * Wallet grants still use Prisma `User.id` when the buyer has a workspace account;
    * this ensures `members` always has a lead for ops/reporting after a paid order.
    */
+  /**
+   * Mirror Account Settings (`User` profile) into CRM `members` by email.
+   * Creates an IDENTIFIED row when missing; never changes lifecycle stage on update.
+   */
+  async syncFromWorkspaceUserProfile(input: {
+    lookupEmail: string;
+    fullName: string;
+    email: string;
+    phone: string;
+    jobTitle: string;
+    company: string;
+    domicile: string;
+    instagram?: string | null;
+    linkedinUrl?: string | null;
+  }): Promise<void> {
+    try {
+      const lookupEmail = input.lookupEmail.trim().toLowerCase();
+      const email = input.email.trim().toLowerCase();
+      if (!email.includes('@')) return;
+
+      const phone = input.phone.trim();
+      const name = input.fullName.trim().slice(0, 255);
+      const jobTitle = input.jobTitle.trim().slice(0, 255);
+      const company = input.company.trim().slice(0, 255);
+      const domicile = input.domicile.trim().slice(0, 255);
+      const instagram = input.instagram?.trim().slice(0, 120) || null;
+      const linkedinUrl = input.linkedinUrl?.trim().slice(0, 500) || null;
+
+      const memberId = await this.findMemberIdByEmail(lookupEmail || email);
+
+      const buildAddress = (
+        existing?: MemberAddress | null,
+      ): MemberAddress => ({
+        ...(existing ?? {}),
+        city: domicile,
+        country: existing?.country?.trim() || 'Indonesia',
+      });
+
+      const buildSocialProfile = (
+        existing?: SocialProfile | null,
+      ): SocialProfile => {
+        const profile: SocialProfile = {
+          igVerified: existing?.igVerified ?? false,
+          igFollowers: existing?.igFollowers ?? 0,
+          businessAccounts: existing?.businessAccounts ?? [],
+          occupation: existing?.occupation ?? '',
+          businessType: existing?.businessType ?? '',
+          communities: existing?.communities ?? [],
+        };
+        if (instagram) {
+          profile.instagram = instagram;
+        }
+        return profile;
+      };
+
+      if (memberId) {
+        const existing = await this.findOne(memberId);
+        await this.update(memberId, {
+          name,
+          ...(email !== existing.email.trim().toLowerCase() ? { email } : {}),
+          phone,
+          jobTitle,
+          company,
+          domicile,
+          instagram: instagram ?? undefined,
+          linkedinUrl: linkedinUrl ?? undefined,
+          address: buildAddress(existing.address),
+          socialProfile: buildSocialProfile(existing.socialProfile),
+        });
+        return;
+      }
+
+      const dto = CreateMemberDtoSchema.parse({
+        name,
+        email,
+        phone,
+        joinMonth: new Date().toISOString().slice(0, 7),
+        lifecycleStage: 'IDENTIFIED',
+        platform: 'Workspace',
+        company,
+        jobTitle,
+        domicile,
+        instagram: instagram ?? undefined,
+        linkedinUrl: linkedinUrl ?? undefined,
+        address: buildAddress(),
+        socialProfile: buildSocialProfile(),
+      });
+      await this.create(dto);
+    } catch (err) {
+      this.logger.warn(
+        `syncFromWorkspaceUserProfile(${input.email}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   async ensureCrmMemberForPurchaseEmail(
     rawEmail: string,
     displayName?: string | null,
@@ -427,12 +524,10 @@ export class MembersService {
         $23,
         $24,
         $25,
-        $26,
-        $27,
+        $26::jsonb,
+        $27::text[],
         $28::jsonb,
-        $29::text[],
-        $30::jsonb,
-        $31,
+        $29,
         now(),
         now()
       )

@@ -41,6 +41,12 @@ model User {
   email              String?             @unique
   emailVerified      DateTime?
   image              String?
+  phone              String?
+  jobTitle           String?
+  company            String?
+  domicile           String?
+  instagram          String?
+  linkedinUrl        String?
   appRole            String              @default("Member")
   abacContext        Json?               @db.JsonB
   accounts           Account[]
