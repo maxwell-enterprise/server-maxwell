@@ -18,7 +18,9 @@ export const USER_ROLE = {
 export type UserRoleString = (typeof USER_ROLE)[keyof typeof USER_ROLE];
 
 const ALL = new Set<string>(Object.values(USER_ROLE));
-const MAX_ASSIGNED_ROLES = 2;
+const DEFAULT_MAX_ASSIGNED_ROLES = 2;
+const FACILITATOR_MAX_ASSIGNED_ROLES = 3;
+const ABSOLUTE_MAX_ASSIGNED_ROLES = FACILITATOR_MAX_ASSIGNED_ROLES;
 
 /** Normalize for fuzzy match: casing, underscores, extra spaces. */
 function normalizeRoleKey(raw: string): string {
@@ -110,7 +112,7 @@ export function parseAppRoleList(
     return [single ?? USER_ROLE.MEMBER];
   }
 
-  return Array.from(unique).slice(0, MAX_ASSIGNED_ROLES);
+  return normalizeAssignedRoleSet(Array.from(unique));
 }
 
 export function serializeAppRoleList(
@@ -121,7 +123,7 @@ export function serializeAppRoleList(
     const parsed = parseLooseRoleToken(String(value ?? ''));
     if (parsed) unique.add(parsed);
   }
-  const normalized = Array.from(unique).slice(0, MAX_ASSIGNED_ROLES);
+  const normalized = normalizeAssignedRoleSet(Array.from(unique));
   return (normalized.length > 0 ? normalized : [USER_ROLE.MEMBER]).join(', ');
 }
 
@@ -164,8 +166,23 @@ export function assertAssignableRoleList(values: readonly string[]): UserRoleStr
   if (normalized.length === 0) {
     return [USER_ROLE.MEMBER];
   }
-  if (normalized.length > MAX_ASSIGNED_ROLES) {
-    throw new Error(`A user can have at most ${MAX_ASSIGNED_ROLES} roles`);
+  const maxRoles = getMaxAssignedRoleCount(normalized);
+  if (normalized.length > maxRoles) {
+    throw new Error(`A user can have at most ${maxRoles} roles`);
   }
   return normalized;
+}
+
+export function getMaxAssignedRoleCount(values: readonly string[]): number {
+  const normalized = values
+    .map((value) => parseLooseRoleToken(String(value ?? '')))
+    .filter((value): value is UserRoleString => !!value);
+  return normalized.includes(USER_ROLE.FACILITATOR)
+    ? FACILITATOR_MAX_ASSIGNED_ROLES
+    : DEFAULT_MAX_ASSIGNED_ROLES;
+}
+
+function normalizeAssignedRoleSet(values: readonly UserRoleString[]): UserRoleString[] {
+  const maxRoles = getMaxAssignedRoleCount(values);
+  return values.slice(0, Math.min(maxRoles, ABSOLUTE_MAX_ASSIGNED_ROLES));
 }

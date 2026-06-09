@@ -210,6 +210,8 @@ export class AutomationQueueWorkerService {
       .trim()
       .toLowerCase();
     return (
+      msg.includes('database service is shutting down') ||
+      msg.includes('cannot use a pool after calling end on the pool') ||
       msg.includes('connection terminated due to connection timeout') ||
       msg.includes('connection terminated unexpectedly') ||
       msg.includes('timeout expired') ||

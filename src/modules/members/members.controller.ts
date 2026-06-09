@@ -26,6 +26,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import {
   assertCrmMembersResourceAccess,
+  assertCrmFacilitatorAssignmentAccess,
 } from '../../common/security/access-policy';
 import { parseAppRoleString, USER_ROLE } from '../workspace-identity/user-role.constants';
 import { ForbiddenException } from '@nestjs/common';
@@ -115,13 +116,13 @@ export class MembersController {
     @Body(new ZodValidationPipe(UpdateMemberDtoSchema))
     dto: UpdateMemberDto,
   ) {
-    const role = parseAppRoleString(req.user?.role);
     if (
-      (dto.facilitatorName !== undefined || dto.facilitatorType !== undefined) &&
-      role !== USER_ROLE.SUPER_ADMIN
+      dto.facilitatorName !== undefined ||
+      dto.facilitatorType !== undefined
     ) {
-      throw new ForbiddenException(
-        'Facilitator assignment update requires Super Admin role',
+      assertCrmFacilitatorAssignmentAccess(
+        req.user,
+        'Facilitator assignment update',
       );
     }
     assertCrmMembersResourceAccess(req.user, 'Member update');

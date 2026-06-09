@@ -295,6 +295,18 @@ export function assertCrmMembersResourceAccess(
   );
 }
 
+export function assertCrmFacilitatorAssignmentAccess(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.SUPER_ADMIN],
+    ['crm_member_facilitator_assignment'],
+    actionLabel,
+  );
+}
+
 export function assertCrmLeadsResourceAccess(
   user: JwtUserPayload,
   actionLabel: string,

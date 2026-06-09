@@ -20,13 +20,21 @@ export interface DatabaseHealth extends DatabaseRuntimeConfig {
 export class DatabaseService implements OnModuleDestroy {
   private readonly pool: Pool;
   private static readonly NIL_UUID = '00000000-0000-0000-0000-000000000000';
+  private shuttingDown = false;
 
   constructor(private readonly config: AppConfigService) {
     this.pool = new Pool(this.config.database);
   }
 
   async onModuleDestroy() {
+    this.shuttingDown = true;
     await this.pool.end();
+  }
+
+  private assertActive(): void {
+    if (this.shuttingDown) {
+      throw new Error('Database service is shutting down');
+    }
   }
 
   get runtime(): DatabaseRuntimeConfig {
@@ -34,6 +42,7 @@ export class DatabaseService implements OnModuleDestroy {
   }
 
   async getClient(): Promise<PoolClient> {
+    this.assertActive();
     return this.pool.connect();
   }
 
@@ -41,6 +50,7 @@ export class DatabaseService implements OnModuleDestroy {
     text: string,
     params: readonly unknown[] = [],
   ): Promise<QueryResult<T>> {
+    this.assertActive();
     return this.pool.query<T>(text, [...params]);
   }
 

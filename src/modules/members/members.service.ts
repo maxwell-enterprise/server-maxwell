@@ -73,6 +73,8 @@ const LIFECYCLE_ORDER: MemberLifecycleStage[] = [
   'FACILITATOR',
 ];
 
+const TRIBE_MEMBER_NOTE_EVENT = '__TRIBE_MEMBER_NOTE__';
+
 @Injectable()
 export class MembersService {
   private readonly logger = new Logger(MembersService.name);
@@ -1395,11 +1397,257 @@ export class MembersService {
         s."createdAt"
       from tribe_mentoring_sessions s
       where s."facilitatorId" in (select key from facilitator_keys)
+        and coalesce(s."eventName", '') <> $3
       order by s."createdAt" desc
       `,
-      [userId, email],
+      [userId, email, TRIBE_MEMBER_NOTE_EVENT],
     );
     return result.rows;
+  }
+
+  async getTribeMemberNotes(
+    facilitatorUserId: string,
+    facilitatorEmail?: string | null,
+  ): Promise<TribeMemberNoteRow[]> {
+    const userId = facilitatorUserId?.trim() ?? '';
+    const email = facilitatorEmail?.trim().toLowerCase() ?? '';
+    if (!userId && !email) return [];
+
+    const result = await this.db.query<TribeMemberNoteRow>(
+      `
+      with facilitator_keys as (
+        select distinct key from (
+          select $1::text as key
+          union all
+          select coalesce(nullif(trim(f.public_id), ''), f.id::text)
+          from members f
+          where $2 <> '' and lower(trim(f.email)) = $2
+        ) keys(key)
+        where key is not null and btrim(key) <> ''
+      ),
+      ranked_notes as (
+        select
+          s.id::text as id,
+          coalesce(s."memberId", '') as "memberId",
+          coalesce(s."memberName", '') as "memberName",
+          coalesce(s.notes, '') as notes,
+          s."createdAt",
+          row_number() over (
+            partition by coalesce(s."memberId", '')
+            order by s."createdAt" desc, s.id desc
+          ) as rn
+        from tribe_mentoring_sessions s
+        where s."facilitatorId" in (select key from facilitator_keys)
+          and coalesce(s."eventName", '') = $3
+          and coalesce(s."memberId", '') <> ''
+      )
+      select id, "memberId", "memberName", notes, "createdAt"
+      from ranked_notes
+      where rn = 1
+      order by "createdAt" desc
+      `,
+      [userId, email, TRIBE_MEMBER_NOTE_EVENT],
+    );
+    return result.rows;
+  }
+
+  async upsertTribeMemberNote(params: {
+    facilitatorUserId: string;
+    facilitatorEmail?: string | null;
+    memberId: string;
+    note: string;
+  }): Promise<TribeMemberNoteRow> {
+    const facilitatorId = params.facilitatorUserId?.trim() ?? '';
+    const facilitatorEmail = params.facilitatorEmail?.trim().toLowerCase() ?? '';
+    const memberId = params.memberId?.trim() ?? '';
+    const note = String(params.note ?? '').trim();
+
+    if (!facilitatorId && !facilitatorEmail) {
+      throw new BadRequestException('Facilitator context is required');
+    }
+    if (!memberId) {
+      throw new BadRequestException('memberId is required');
+    }
+    if (!note) {
+      throw new BadRequestException('Note is required');
+    }
+    if (note.length > 2000) {
+      throw new BadRequestException('Note is too long (max 2000 characters)');
+    }
+
+    const member = await this.resolveOwnedTribeMember(
+      facilitatorId,
+      facilitatorEmail,
+      memberId,
+    );
+    const facilitator = await this.prisma.user.findUnique({
+      where: { id: facilitatorId },
+      select: { name: true, email: true },
+    });
+    const facilitatorName =
+      facilitator?.name?.trim() ||
+      facilitator?.email?.trim() ||
+      facilitatorEmail ||
+      facilitatorId;
+
+    const existing = await this.db.query<{ id: string }>(
+      `
+      with facilitator_keys as (
+        select distinct key from (
+          select $1::text as key
+          union all
+          select coalesce(nullif(trim(f.public_id), ''), f.id::text)
+          from members f
+          where $2 <> '' and lower(trim(f.email)) = $2
+        ) keys(key)
+        where key is not null and btrim(key) <> ''
+      )
+      select s.id::text as id
+      from tribe_mentoring_sessions s
+      where s."facilitatorId" in (select key from facilitator_keys)
+        and coalesce(s."eventName", '') = $3
+        and coalesce(s."memberId", '') = $4
+      order by s."createdAt" desc, s.id desc
+      limit 1
+      `,
+      [facilitatorId, facilitatorEmail, TRIBE_MEMBER_NOTE_EVENT, member.memberId],
+    );
+
+    if (existing.rows[0]?.id) {
+      const updated = await this.db.query<TribeMemberNoteRow>(
+        `
+        update tribe_mentoring_sessions
+        set
+          "facilitatorId" = $2,
+          "facilitatorName" = $3,
+          "memberId" = $4,
+          "memberName" = $5,
+          notes = $6
+        where id::text = $1
+        returning
+          id::text as id,
+          coalesce("memberId", '') as "memberId",
+          coalesce("memberName", '') as "memberName",
+          coalesce(notes, '') as notes,
+          "createdAt"
+        `,
+        [
+          existing.rows[0].id,
+          facilitatorId,
+          facilitatorName,
+          member.memberId,
+          member.memberName,
+          note,
+        ],
+      );
+      return updated.rows[0];
+    }
+
+    const inserted = await this.db.query<TribeMemberNoteRow>(
+      `
+      insert into tribe_mentoring_sessions (
+        "facilitatorId",
+        "facilitatorName",
+        "eventName",
+        "memberId",
+        "memberName",
+        notes
+      )
+      values ($1, $2, $3, $4, $5, $6)
+      returning
+        id::text as id,
+        coalesce("memberId", '') as "memberId",
+        coalesce("memberName", '') as "memberName",
+        coalesce(notes, '') as notes,
+        "createdAt"
+      `,
+      [
+        facilitatorId,
+        facilitatorName,
+        TRIBE_MEMBER_NOTE_EVENT,
+        member.memberId,
+        member.memberName,
+        note,
+      ],
+    );
+    return inserted.rows[0];
+  }
+
+  async deleteTribeMemberNote(params: {
+    facilitatorUserId: string;
+    facilitatorEmail?: string | null;
+    memberId: string;
+  }): Promise<{ ok: true }> {
+    const facilitatorId = params.facilitatorUserId?.trim() ?? '';
+    const facilitatorEmail = params.facilitatorEmail?.trim().toLowerCase() ?? '';
+    const memberId = params.memberId?.trim() ?? '';
+
+    if (!facilitatorId && !facilitatorEmail) {
+      throw new BadRequestException('Facilitator context is required');
+    }
+    if (!memberId) {
+      throw new BadRequestException('memberId is required');
+    }
+
+    await this.resolveOwnedTribeMember(facilitatorId, facilitatorEmail, memberId);
+
+    await this.db.query(
+      `
+      with facilitator_keys as (
+        select distinct key from (
+          select $1::text as key
+          union all
+          select coalesce(nullif(trim(f.public_id), ''), f.id::text)
+          from members f
+          where $2 <> '' and lower(trim(f.email)) = $2
+        ) keys(key)
+        where key is not null and btrim(key) <> ''
+      )
+      delete from tribe_mentoring_sessions s
+      where s."facilitatorId" in (select key from facilitator_keys)
+        and coalesce(s."eventName", '') = $3
+        and coalesce(s."memberId", '') = $4
+      `,
+      [facilitatorId, facilitatorEmail, TRIBE_MEMBER_NOTE_EVENT, memberId],
+    );
+
+    return { ok: true };
+  }
+
+  private async resolveOwnedTribeMember(
+    facilitatorUserId: string,
+    facilitatorEmail: string,
+    rawMemberId: string,
+  ): Promise<{ memberId: string; memberName: string }> {
+    const memberId = rawMemberId.trim();
+    const result = await this.db.query<{ memberId: string; memberName: string }>(
+      `
+      with facilitator_keys as (
+        select distinct key from (
+          select $1::text as key
+          union all
+          select coalesce(nullif(trim(f.public_id), ''), f.id::text)
+          from members f
+          where $2 <> '' and lower(trim(f.email)) = $2
+        ) keys(key)
+        where key is not null and btrim(key) <> ''
+      )
+      select
+        coalesce(nullif(trim(m.public_id), ''), m.id::text) as "memberId",
+        trim(m.name) as "memberName"
+      from members m
+      where coalesce(nullif(trim(m.public_id), ''), m.id::text) = $3
+        and coalesce(m."nTagStatus", '') in (select key from facilitator_keys)
+      limit 1
+      `,
+      [facilitatorUserId, facilitatorEmail, memberId],
+    );
+
+    const row = result.rows[0];
+    if (!row) {
+      throw new NotFoundException('Tribe member not found');
+    }
+    return row;
   }
 
   private mapTribeDownlineRow(row: TribeDownlineMemberRow): TribeDownlineMember {
@@ -1507,6 +1755,14 @@ export interface TribeMentoringSessionRow {
   facilitatorId: string;
   facilitatorName: string;
   eventName: string;
+  memberId: string;
+  memberName: string;
+  notes: string;
+  createdAt: string | Date;
+}
+
+export interface TribeMemberNoteRow {
+  id: string;
   memberId: string;
   memberName: string;
   notes: string;

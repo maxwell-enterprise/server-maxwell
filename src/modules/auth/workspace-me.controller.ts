@@ -7,6 +7,7 @@ import {
   Post,
   Param,
   Patch,
+  Put,
   Query,
   Req,
   UseGuards,
@@ -36,6 +37,37 @@ export class WorkspaceMeController {
   @Get('tribe/sessions')
   getTribeSessions(@Req() req: { user: JwtUserPayload }) {
     return this.members.getTribeMentoringSessions(req.user.sub, req.user.email);
+  }
+
+  @Get('tribe/member-notes')
+  getTribeMemberNotes(@Req() req: { user: JwtUserPayload }) {
+    return this.members.getTribeMemberNotes(req.user.sub, req.user.email);
+  }
+
+  @Put('tribe/member-notes/:memberId')
+  upsertTribeMemberNote(
+    @Req() req: { user: JwtUserPayload },
+    @Param('memberId') memberId: string,
+    @Body() body: { note?: string },
+  ) {
+    return this.members.upsertTribeMemberNote({
+      facilitatorUserId: req.user.sub,
+      facilitatorEmail: req.user.email,
+      memberId,
+      note: String(body?.note ?? ''),
+    });
+  }
+
+  @Delete('tribe/member-notes/:memberId')
+  deleteTribeMemberNote(
+    @Req() req: { user: JwtUserPayload },
+    @Param('memberId') memberId: string,
+  ) {
+    return this.members.deleteTribeMemberNote({
+      facilitatorUserId: req.user.sub,
+      facilitatorEmail: req.user.email,
+      memberId,
+    });
   }
 
   @Get('rbac-tasks')

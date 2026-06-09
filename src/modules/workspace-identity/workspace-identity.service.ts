@@ -19,6 +19,7 @@ import {
   UserRoleString,
   assertAssignableRole,
   assertAssignableRoleList,
+  getMaxAssignedRoleCount,
   hasAssignedRole,
   parseAppRoleList,
   parseAppRoleString,
@@ -135,6 +136,7 @@ export class WorkspaceIdentityService {
       USER_ROLE.OPERATIONS,
       USER_ROLE.MARKETING,
       USER_ROLE.SALES,
+      USER_ROLE.FACILITATOR,
     ]);
     return allowed.has(role);
   }
@@ -190,7 +192,21 @@ export class WorkspaceIdentityService {
     if (next.length === 0) {
       return [USER_ROLE.MEMBER];
     }
-    return next.slice(0, 2);
+    return next.slice(0, getMaxAssignedRoleCount(next));
+  }
+
+  private assertTotalRoleSlots(
+    assignedRoles: readonly string[],
+    hasCustomRole: boolean,
+  ): void {
+    const nonMemberRoles = assignedRoles.filter((role) => role !== USER_ROLE.MEMBER);
+    const maxRoles = getMaxAssignedRoleCount(nonMemberRoles);
+    const totalSlots = nonMemberRoles.length + (hasCustomRole ? 1 : 0);
+    if (totalSlots > maxRoles) {
+      throw new BadRequestException(
+        `A user can have at most ${maxRoles} roles in total`,
+      );
+    }
   }
 
   private parseWorkspaceCustomRole(abac: unknown): {
@@ -446,13 +462,20 @@ export class WorkspaceIdentityService {
 
     const existing = await this.prisma.user.findFirst({
       where: { email: { equals: rawEmail, mode: 'insensitive' } },
-      select: { id: true, appRole: true },
+      select: { id: true, appRole: true, abacContext: true },
     });
 
     // Legacy column is still required by schema; use far-future marker.
     const expiresAt = new Date('9999-12-31T23:59:59.999Z');
 
     if (existing) {
+      const existingCustomRole = this.parseWorkspaceCustomRole(
+        existing.abacContext,
+      );
+      this.assertTotalRoleSlots(
+        targetRoles,
+        Boolean(existingCustomRole.assignment),
+      );
       const existingRoles = parseAppRoleList(existing.appRole);
       const isDemotingLastSuperAdmin =
         existingRoles.includes(USER_ROLE.SUPER_ADMIN) &&
@@ -867,11 +890,13 @@ export class WorkspaceIdentityService {
     });
     const user = await this.prisma.user.findFirst({
       where: { email: { equals: email, mode: 'insensitive' } },
-      select: { id: true, abacContext: true },
+      select: { id: true, abacContext: true, appRole: true },
     });
     if (!user) {
       throw new NotFoundException('User not found');
     }
+    const assignedRoles = parseAppRoleList(user.appRole);
+    this.assertTotalRoleSlots(assignedRoles, true);
 
     const envelope: WorkspaceCustomRoleEnvelope = {
       assignment: {
