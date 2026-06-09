@@ -1346,8 +1346,54 @@ export class WorkspaceIdentityService {
       previousUser?.email?.trim().toLowerCase() ?? nextEmail ?? '';
 
     try {
+      const readSelfProfile = (
+        abac: unknown,
+      ): {
+        phone: string | null;
+        jobTitle: string | null;
+        company: string | null;
+        domicile: string | null;
+        instagram: string | null;
+        linkedinUrl: string | null;
+      } => {
+        const empty = {
+          phone: null,
+          jobTitle: null,
+          company: null,
+          domicile: null,
+          instagram: null,
+          linkedinUrl: null,
+        };
+        if (!abac || typeof abac !== 'object' || Array.isArray(abac)) {
+          return empty;
+        }
+        const sp = (abac as Record<string, unknown>).selfProfile;
+        if (!sp || typeof sp !== 'object' || Array.isArray(sp)) {
+          return empty;
+        }
+        const read = (key: string): string | null => {
+          const value = (sp as Record<string, unknown>)[key];
+          return typeof value === 'string' && value.trim() ? value.trim() : null;
+        };
+        return {
+          phone: read('phone'),
+          jobTitle: read('jobTitle'),
+          company: read('company'),
+          domicile: read('domicile'),
+          instagram: read('instagram'),
+          linkedinUrl: read('linkedinUrl'),
+        };
+      };
+
       let mergedAbac: Prisma.InputJsonValue | undefined = undefined;
-      if (nextPhoneRaw !== undefined) {
+      if (
+        nextPhoneRaw !== undefined ||
+        nextJobTitle !== undefined ||
+        nextCompany !== undefined ||
+        nextDomicile !== undefined ||
+        nextInstagram !== undefined ||
+        nextLinkedinUrl !== undefined
+      ) {
         const existing = previousUser;
         const currentCtx =
           existing?.abacContext &&
@@ -1361,7 +1407,14 @@ export class WorkspaceIdentityService {
           !Array.isArray(currentCtx.selfProfile)
             ? { ...(currentCtx.selfProfile as Record<string, unknown>) }
             : {};
-        prevSelf.phone = nextPhoneRaw;
+        if (nextPhoneRaw !== undefined) prevSelf.phone = nextPhoneRaw;
+        if (nextJobTitle !== undefined) prevSelf.jobTitle = nextJobTitle;
+        if (nextCompany !== undefined) prevSelf.company = nextCompany;
+        if (nextDomicile !== undefined) prevSelf.domicile = nextDomicile;
+        if (nextInstagram !== undefined) prevSelf.instagram = nextInstagram;
+        if (nextLinkedinUrl !== undefined) {
+          prevSelf.linkedinUrl = nextLinkedinUrl;
+        }
         mergedAbac = {
           ...currentCtx,
           selfProfile: prevSelf,
@@ -1374,14 +1427,6 @@ export class WorkspaceIdentityService {
           ...(nextName !== undefined ? { name: nextName } : {}),
           ...(nextEmail !== undefined ? { email: nextEmail } : {}),
           ...(nextImage !== undefined ? { image: nextImage } : {}),
-          ...(nextPhoneRaw !== undefined ? { phone: nextPhoneRaw } : {}),
-          ...(nextJobTitle !== undefined ? { jobTitle: nextJobTitle } : {}),
-          ...(nextCompany !== undefined ? { company: nextCompany } : {}),
-          ...(nextDomicile !== undefined ? { domicile: nextDomicile } : {}),
-          ...(nextInstagram !== undefined ? { instagram: nextInstagram } : {}),
-          ...(nextLinkedinUrl !== undefined
-            ? { linkedinUrl: nextLinkedinUrl }
-            : {}),
           ...(mergedAbac !== undefined ? { abacContext: mergedAbac } : {}),
         },
         select: {
@@ -1389,29 +1434,12 @@ export class WorkspaceIdentityService {
           email: true,
           name: true,
           image: true,
-          phone: true,
-          jobTitle: true,
-          company: true,
-          domicile: true,
-          instagram: true,
-          linkedinUrl: true,
           abacContext: true,
         },
       });
 
-      const phoneResolved =
-        (typeof row.phone === 'string' && row.phone.trim()
-          ? row.phone.trim()
-          : null) ??
-        (() => {
-          const abac = row.abacContext;
-          if (!abac || typeof abac !== 'object' || Array.isArray(abac))
-            return null;
-          const sp = (abac as Record<string, unknown>).selfProfile;
-          if (!sp || typeof sp !== 'object' || Array.isArray(sp)) return null;
-          const p = (sp as Record<string, unknown>).phone;
-          return typeof p === 'string' && p.trim() ? p.trim() : null;
-        })();
+      const resolvedSelfProfile = readSelfProfile(row.abacContext);
+      const phoneResolved = resolvedSelfProfile.phone;
 
       await this.appendSecurityAudit(userId, 'SELF_PROFILE_UPDATED', {
         changed: {
@@ -1432,11 +1460,11 @@ export class WorkspaceIdentityService {
         fullName: row.name ?? nextName ?? '',
         email: row.email ?? nextEmail ?? '',
         phone: phoneResolved ?? nextPhoneRaw ?? '',
-        jobTitle: row.jobTitle?.trim() || nextJobTitle || '',
-        company: row.company?.trim() || nextCompany || '',
-        domicile: row.domicile?.trim() || nextDomicile || '',
-        instagram: row.instagram?.trim() || nextInstagram,
-        linkedinUrl: row.linkedinUrl?.trim() || nextLinkedinUrl,
+        jobTitle: resolvedSelfProfile.jobTitle || nextJobTitle || '',
+        company: resolvedSelfProfile.company || nextCompany || '',
+        domicile: resolvedSelfProfile.domicile || nextDomicile || '',
+        instagram: resolvedSelfProfile.instagram || nextInstagram,
+        linkedinUrl: resolvedSelfProfile.linkedinUrl || nextLinkedinUrl,
       });
 
       return {
@@ -1447,11 +1475,11 @@ export class WorkspaceIdentityService {
           email: row.email ?? '',
           avatarUrl: row.image,
           phone: phoneResolved,
-          jobTitle: row.jobTitle?.trim() || null,
-          company: row.company?.trim() || null,
-          domicile: row.domicile?.trim() || null,
-          instagram: row.instagram?.trim() || null,
-          linkedinUrl: row.linkedinUrl?.trim() || null,
+          jobTitle: resolvedSelfProfile.jobTitle,
+          company: resolvedSelfProfile.company,
+          domicile: resolvedSelfProfile.domicile,
+          instagram: resolvedSelfProfile.instagram,
+          linkedinUrl: resolvedSelfProfile.linkedinUrl,
         },
       };
     } catch (error) {

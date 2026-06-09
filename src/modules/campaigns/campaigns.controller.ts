@@ -15,7 +15,7 @@ import { CampaignsService } from './campaigns.service';
 import { RateLimit } from '../../common/security/rate-limit.decorator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
-import { assertMarketingOrSuperAdmin } from '../../common/security/access-policy';
+import { assertCampaignResourceAccess } from '../../common/security/access-policy';
 
 @Controller('campaigns')
 export class CampaignsController {
@@ -32,7 +32,7 @@ export class CampaignsController {
     @Req() req: { user: JwtUserPayload },
     @Body() body: Record<string, unknown>,
   ) {
-    assertMarketingOrSuperAdmin(req.user, 'Campaign creation');
+    assertCampaignResourceAccess(req.user, 'Campaign creation');
     return this.campaigns.create(body ?? {});
   }
 
@@ -43,14 +43,14 @@ export class CampaignsController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    assertMarketingOrSuperAdmin(req.user, 'Campaign update');
+    assertCampaignResourceAccess(req.user, 'Campaign update');
     return this.campaigns.update(decodeURIComponent(id), body ?? {});
   }
 
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   async remove(@Req() req: { user: JwtUserPayload }, @Param('id') id: string) {
-    assertMarketingOrSuperAdmin(req.user, 'Campaign deletion');
+    assertCampaignResourceAccess(req.user, 'Campaign deletion');
     await this.campaigns.remove(decodeURIComponent(id));
     return { ok: true };
   }
@@ -83,7 +83,7 @@ export class CampaignsController {
     @Req() req: { user: JwtUserPayload },
     @Body() body: { mode?: string; items?: Record<string, unknown>[] },
   ) {
-    assertMarketingOrSuperAdmin(req.user, 'Campaign bulk update');
+    assertCampaignResourceAccess(req.user, 'Campaign bulk update');
     const items = Array.isArray(body?.items) ? body.items : [];
     return this.campaigns.bulkUpsert(items);
   }

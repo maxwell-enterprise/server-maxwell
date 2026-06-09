@@ -3,8 +3,7 @@ import { CommunicationEmailService } from './communication-email.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import {
-  assertMarketingOnly,
-  assertMarketingOrSuperAdmin,
+  assertCommunicationResourceAccess,
 } from '../../common/security/access-policy';
 
 @Controller('communication/email')
@@ -27,7 +26,7 @@ export class CommunicationEmailController {
     @Req() req: { user: JwtUserPayload },
     @Body() body: Record<string, unknown>,
   ) {
-    assertMarketingOnly(req.user, 'Email campaign creation');
+    assertCommunicationResourceAccess(req.user, 'Email campaign creation');
     return this.email.createCampaign(body ?? {});
   }
 
@@ -42,7 +41,7 @@ export class CommunicationEmailController {
     @Req() req: { user: JwtUserPayload },
     @Body() body: Record<string, unknown>,
   ) {
-    assertMarketingOnly(req.user, 'Email log creation');
+    assertCommunicationResourceAccess(req.user, 'Email log creation');
     return this.email.createLog(body ?? {});
   }
 
@@ -56,7 +55,7 @@ export class CommunicationEmailController {
     @Req() req: { user: JwtUserPayload },
     @Body() body: Record<string, unknown>,
   ) {
-    assertMarketingOrSuperAdmin(
+    assertCommunicationResourceAccess(
       req.user,
       'Send transactional email by automation trigger',
     );

@@ -127,6 +127,7 @@ export interface JwtUserPayload {
   email: string;
   role: string;
   customRoleId?: string;
+  customAllowedFeatures?: string[];
 }
 
 @Injectable()
@@ -666,21 +667,13 @@ export class AuthService {
         email: true,
         name: true,
         image: true,
-        phone: true,
-        jobTitle: true,
-        company: true,
-        domicile: true,
-        instagram: true,
-        linkedinUrl: true,
         appRole: true,
         abacContext: true,
       },
     });
     if (!row?.email) return null;
-    const phone =
-      (typeof row.phone === 'string' && row.phone.trim()
-        ? row.phone.trim()
-        : null) ?? AuthService.readSelfProfilePhone(row.abacContext);
+    const selfProfile = AuthService.readSelfProfile(row.abacContext);
+    const phone = selfProfile.phone;
     const assignedRoles = parseAppRoleList(row.appRole);
     const activeRole = assignedRoles.includes(parseAppRoleString(activeRoleHint))
       ? parseAppRoleString(activeRoleHint)
@@ -700,24 +693,48 @@ export class AuthService {
       role: activeRole,
       roles: assignedRoles,
       phone,
-      jobTitle: row.jobTitle?.trim() || null,
-      company: row.company?.trim() || null,
-      domicile: row.domicile?.trim() || null,
-      instagram: row.instagram?.trim() || null,
-      linkedinUrl: row.linkedinUrl?.trim() || null,
+      jobTitle: selfProfile.jobTitle,
+      company: selfProfile.company,
+      domicile: selfProfile.domicile,
+      instagram: selfProfile.instagram,
+      linkedinUrl: selfProfile.linkedinUrl,
       abacContext: row.abacContext,
       customRole: assignment,
       activeCustomRoleId: finalActiveCustomRoleId,
     };
   }
 
-  private static readSelfProfilePhone(abac: unknown): string | null {
-    if (!abac || typeof abac !== 'object' || Array.isArray(abac)) return null;
+  private static readSelfProfile(abac: unknown): {
+    phone: string | null;
+    jobTitle: string | null;
+    company: string | null;
+    domicile: string | null;
+    instagram: string | null;
+    linkedinUrl: string | null;
+  } {
+    const empty = {
+      phone: null,
+      jobTitle: null,
+      company: null,
+      domicile: null,
+      instagram: null,
+      linkedinUrl: null,
+    };
+    if (!abac || typeof abac !== 'object' || Array.isArray(abac)) return empty;
     const sp = (abac as Record<string, unknown>).selfProfile;
-    if (!sp || typeof sp !== 'object' || Array.isArray(sp)) return null;
-    const p = (sp as Record<string, unknown>).phone;
-    if (typeof p !== 'string' || !p.trim()) return null;
-    return p.trim();
+    if (!sp || typeof sp !== 'object' || Array.isArray(sp)) return empty;
+    const read = (key: string): string | null => {
+      const value = (sp as Record<string, unknown>)[key];
+      return typeof value === 'string' && value.trim() ? value.trim() : null;
+    };
+    return {
+      phone: read('phone'),
+      jobTitle: read('jobTitle'),
+      company: read('company'),
+      domicile: read('domicile'),
+      instagram: read('instagram'),
+      linkedinUrl: read('linkedinUrl'),
+    };
   }
 
   private static readWorkspaceCustomRole(abac: unknown): {

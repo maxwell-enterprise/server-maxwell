@@ -25,7 +25,7 @@ import { MembersService } from './members.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import {
-  assertSalesOnly,
+  assertCrmMembersResourceAccess,
 } from '../../common/security/access-policy';
 import { parseAppRoleString, USER_ROLE } from '../workspace-identity/user-role.constants';
 import { ForbiddenException } from '@nestjs/common';
@@ -50,8 +50,16 @@ export class MembersController {
     dto: CreateMemberDto,
   ) {
     const role = parseAppRoleString(req.user?.role);
+    const customAccessAllowed = (() => {
+      try {
+        assertCrmMembersResourceAccess(req.user, 'Member registration');
+        return true;
+      } catch {
+        return false;
+      }
+    })();
     const roleAllowed =
-      role === USER_ROLE.SALES || role === USER_ROLE.SUPER_ADMIN;
+      role === USER_ROLE.SALES || role === USER_ROLE.SUPER_ADMIN || customAccessAllowed;
     const lifecycleAllowed = req.user?.email
       ? await this.membersService.hasLifecycleAtLeastByEmail(
           req.user.email,
@@ -116,7 +124,7 @@ export class MembersController {
         'Facilitator assignment update requires Super Admin role',
       );
     }
-    assertSalesOnly(req.user, 'Member update');
+    assertCrmMembersResourceAccess(req.user, 'Member update');
     return this.membersService.update(identifier, dto, {
       preserveExplicitFacilitatorType: false,
     });

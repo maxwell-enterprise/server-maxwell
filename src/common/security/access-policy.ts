@@ -10,6 +10,38 @@ function readable(list: readonly string[]): string {
   return list.join(', ');
 }
 
+function hasCustomResourceAccess(
+  user: JwtUserPayload,
+  resourceIds: readonly string[],
+): boolean {
+  const customRoleId = String(user?.customRoleId ?? '').trim();
+  if (!customRoleId) return false;
+  const allowed = Array.isArray(user?.customAllowedFeatures)
+    ? user.customAllowedFeatures
+        .map((value) => String(value ?? '').trim())
+        .filter((value) => !!value)
+    : [];
+  return resourceIds.some((resourceId) => allowed.includes(resourceId));
+}
+
+function assertRoleOrCustomResource(
+  user: JwtUserPayload,
+  allowedRoles: readonly UserRoleString[],
+  resourceIds: readonly string[],
+  actionLabel: string,
+): void {
+  const role = parseAppRoleString(user?.role);
+  if (allowedRoles.includes(role)) {
+    return;
+  }
+  if (resourceIds.length > 0 && hasCustomResourceAccess(user, resourceIds)) {
+    return;
+  }
+  throw new ForbiddenException(
+    `${actionLabel} requires role: ${readable(allowedRoles)}`,
+  );
+}
+
 export function assertRole(
   user: JwtUserPayload,
   allowedRoles: readonly UserRoleString[],
@@ -95,9 +127,10 @@ export function assertMarketingOnly(
   user: JwtUserPayload,
   actionLabel = 'Marketing configuration',
 ): void {
-  assertRole(
+  assertRoleOrCustomResource(
     user,
     [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    ['mkt_campaigns'],
     actionLabel,
   );
 }
@@ -107,7 +140,12 @@ export function assertMarketingOrSuperAdmin(
   user: JwtUserPayload,
   actionLabel = 'Marketing configuration',
 ): void {
-  assertRole(user, [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN], actionLabel);
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    ['mkt_campaigns'],
+    actionLabel,
+  );
 }
 
 /** Sales-owned surfaces; Super Admin break-glass override. */
@@ -115,7 +153,12 @@ export function assertSalesOnly(
   user: JwtUserPayload,
   actionLabel = 'Sales operation',
 ): void {
-  assertRole(user, [USER_ROLE.SALES, USER_ROLE.SUPER_ADMIN], actionLabel);
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.SALES, USER_ROLE.SUPER_ADMIN],
+    ['crm_leads', 'crm_members'],
+    actionLabel,
+  );
 }
 
 /** Sales-owned member intake; Facilitator may register their own tribe members. */
@@ -171,6 +214,95 @@ export function assertAutomationQueueAccess(
       USER_ROLE.MARKETING,
       USER_ROLE.FINANCE,
     ],
+    actionLabel,
+  );
+}
+
+export function assertCampaignResourceAccess(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    ['mkt_campaigns'],
+    actionLabel,
+  );
+}
+
+export function assertDiscountResourceAccess(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    ['mkt_discounts'],
+    actionLabel,
+  );
+}
+
+export function assertCmsResourceAccess(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    ['cms_content'],
+    actionLabel,
+  );
+}
+
+export function assertCommunicationResourceAccess(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.MARKETING, USER_ROLE.OPERATIONS, USER_ROLE.SUPER_ADMIN],
+    ['sys_communication'],
+    actionLabel,
+  );
+}
+
+export function assertStoreInventoryResourceAccess(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.OPERATIONS, USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    ['ops_inventory'],
+    actionLabel,
+  );
+}
+
+export function assertCrmMembersResourceAccess(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [
+      USER_ROLE.SALES,
+      USER_ROLE.OPERATIONS,
+      USER_ROLE.FINANCE,
+      USER_ROLE.SUPER_ADMIN,
+    ],
+    ['crm_members'],
+    actionLabel,
+  );
+}
+
+export function assertCrmLeadsResourceAccess(
+  user: JwtUserPayload,
+  actionLabel: string,
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.SALES, USER_ROLE.MARKETING, USER_ROLE.SUPER_ADMIN],
+    ['crm_leads'],
     actionLabel,
   );
 }

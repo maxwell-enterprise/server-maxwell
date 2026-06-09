@@ -10,7 +10,7 @@ import {
 import { CommunicationPdfService } from './communication-pdf.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
-import { assertMarketingOnly } from '../../common/security/access-policy';
+import { assertCommunicationResourceAccess } from '../../common/security/access-policy';
 
 @Controller('communication/pdf')
 export class CommunicationPdfController {
@@ -28,7 +28,7 @@ export class CommunicationPdfController {
     @Param('id') id: string,
     @Body() body: Record<string, unknown>,
   ) {
-    assertMarketingOnly(req.user, 'PDF template update');
+    assertCommunicationResourceAccess(req.user, 'PDF template update');
     const merged = { ...(body ?? {}), id: decodeURIComponent(id) };
     return this.pdf.upsertTemplate(merged);
   }

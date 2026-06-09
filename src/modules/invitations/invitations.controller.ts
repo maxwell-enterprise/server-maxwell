@@ -25,7 +25,7 @@ import {
 import { InvitationsService } from './invitations.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
-import { assertSalesOnly } from '../../common/security/access-policy';
+import { assertCrmLeadsResourceAccess } from '../../common/security/access-policy';
 
 @Controller('invitations')
 export class InvitationsController {
@@ -56,7 +56,7 @@ export class InvitationsController {
     @Body(new ZodValidationPipe(CreateInvitationsBatchDtoSchema))
     dto: CreateInvitationsBatchDto,
   ) {
-    assertSalesOnly(req.user, 'Bulk invitation creation');
+    assertCrmLeadsResourceAccess(req.user, 'Bulk invitation creation');
     return this.invitationsService.createMany(dto.invitations);
   }
 
@@ -86,7 +86,7 @@ export class InvitationsController {
     @Body(new ZodValidationPipe(UpdateInvitationDtoSchema))
     dto: UpdateInvitationDto,
   ) {
-    assertSalesOnly(req.user, 'Invitation update');
+    assertCrmLeadsResourceAccess(req.user, 'Invitation update');
     return this.invitationsService.update(identifier, dto);
   }
 }
