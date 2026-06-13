@@ -105,11 +105,14 @@ export class AuthController {
     if (!email) {
       throw new BadRequestException('email required');
     }
-    await this.auth.sendMagicLinkEmail(
+    const result = await this.auth.sendMagicLinkEmail(
       email,
       typeof body.returnSearch === 'string' ? body.returnSearch : undefined,
     );
-    return { ok: true };
+    if (result.bypass && result.token) {
+      return { ok: true, bypass: true, token: result.token };
+    }
+    return { ok: true, bypass: false };
   }
 
   @Post('supabase/exchange')

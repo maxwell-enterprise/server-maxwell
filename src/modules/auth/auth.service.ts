@@ -130,6 +130,11 @@ export interface JwtUserPayload {
   customAllowedFeatures?: string[];
 }
 
+export interface MagicLinkDispatchResult {
+  bypass: boolean;
+  token?: string;
+}
+
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
@@ -241,6 +246,26 @@ export class AuthService {
       });
     }
     return this.supabaseAdminClient;
+  }
+
+  private getConfiguredBypassEmail(): string | null {
+    const configured =
+      process.env.email_bypass?.trim() ||
+      process.env.AUTH_BYPASS_EMAIL?.trim() ||
+      '';
+    if (!configured) return null;
+    return configured.toLowerCase();
+  }
+
+  private isBypassAuthEnabled(): boolean {
+    return process.env.AUTH_BYPASS_ENABLED === 'true';
+  }
+
+  private shouldBypassMagicLink(email: string): boolean {
+    if (!this.isBypassAuthEnabled()) return false;
+    const configured = this.getConfiguredBypassEmail();
+    if (!configured) return false;
+    return email.trim().toLowerCase() === configured;
   }
 
   private buildSupabaseFrontendCallbackUrl(rawReturnSearch?: string): string {
@@ -633,6 +658,36 @@ export class AuthService {
     return this.jwt.sign(payload);
   }
 
+  private async upsertVerifiedEmailUser(normalizedEmail: string) {
+    let user = await this.prisma.user.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+    });
+
+    if (!user) {
+      const defaultName = normalizedEmail.split('@')[0];
+      user = await this.prisma.user.create({
+        data: {
+          email: normalizedEmail,
+          name: defaultName,
+          image: buildDefaultAvatarUrl(defaultName),
+          emailVerified: new Date(),
+          appRole: USER_ROLE.MEMBER,
+        },
+      });
+    } else {
+      const fallbackName = user.name?.trim() || normalizedEmail.split('@')[0];
+      user = await this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          emailVerified: new Date(),
+          image: user.image ?? buildDefaultAvatarUrl(fallbackName),
+        },
+      });
+    }
+
+    return user;
+  }
+
   async getSessionPayload(
     userId: string,
     activeRoleHint?: string,
@@ -795,10 +850,27 @@ export class AuthService {
   async sendMagicLinkEmail(
     rawEmail: string,
     rawReturnSearch?: string,
-  ): Promise<void> {
+  ): Promise<MagicLinkDispatchResult> {
     const email = rawEmail.trim().toLowerCase();
     if (!email.includes('@')) {
       throw new UnauthorizedException('Invalid email');
+    }
+
+    if (this.shouldBypassMagicLink(email)) {
+      this.logger.warn(`Auth bypass login used for ${email}`);
+      const user = await this.upsertVerifiedEmailUser(email);
+      await this.runPostOAuthSideEffects(
+        user.id,
+        email,
+        user.name ?? email.split('@')[0],
+      );
+      const fresh = await this.prisma.user.findUniqueOrThrow({
+        where: { id: user.id },
+      });
+      return {
+        bypass: true,
+        token: this.signAccessToken(fresh.id, fresh.email!, fresh.appRole),
+      };
     }
 
     if (!this.isSupabaseAuthEnabled()) {
@@ -831,6 +903,7 @@ export class AuthService {
             'Magic link provider rejected the request. Check Supabase Auth email provider settings and redirect URL allow-list.',
         );
       }
+      return { bypass: false };
     } catch (err) {
       if (err instanceof UnauthorizedException) {
         throw err;
@@ -1158,31 +1231,7 @@ export class AuthService {
       where: { identifier: normalized, token },
     });
 
-    let user = await this.prisma.user.findFirst({
-      where: { email: { equals: normalized, mode: 'insensitive' } },
-    });
-
-    if (!user) {
-      const defaultName = normalized.split('@')[0];
-      user = await this.prisma.user.create({
-        data: {
-          email: normalized,
-          name: defaultName,
-          image: buildDefaultAvatarUrl(defaultName),
-          emailVerified: new Date(),
-          appRole: USER_ROLE.MEMBER,
-        },
-      });
-    } else {
-      const fallbackName = user.name?.trim() || normalized.split('@')[0];
-      user = await this.prisma.user.update({
-        where: { id: user.id },
-        data: {
-          emailVerified: new Date(),
-          image: user.image ?? buildDefaultAvatarUrl(fallbackName),
-        },
-      });
-    }
+    const user = await this.upsertVerifiedEmailUser(normalized);
 
     await this.runPostOAuthSideEffects(
       user.id,

@@ -103,6 +103,9 @@ export const AppEnvSchema = z
 
     /** When set, `POST /fe/internal/members/sync` requires header `x-internal-key` with this value (server-to-server only). */
     INTERNAL_MEMBER_SYNC_KEY: z.string().optional(),
+    AUTH_BYPASS_ENABLED: z.preprocess(parseBoolean, z.boolean().default(false)),
+    AUTH_BYPASS_EMAIL: z.string().email().optional(),
+    email_bypass: z.string().email().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.DATABASE_URL) {
