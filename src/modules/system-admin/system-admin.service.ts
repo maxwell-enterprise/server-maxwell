@@ -130,6 +130,23 @@ export interface AutomationConnectionSnapshotDto {
 export class SystemAdminService implements OnModuleInit {
   constructor(private readonly db: DatabaseService) {}
 
+  private async hasColumn(
+    tableName: string,
+    columnName: string,
+  ): Promise<boolean> {
+    const res = await this.db.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = $1
+           AND column_name = $2
+       ) AS exists`,
+      [tableName, columnName],
+    );
+    return res.rows[0]?.exists === true;
+  }
+
   async onModuleInit(): Promise<void> {
     try {
       await this.ensureAutomationTriggersSeeded();
@@ -199,22 +216,32 @@ export class SystemAdminService implements OnModuleInit {
        ORDER BY sort_order ASC, id ASC`,
     );
 
-    const waRows = await this.db.query<{ linkedTriggerId: string; label: string }>(
-      `SELECT "linkedTriggerId", label
-       FROM whatsapp_templates
-       WHERE "linkedTriggerId" IS NOT NULL
-         AND trim("linkedTriggerId") <> ''`,
-    );
+    const [hasWhatsappLinkedTriggerId, hasEmailLinkedTriggerId] =
+      await Promise.all([
+        this.hasColumn('whatsapp_templates', 'linkedTriggerId'),
+        this.hasColumn('email_templates', 'linkedTriggerId'),
+      ]);
 
-    const emailRows = await this.db.query<{
-      linkedTriggerId: string;
-      name: string;
-    }>(
-      `SELECT "linkedTriggerId", name
-       FROM email_templates
-       WHERE "linkedTriggerId" IS NOT NULL
-         AND trim("linkedTriggerId") <> ''`,
-    );
+    const waRows = hasWhatsappLinkedTriggerId
+      ? await this.db.query<{ linkedTriggerId: string; label: string }>(
+          `SELECT "linkedTriggerId", label
+           FROM whatsapp_templates
+           WHERE "linkedTriggerId" IS NOT NULL
+             AND trim("linkedTriggerId") <> ''`,
+        )
+      : { rows: [] };
+
+    const emailRows = hasEmailLinkedTriggerId
+      ? await this.db.query<{
+          linkedTriggerId: string;
+          name: string;
+        }>(
+          `SELECT "linkedTriggerId", name
+           FROM email_templates
+           WHERE "linkedTriggerId" IS NOT NULL
+             AND trim("linkedTriggerId") <> ''`,
+        )
+      : { rows: [] };
 
     const opsRows = await this.db.query<{ name: string; tasks: unknown }>(
       `SELECT name, tasks

@@ -20,6 +20,23 @@ export class CommunicationEmailService {
 
   constructor(private readonly db: DatabaseService) {}
 
+  private async hasColumn(
+    tableName: string,
+    columnName: string,
+  ): Promise<boolean> {
+    const res = await this.db.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+         FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = $1
+           AND column_name = $2
+       ) AS exists`,
+      [tableName, columnName],
+    );
+    return res.rows[0]?.exists === true;
+  }
+
   private iso(v: unknown): string {
     if (v instanceof Date) return v.toISOString();
     if (typeof v === 'string') return v;
@@ -27,11 +44,21 @@ export class CommunicationEmailService {
   }
 
   async listTemplates(): Promise<Record<string, unknown>[]> {
-    const r = await this.db.query<Record<string, unknown>>(
-      `SELECT id, name, category, subject, body, variables, "linkedTriggerId"
-       FROM email_templates
-       ORDER BY name ASC`,
+    const hasLinkedTriggerId = await this.hasColumn(
+      'email_templates',
+      'linkedTriggerId',
     );
+    const r = hasLinkedTriggerId
+      ? await this.db.query<Record<string, unknown>>(
+          `SELECT id, name, category, subject, body, variables, "linkedTriggerId"
+           FROM email_templates
+           ORDER BY name ASC`,
+        )
+      : await this.db.query<Record<string, unknown>>(
+          `SELECT id, name, category, subject, body, variables
+           FROM email_templates
+           ORDER BY name ASC`,
+        );
     return r.rows.map((row) => ({
       ...row,
       variables: Array.isArray(row.variables) ? row.variables : [],
@@ -145,6 +172,16 @@ export class CommunicationEmailService {
       throw new BadRequestException('triggerId is required');
     }
     assertSupportedEmailTrigger(triggerId);
+
+    const hasLinkedTriggerId = await this.hasColumn(
+      'email_templates',
+      'linkedTriggerId',
+    );
+    if (!hasLinkedTriggerId) {
+      throw new ServiceUnavailableException(
+        'Transactional email trigger linkage is not available until database migration 029_email_templates_linked_trigger.sql is applied.',
+      );
+    }
 
     const vars = normalizeEmailTriggerVariables(
       triggerId as SupportedEmailAutomationTriggerId,
