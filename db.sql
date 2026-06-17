@@ -115,7 +115,7 @@ create table if not exists event_invitations (
 
 create table if not exists event_attendance_ledger (
   id uuid primary key default gen_random_uuid(),
-  "eventId" uuid not null references events(id),
+  "eventId" uuid not null references events(id) on delete cascade,
   "eventName" text not null,
   "memberId" text not null,
   "memberName" text not null,

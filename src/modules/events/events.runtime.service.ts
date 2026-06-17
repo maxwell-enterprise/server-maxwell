@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { PoolClient } from 'pg';
 import {
   CreateAccessRuleDto,
   CreateAccessTagDto,
@@ -527,9 +528,95 @@ export class EventsRuntimeService {
 
   async remove(identifier: string): Promise<void> {
     const existing = await this.findRowByIdentifier(identifier);
-    await this.db.query('delete from events where id = $1::uuid', [
-      existing.event_internal_uuid,
-    ]);
+    const eventId = existing.event_internal_uuid;
+    const publicId = existing.id;
+
+    await this.db.withTransaction(async (client) => {
+      await this.purgeEventDependents(client, eventId, publicId);
+
+      // Orphan child sessions when deleting a series container (matches FE ORPHAN strategy).
+      await client.query(
+        `
+        update events
+        set "parentEventId" = null,
+            type = case when type = 'SESSION' then 'SOLO' else type end,
+            "updatedAt" = now()
+        where "parentEventId" = $1::uuid
+        `,
+        [eventId],
+      );
+
+      const deleted = await client.query(
+        'delete from events where id = $1::uuid',
+        [eventId],
+      );
+      if ((deleted.rowCount ?? 0) === 0) {
+        throw new NotFoundException(`Event ${identifier} not found`);
+      }
+    });
+  }
+
+  /** Remove or detach rows that reference events(id) before DELETE (FK-safe). */
+  private async purgeEventDependents(
+    client: PoolClient,
+    eventId: string,
+    publicId: string,
+  ): Promise<void> {
+    await client.query(
+      `delete from event_attendance_ledger where "eventId" = $1::uuid`,
+      [eventId],
+    );
+    await client.query(
+      `
+      delete from event_attendance_ledger
+      where "sessionId" is not null
+        and (
+          lower(btrim("sessionId")) = lower(btrim($1::text))
+          or lower(btrim("sessionId")) = lower(btrim($2::text))
+        )
+      `,
+      [publicId, eventId],
+    );
+    await client.query(
+      `delete from event_invitations where "eventId" = $1::uuid`,
+      [eventId],
+    );
+    await client.query(
+      `update transactions set "eventId" = null where "eventId" = $1::uuid`,
+      [eventId],
+    );
+    await client.query(
+      `
+      update enablement_articles
+      set "linkedEventId" = null
+      where "linkedEventId" = $1::uuid
+      `,
+      [eventId],
+    );
+    await client.query(
+      `
+      update enablement_quizzes
+      set "linkedEventId" = null
+      where "linkedEventId" = $1::uuid
+      `,
+      [eventId],
+    );
+    await client.query(
+      `
+      update enablement_quiz_attempts
+      set "eventId" = null
+      where "eventId" = $1::uuid
+      `,
+      [eventId],
+    );
+    await client.query(
+      `
+      update tribe_mentoring_sessions
+      set "eventId" = null
+      where "eventId" = $1::uuid
+      `,
+      [eventId],
+    );
   }
 
   async updateStatus(

@@ -102,12 +102,24 @@ export function assertOperationsOnly(
   );
 }
 
-/** Event / ops surfaces: Operations owns day-to-day; Super Admin break-glass. */
+/** Event / ops surfaces: Operations owns day-to-day; Super Admin break-glass; custom role via ops_event_mgmt. */
 export function assertOperationsOrSuperAdmin(
   user: JwtUserPayload,
   actionLabel: string,
 ): void {
-  assertRole(user, [USER_ROLE.OPERATIONS, USER_ROLE.SUPER_ADMIN], actionLabel);
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.OPERATIONS, USER_ROLE.SUPER_ADMIN],
+    [
+      'ops_event_mgmt',
+      'view_operations',
+      'view_events_admin',
+      'view_certification_grid',
+      'view_certification_rules',
+      'view_tag_management',
+    ],
+    actionLabel,
+  );
 }
 
 /** Store catalog write (products): Ops owner + Super Admin override. */
