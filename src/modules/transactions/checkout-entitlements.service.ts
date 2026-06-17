@@ -88,6 +88,36 @@ function parseItemsSnapshot(
   return [];
 }
 
+/**
+ * When an order grants only giftable tickets, reserve exactly one for the buyer (self / non-transferable).
+ * Skips if the order already includes an explicit non-giftable ticket from the product BOM.
+ * Applies once per payment, across all cart lines (e.g. CO ×3 with 11 giftable each → 1 self + 32 sharing).
+ */
+function applyBuyerSelfTicketReservation<
+  T extends {
+    type: string;
+    isTransferable?: boolean;
+    meta?: Record<string, unknown>;
+  },
+>(items: T[]): void {
+  const tickets = items.filter((m) => m.type === 'TICKET');
+  if (tickets.length === 0) return;
+
+  const hasExplicitSelf = tickets.some((t) => t.isTransferable !== true);
+  if (hasExplicitSelf) return;
+
+  const firstGiftable = tickets.find((t) => t.isTransferable === true);
+  if (!firstGiftable) return;
+
+  firstGiftable.isTransferable = false;
+  firstGiftable.meta = {
+    ...(firstGiftable.meta && typeof firstGiftable.meta === 'object'
+      ? firstGiftable.meta
+      : {}),
+    autoBuyerSelf: true,
+  };
+}
+
 @Injectable()
 export class CheckoutEntitlementsService {
   private readonly logger = new Logger(CheckoutEntitlementsService.name);
@@ -244,6 +274,8 @@ export class CheckoutEntitlementsService {
           'Checkout could not create wallet items: product bundle is empty or invalid for this order. In Store Admin, set bundle items (e.g. Digital → DIGITAL_LINK with Resource URL), save the product, then try again.',
         );
       }
+
+      applyBuyerSelfTicketReservation(mutations);
 
       for (const item of mutations) {
         await this.wallet.upsertWalletItem(item, client);
