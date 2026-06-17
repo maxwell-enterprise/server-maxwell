@@ -441,7 +441,7 @@ export class CheckoutEntitlementsService {
               status: 'ACTIVE',
               isTransferable: Boolean(
                 (bom.meta as { isTransferable?: boolean } | undefined)
-                  ?.isTransferable ?? true,
+                  ?.isTransferable ?? false,
               ),
               expiryDate: evt?.date ?? null,
               qrData: evt
