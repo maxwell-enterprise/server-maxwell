@@ -117,6 +117,7 @@ export function assertOperationsOrSuperAdmin(
       'ops_event_mgmt',
       'view_operations',
       'view_events_admin',
+      'view_forms_admin',
       'view_certification_grid',
       'view_certification_rules',
       'view_tag_management',

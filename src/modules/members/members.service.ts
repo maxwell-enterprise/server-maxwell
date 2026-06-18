@@ -442,6 +442,80 @@ export class MembersService {
     return { created: true, member };
   }
 
+  /**
+   * Guest form/quiz respondent: upsert CRM row for sales pipeline (update if email exists).
+   */
+  async upsertFormRespondentLead(input: {
+    fullName: string;
+    email: string;
+    phone: string;
+    formTitle: string;
+    deploymentId?: string | null;
+    eventId?: string | null;
+  }): Promise<{ created: boolean; member: Member }> {
+    const email = input.email.trim().toLowerCase();
+    const phone = input.phone.trim();
+    const name = input.fullName.trim().slice(0, 255);
+    const formTag = `Form: ${input.formTitle.trim().slice(0, 120)}`;
+    const deploymentTag = input.deploymentId?.trim()
+      ? `FormDeployment: ${input.deploymentId.trim().slice(0, 80)}`
+      : null;
+    const eventTag = input.eventId?.trim()
+      ? `FormEvent: ${input.eventId.trim().slice(0, 80)}`
+      : null;
+    const extraTags = [formTag, deploymentTag, eventTag].filter(
+      (t): t is string => !!t,
+    );
+
+    const existingId = await this.findMemberIdByEmail(email);
+    if (existingId) {
+      const existing = await this.findOne(existingId);
+      const mergedTags = Array.from(
+        new Set([...(existing.tags ?? []), ...extraTags]),
+      );
+      const lifecycleRank = this.lifecycleRank(existing.lifecycleStage);
+      const identifiedRank = this.lifecycleRank('IDENTIFIED');
+      const nextLifecycle =
+        lifecycleRank >= identifiedRank ? existing.lifecycleStage : 'IDENTIFIED';
+
+      const updated = await this.update(existingId, {
+        name: name || existing.name,
+        phone: phone || existing.phone,
+        tags: mergedTags,
+        platform: existing.platform?.trim() || 'Form',
+        program: existing.program?.trim() || `Form: ${input.formTitle.trim()}`,
+        lifecycleStage: nextLifecycle,
+      });
+      return { created: false, member: updated };
+    }
+
+    const memberDto = CreateMemberDtoSchema.parse({
+      name: name || email.split('@')[0] || 'Form Respondent',
+      email,
+      phone,
+      category: 'Guest',
+      scholarship: false,
+      joinMonth: new Date().toISOString().slice(0, 7),
+      program: `Form: ${input.formTitle.trim()}`,
+      mentorshipDuration: 0,
+      nTagStatus: 'Not yet',
+      platform: 'Form',
+      regInUS: false,
+      lifecycleStage: 'IDENTIFIED',
+      tags: ['Form_Lead', ...extraTags],
+      engagement: {
+        lastActiveDate: new Date().toISOString(),
+        eventsAttendedCount: 0,
+        contentCompletionRate: 0,
+        communityReputationScore: 0,
+        leadScore: 15,
+      },
+    });
+
+    const member = await this.create(memberDto);
+    return { created: true, member };
+  }
+
   private lifecycleRank(stage: string): number {
     const key = String(stage ?? '')
       .trim()

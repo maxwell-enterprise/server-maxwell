@@ -13,6 +13,7 @@ export const CUSTOM_VIEW_RESOURCE_LINKS: ReadonlyArray<{
   { viewFeatureId: 'view_communication', resourceId: 'sys_communication' },
   { viewFeatureId: 'view_operations', resourceId: 'ops_event_mgmt' },
   { viewFeatureId: 'view_events_admin', resourceId: 'ops_event_mgmt' },
+  { viewFeatureId: 'view_forms_admin', resourceId: 'ops_event_mgmt' },
   { viewFeatureId: 'view_certification_grid', resourceId: 'ops_event_mgmt' },
   { viewFeatureId: 'view_certification_rules', resourceId: 'ops_event_mgmt' },
   { viewFeatureId: 'view_tag_management', resourceId: 'ops_event_mgmt' },
