@@ -258,6 +258,45 @@ export class CmsService {
     if (r.rowCount === 0) throw new NotFoundException('Content not found');
   }
 
+  /**
+   * Public landing / portal analytics — no auth. Only increments for live PUBLISHED posts.
+   */
+  async incrementPublicStat(
+    id: string,
+    field: 'views' | 'shares' | 'clicks',
+  ): Promise<{ ok: true }> {
+    const existing = await this.db.query<Record<string, unknown>>(
+      `SELECT * FROM cms_content WHERE id = $1::uuid`,
+      [id],
+    );
+    const row0 = existing.rows[0];
+    if (!row0) throw new NotFoundException('Content not found');
+
+    const post = this.rowToPost(row0);
+    if (post.status !== 'PUBLISHED') {
+      return { ok: true };
+    }
+    const now = new Date();
+    const started = new Date(post.publishDate) <= now;
+    const ended = post.unpublishDate
+      ? new Date(post.unpublishDate) > now
+      : true;
+    if (!started || !ended) {
+      return { ok: true };
+    }
+
+    const nextStats = {
+      ...post.stats,
+      [field]: Number(post.stats[field] ?? 0) + 1,
+    };
+
+    await this.db.query(
+      `UPDATE cms_content SET stats = $2::jsonb WHERE id = $1::uuid`,
+      [id, JSON.stringify(nextStats)],
+    );
+    return { ok: true };
+  }
+
   async generateAiContent(
     body: Record<string, unknown>,
     actorUserId: string,

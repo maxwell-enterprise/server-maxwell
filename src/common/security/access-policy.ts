@@ -5,6 +5,7 @@ import {
   type UserRoleString,
 } from '../../modules/workspace-identity/user-role.constants';
 import type { JwtUserPayload } from '../../modules/auth/auth.service';
+import { customRoleGrantsResource } from './custom-role-features';
 
 function readable(list: readonly string[]): string {
   return list.join(', ');
@@ -21,7 +22,9 @@ function hasCustomResourceAccess(
         .map((value) => String(value ?? '').trim())
         .filter((value) => !!value)
     : [];
-  return resourceIds.some((resourceId) => allowed.includes(resourceId));
+  return resourceIds.some((resourceId) =>
+    customRoleGrantsResource(allowed, resourceId),
+  );
 }
 
 function assertRoleOrCustomResource(
@@ -329,4 +332,23 @@ export function assertCrmLeadsResourceAccess(
     ['crm_leads'],
     actionLabel,
   );
+}
+
+/** Non-throwing check for executive dashboard member KPIs (matches FE `crm_members`). */
+export function hasCrmMembersReadAccess(user: JwtUserPayload): boolean {
+  try {
+    assertCrmMembersResourceAccess(user, 'Executive dashboard members');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Non-throwing check for executive dashboard revenue KPIs (matches FE `fin_invoices`). */
+export function hasFinanceInvoiceReadAccess(user: JwtUserPayload): boolean {
+  const role = parseAppRoleString(user?.role);
+  if (role === USER_ROLE.FINANCE || role === USER_ROLE.SUPER_ADMIN) {
+    return true;
+  }
+  return hasCustomResourceAccess(user, ['fin_invoices']);
 }

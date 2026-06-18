@@ -93,6 +93,7 @@ import { PaidConversionsModule } from './modules/paid-conversions/paid-conversio
 import { CmsModule } from './modules/cms/cms.module';
 import { AccountSettingsModule } from './modules/account-settings/account-settings.module';
 import { ScoutModule } from './modules/scout/scout.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard';
@@ -149,6 +150,7 @@ import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard'
     CmsModule,
     AccountSettingsModule,
     ScoutModule,
+    DashboardModule,
   ],
   controllers: [RootController, AppController],
   providers: [

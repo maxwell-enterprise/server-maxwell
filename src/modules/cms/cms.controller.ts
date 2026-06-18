@@ -55,6 +55,22 @@ export class CmsController {
     return this.cms.generateAiContent(body ?? {}, String(req.user.sub));
   }
 
+  /** Public analytics for landing page / portal (no JWT). */
+  @Post(':id/track-view')
+  trackView(@Param('id') id: string) {
+    return this.cms.incrementPublicStat(decodeURIComponent(id), 'views');
+  }
+
+  @Post(':id/track-share')
+  trackShare(@Param('id') id: string) {
+    return this.cms.incrementPublicStat(decodeURIComponent(id), 'shares');
+  }
+
+  @Post(':id/track-click')
+  trackClick(@Param('id') id: string) {
+    return this.cms.incrementPublicStat(decodeURIComponent(id), 'clicks');
+  }
+
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   async remove(@Req() req: { user: JwtUserPayload }, @Param('id') id: string) {
