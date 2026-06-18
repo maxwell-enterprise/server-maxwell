@@ -118,6 +118,66 @@ function applyBuyerSelfTicketReservation<
   };
 }
 
+interface BuyerRecipientProfile {
+  name: string;
+  email: string;
+  phone?: string;
+}
+
+function readMetaString(
+  meta: Record<string, unknown> | undefined,
+  key: string,
+): string {
+  const value = meta?.[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function titleFromEmail(email: string): string {
+  const local = email.split('@')[0]?.trim() ?? '';
+  if (!local) return '';
+  return local
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+/**
+ * Stamp buyer identity on the reserved self ticket so Command Center / wallet can resolve the name.
+ * Never overwrites recipient fields already set (manual assignment or explicit BOM meta).
+ */
+function stampBuyerSelfRecipientMeta<
+  T extends {
+    type: string;
+    meta?: Record<string, unknown>;
+  },
+>(items: T[], profile: BuyerRecipientProfile): void {
+  const name = profile.name.trim();
+  const email = profile.email.trim().toLowerCase();
+  const phone = profile.phone?.trim() ?? '';
+  if (!name && !email) return;
+
+  for (const item of items) {
+    if (item.type !== 'TICKET') continue;
+    const meta =
+      item.meta && typeof item.meta === 'object'
+        ? { ...item.meta }
+        : ({} as Record<string, unknown>);
+    if (meta.autoBuyerSelf !== true) continue;
+
+    if (!readMetaString(meta, 'recipientName') && name) {
+      meta.recipientName = name;
+    }
+    if (!readMetaString(meta, 'recipientEmail') && email) {
+      meta.recipientEmail = email;
+    }
+    if (!readMetaString(meta, 'recipientPhone') && phone) {
+      meta.recipientPhone = phone;
+    }
+    item.meta = meta;
+  }
+}
+
 @Injectable()
 export class CheckoutEntitlementsService {
   private readonly logger = new Logger(CheckoutEntitlementsService.name);
@@ -276,6 +336,11 @@ export class CheckoutEntitlementsService {
       }
 
       applyBuyerSelfTicketReservation(mutations);
+      const buyerProfile = await this.resolveBuyerRecipientProfile(
+        walletOwnerId,
+        row.customerEmail,
+      );
+      stampBuyerSelfRecipientMeta(mutations, buyerProfile);
 
       for (const item of mutations) {
         await this.wallet.upsertWalletItem(item, client);
@@ -311,6 +376,60 @@ export class CheckoutEntitlementsService {
         [row.id],
       );
     });
+  }
+
+  private async resolveBuyerRecipientProfile(
+    walletOwnerId: string,
+    customerEmail: string,
+  ): Promise<BuyerRecipientProfile> {
+    const checkoutEmail = String(customerEmail ?? '').trim().toLowerCase();
+    const ownerId = walletOwnerId.trim();
+
+    const workspaceUser = ownerId
+      ? await this.prisma.user
+          .findUnique({
+            where: { id: ownerId },
+            select: { name: true, email: true },
+          })
+          .catch(() => null)
+      : null;
+
+    const memberDigest = checkoutEmail
+      ? await this.members.findMemberDigestByEmail(checkoutEmail)
+      : null;
+
+    let memberPhone = '';
+    if (checkoutEmail) {
+      const phoneRow = await this.db.query<{ phone: string | null }>(
+        `
+        select coalesce(nullif(trim(m.phone), ''), '') as phone
+        from members m
+        where lower(trim(m.email)) = $1
+        limit 1
+        `,
+        [checkoutEmail],
+      );
+      memberPhone = phoneRow.rows[0]?.phone?.trim() || '';
+    }
+
+    const resolvedEmail =
+      workspaceUser?.email?.trim().toLowerCase() ||
+      checkoutEmail ||
+      '';
+
+    const resolvedName =
+      workspaceUser?.name?.trim() ||
+      memberDigest?.name?.trim() ||
+      (resolvedEmail ? titleFromEmail(resolvedEmail) : '') ||
+      'Customer';
+
+    const resolvedPhone = memberPhone;
+
+    return {
+      name: resolvedName,
+      email: resolvedEmail,
+      ...(resolvedPhone ? { phone: resolvedPhone } : {}),
+    };
   }
 
   private async resolveWalletOwnerId(
