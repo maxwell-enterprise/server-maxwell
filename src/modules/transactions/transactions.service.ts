@@ -497,6 +497,20 @@ export class TransactionsService {
     return matchedCode;
   }
 
+  /**
+   * Grant wallet items before recording voucher redemption so a failed entitlement pass
+   * does not consume the buyer's one-time voucher quota (especially free checkout INSERT PAID).
+   */
+  private async grantEntitlementsThenRecordVoucher(paymentId: string): Promise<void> {
+    await this.checkoutEntitlements.processForPaymentId(paymentId);
+    await this.recordVoucherRedemptionForPayment(paymentId);
+  }
+
+  /** Skip Midtrans Snap when simulation is enabled (FE uses simulate-settle instead). */
+  private shouldSkipMidtransSnapForSimulation(totalAmount: number): boolean {
+    return totalAmount > 0 && this.config.allowPaymentSimulation;
+  }
+
   /** Same side effects as Midtrans webhook when a transaction becomes PAID (lifecycle, campaign). */
   private async onCheckoutPaidSideEffects(
     paymentId: string,
@@ -718,8 +732,7 @@ export class TransactionsService {
         orderId: payment.orderId,
         channel: 'checkout',
       });
-      await this.recordVoucherRedemptionForPayment(payment.id);
-      await this.checkoutEntitlements.processForPaymentId(payment.id);
+      await this.grantEntitlementsThenRecordVoucher(payment.id);
     }
 
     // 5. Map ke Transaction entity (supaya kompatibel dengan frontend)
@@ -928,8 +941,7 @@ export class TransactionsService {
         const rowPaid = String(row.status).toUpperCase() === 'PAID';
         if (rowPaid) {
           if (rowGross === 0) {
-            await this.recordVoucherRedemptionForPayment(row.id);
-            await this.checkoutEntitlements.processForPaymentId(row.id);
+            await this.grantEntitlementsThenRecordVoucher(row.id);
             return {
               transaction: this.mapPaymentRowToTransaction(row),
               snapToken: '',
@@ -986,8 +998,7 @@ export class TransactionsService {
           if (!r) {
             throw new BadRequestException('Could not reload free transaction');
           }
-          await this.recordVoucherRedemptionForPayment(r.id);
-          await this.checkoutEntitlements.processForPaymentId(r.id);
+          await this.grantEntitlementsThenRecordVoucher(r.id);
           return {
             transaction: this.mapPaymentRowToTransaction(r),
             snapToken: '',
@@ -995,11 +1006,14 @@ export class TransactionsService {
           };
         }
         const existingTx = this.mapPaymentRowToTransaction(row);
-        const snap = await this.midtrans.createSnapToken({
-          orderId: row.orderId,
-          grossAmount: rowGross,
-          customerEmail: row.customerEmail,
-        });
+        const skipSnap = this.shouldSkipMidtransSnapForSimulation(rowGross);
+        const snap = skipSnap
+          ? { token: '', redirect_url: undefined as string | undefined }
+          : await this.midtrans.createSnapToken({
+              orderId: row.orderId,
+              grossAmount: rowGross,
+              customerEmail: row.customerEmail,
+            });
         return {
           transaction: existingTx,
           snapToken: snap.token,
@@ -1106,19 +1120,20 @@ export class TransactionsService {
         orderId: payment.orderId,
         channel: 'midtrans_snap',
       });
-      await this.recordVoucherRedemptionForPayment(payment.id);
-      await this.checkoutEntitlements.processForPaymentId(payment.id);
+      await this.grantEntitlementsThenRecordVoucher(payment.id);
     }
 
     // 5) Create Snap token using gross_amount from BE (skip for Rp 0 — Midtrans does not support it).
     const grossAmount = Math.round(totalAmount);
-    const snap = isFreeSnap
-      ? { token: '', redirect_url: undefined as string | undefined }
-      : await this.midtrans.createSnapToken({
-          orderId: payment.orderId,
-          grossAmount,
-          customerEmail,
-        });
+    const skipSnap = this.shouldSkipMidtransSnapForSimulation(grossAmount);
+    const snap =
+      isFreeSnap || skipSnap
+        ? { token: '', redirect_url: undefined as string | undefined }
+        : await this.midtrans.createSnapToken({
+            orderId: payment.orderId,
+            grossAmount,
+            customerEmail,
+          });
 
     // 6) Map to Transaction entity for FE.
     const transaction: Transaction = {
@@ -1238,8 +1253,7 @@ export class TransactionsService {
       }
       if (paidRow?.id) {
         try {
-          await this.recordVoucherRedemptionForPayment(paidRow.id);
-          await this.checkoutEntitlements.processForPaymentId(paidRow.id);
+          await this.grantEntitlementsThenRecordVoucher(paidRow.id);
         } catch (err) {
           this.logger.error(
             `Checkout entitlements failed after Midtrans webhook (payment ${paidRow.id}): ${
@@ -1903,16 +1917,15 @@ export class TransactionsService {
         );
       }
       if (String(row.status).toUpperCase() === 'PAID') {
-        await this.recordVoucherRedemptionForPayment(transactionId);
-        void this.checkoutEntitlements
-          .processForPaymentId(transactionId)
-          .catch((err) => {
-            this.logger.error(
-              `Checkout entitlements failed for already-PAID payment ${transactionId}: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          });
+        try {
+          await this.grantEntitlementsThenRecordVoucher(transactionId);
+        } catch (err) {
+          this.logger.error(
+            `Checkout entitlements failed for already-PAID payment ${transactionId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
         return {
           paymentStatus: 'PAID',
           totalAmount: Number(row.totalAmount) || 0,
@@ -1930,16 +1943,7 @@ export class TransactionsService {
       paidRow.attributionSource ?? null,
       Number(paidRow.totalAmount) || 0,
     );
-    await this.recordVoucherRedemptionForPayment(transactionId);
-    void this.checkoutEntitlements
-      .processForPaymentId(transactionId)
-      .catch((err) => {
-        this.logger.error(
-          `Checkout entitlements failed after simulate-settle (payment ${transactionId}): ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      });
+    await this.grantEntitlementsThenRecordVoucher(transactionId);
     await this.appendSecurityLog('PAYMENT_SIMULATION_SETTLED', {
       transactionId,
       orderId: paidRow.orderId,

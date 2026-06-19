@@ -218,9 +218,25 @@ export class CheckoutEntitlementsService {
     if (!peekRow) {
       return;
     }
-    // Runs on the pool (not inside FOR UPDATE): avoids nested `pool.connect` while a
-    // checkout transaction client is already checked out — fixes "timeout exceeded when trying to connect".
+    // All pool/Prisma reads must finish before withTransaction — nested pool.connect while a
+    // transaction client is checked out causes "timeout exceeded when trying to connect".
     await this.members.ensureCrmMemberForPurchaseEmail(peekRow.customerEmail);
+
+    const walletOwnerId = await this.resolveWalletOwnerId(
+      peekRow.buyerUserId,
+      peekRow.customerEmail,
+    );
+    if (!walletOwnerId) {
+      this.logger.warn(
+        `Checkout entitlements: no wallet owner for payment ${peekRow.id} (email=${peekRow.customerEmail}); leaving entitlementProcessed=false so a later sync (member/JWT) can retry.`,
+      );
+      return;
+    }
+
+    const buyerProfile = await this.resolveBuyerRecipientProfile(
+      walletOwnerId,
+      peekRow.customerEmail,
+    );
 
     await this.db.withTransaction(async (client) => {
       const sel = await client.query<PaymentEntitlementRow>(
@@ -241,18 +257,6 @@ export class CheckoutEntitlementsService {
       );
       const row = sel.rows[0];
       if (!row) {
-        return;
-      }
-
-      const walletOwnerId = await this.resolveWalletOwnerId(
-        row.buyerUserId,
-        row.customerEmail,
-      );
-
-      if (!walletOwnerId) {
-        this.logger.warn(
-          `Checkout entitlements: no wallet owner for payment ${row.id} (email=${row.customerEmail}); leaving entitlementProcessed=false so a later sync (member/JWT) can retry.`,
-        );
         return;
       }
 
@@ -336,10 +340,6 @@ export class CheckoutEntitlementsService {
       }
 
       applyBuyerSelfTicketReservation(mutations);
-      const buyerProfile = await this.resolveBuyerRecipientProfile(
-        walletOwnerId,
-        row.customerEmail,
-      );
       stampBuyerSelfRecipientMeta(mutations, buyerProfile);
 
       for (const item of mutations) {
@@ -394,22 +394,25 @@ export class CheckoutEntitlementsService {
           .catch(() => null)
       : null;
 
-    const memberDigest = checkoutEmail
-      ? await this.members.findMemberDigestByEmail(checkoutEmail)
-      : null;
-
+    let memberName = '';
     let memberPhone = '';
     if (checkoutEmail) {
-      const phoneRow = await this.db.query<{ phone: string | null }>(
+      const memberRow = await this.db.query<{
+        name: string | null;
+        phone: string | null;
+      }>(
         `
-        select coalesce(nullif(trim(m.phone), ''), '') as phone
+        select
+          m.name as name,
+          coalesce(nullif(trim(m.phone), ''), '') as phone
         from members m
         where lower(trim(m.email)) = $1
         limit 1
         `,
         [checkoutEmail],
       );
-      memberPhone = phoneRow.rows[0]?.phone?.trim() || '';
+      memberName = memberRow.rows[0]?.name?.trim() || '';
+      memberPhone = memberRow.rows[0]?.phone?.trim() || '';
     }
 
     const resolvedEmail =
@@ -419,16 +422,14 @@ export class CheckoutEntitlementsService {
 
     const resolvedName =
       workspaceUser?.name?.trim() ||
-      memberDigest?.name?.trim() ||
+      memberName ||
       (resolvedEmail ? titleFromEmail(resolvedEmail) : '') ||
       'Customer';
-
-    const resolvedPhone = memberPhone;
 
     return {
       name: resolvedName,
       email: resolvedEmail,
-      ...(resolvedPhone ? { phone: resolvedPhone } : {}),
+      ...(memberPhone ? { phone: memberPhone } : {}),
     };
   }
 
