@@ -60,6 +60,7 @@ export class GiftAllocation {
   entitlementId: string;
   itemName: string;
   targetEmail?: string | null;
+  recipientName?: string | null;
   recipientPhone?: string | null;
   claimToken: string;
   tokenExpiresAt?: string | Date | null;

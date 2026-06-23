@@ -1339,7 +1339,18 @@ export class WalletService {
         'Ticket sharing currently supports full-ticket transfer only',
       );
     }
-    if (!recipientEmail && !recipientPhone) {
+    if (dto.deliveryMethod === 'LINK') {
+      if (!recipientName) {
+        throw new BadRequestException(
+          'Recipient name is required for link gifts',
+        );
+      }
+      if (!recipientPhone) {
+        throw new BadRequestException(
+          'Recipient phone is required for link gifts',
+        );
+      }
+    } else if (!recipientEmail && !recipientPhone) {
       throw new BadRequestException(
         'Recipient email or phone is required to share a ticket',
       );
@@ -1416,6 +1427,7 @@ export class WalletService {
           "entitlementId",
           "itemName",
           "targetEmail",
+          "recipientName",
           "recipientPhone",
           "claimToken",
           "tokenExpiresAt",
@@ -1433,9 +1445,10 @@ export class WalletService {
           $6,
           $7,
           $8,
-          $9::timestamptz,
-          $10,
+          $9,
+          $10::timestamptz,
           $11,
+          $12,
           'PENDING',
           now()
         )
@@ -1447,6 +1460,7 @@ export class WalletService {
           wallet.internalId,
           wallet.title,
           recipientEmail,
+          recipientName,
           recipientPhone,
           claimToken,
           tokenExpiresAt,
@@ -1538,6 +1552,84 @@ export class WalletService {
     }
 
     return allocation;
+  }
+
+  /**
+   * Public, sanitized gift preview for `/claim?token=…` (no auth).
+   */
+  async previewGiftByToken(token: string): Promise<{
+    status: 'PENDING' | 'CLAIMED' | 'REVOKED' | 'EXPIRED';
+    sourceUserName: string;
+    itemName: string;
+    recipientName?: string | null;
+    expiresAt?: string | null;
+  }> {
+    const normalizedToken = token.trim();
+    if (!normalizedToken) {
+      throw new BadRequestException('Token is required');
+    }
+
+    await this.ensureGiftAllocationRuntimeColumns();
+    const gifts = await this.selectGiftAllocations(
+      `
+      where ga."claimToken" = $1
+      limit 1
+      `,
+      [normalizedToken],
+    );
+    const gift = gifts[0];
+    if (!gift) {
+      throw new NotFoundException('Invalid gift link');
+    }
+
+    const expiresAt = gift.tokenExpiresAt
+      ? new Date(gift.tokenExpiresAt).toISOString()
+      : null;
+
+    if (gift.tokenExpiresAt && new Date(gift.tokenExpiresAt) <= new Date()) {
+      return {
+        status: 'EXPIRED',
+        sourceUserName: gift.sourceUserName,
+        itemName: gift.itemName,
+        recipientName: await this.readGiftRecipientName(
+          gift.entitlementId,
+          gift.recipientName,
+        ),
+        expiresAt,
+      };
+    }
+
+    const recipientName = await this.readGiftRecipientName(
+      gift.entitlementId,
+      gift.recipientName,
+    );
+    const status =
+      gift.status === 'PENDING' ||
+      gift.status === 'CLAIMED' ||
+      gift.status === 'REVOKED'
+        ? gift.status
+        : 'PENDING';
+
+    return {
+      status,
+      sourceUserName: gift.sourceUserName,
+      itemName: gift.itemName,
+      recipientName,
+      expiresAt,
+    };
+  }
+
+  private async readGiftRecipientName(
+    entitlementId: string,
+    persistedName?: string | null,
+  ): Promise<string | null> {
+    const stored = persistedName?.trim();
+    if (stored) return stored;
+    const row = await this.getWalletItemRow(entitlementId).catch(() => null);
+    if (!row) return null;
+    const meta = row.meta ?? {};
+    const name = meta.recipientName;
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
   }
 
   /**
@@ -2084,6 +2176,10 @@ export class WalletService {
         coalesce(wi.public_id, ga."entitlementId"::text) as "entitlementId",
         ga."itemName" as "itemName",
         ga."targetEmail" as "targetEmail",
+        coalesce(
+          nullif(btrim(ga."recipientName"), ''),
+          nullif(btrim(wi.meta->>'recipientName'), '')
+        ) as "recipientName",
         ga."recipientPhone" as "recipientPhone",
         ga."claimToken" as "claimToken",
         ga."tokenExpiresAt" as "tokenExpiresAt",
@@ -2108,6 +2204,23 @@ export class WalletService {
   private async ensureGiftAllocationRuntimeColumns(
     executor: SqlExecutor = this.db,
   ): Promise<void> {
+    await executor.query(
+      `
+      alter table if exists gift_allocations
+      add column if not exists "recipientName" text
+      `,
+    );
+    await executor.query(
+      `
+      update gift_allocations ga
+      set "recipientName" = wi.meta->>'recipientName'
+      from wallet_items wi
+      where ga."entitlementId" = wi.id
+        and (ga."recipientName" is null or btrim(ga."recipientName") = '')
+        and wi.meta ? 'recipientName'
+        and btrim(wi.meta->>'recipientName') <> ''
+      `,
+    );
     await executor.query(
       `
       alter table if exists gift_allocations

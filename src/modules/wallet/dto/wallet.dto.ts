@@ -33,17 +33,57 @@ export type WalletItemsAdminQueryDto = z.infer<
 // CREATE GIFT DTO
 // =============================================================================
 
-export const CreateGiftDtoSchema = z.object({
-  walletItemId: z.string().min(1).max(120),
-  transferAmount: z.number().int().positive().default(1),
-  recipientName: z.string().max(255).optional(),
-  recipientEmail: z.string().email().optional(),
-  recipientPhone: z.string().max(50).optional(),
-  deliveryMethod: GiftDeliveryMethodEnum,
-  giftMessage: z.string().max(500).optional(),
-});
+export const CreateGiftDtoSchema = z
+  .object({
+    walletItemId: z.string().min(1).max(120),
+    transferAmount: z.number().int().positive().default(1),
+    recipientName: z.string().max(255).optional(),
+    recipientEmail: z.string().email().optional(),
+    recipientPhone: z.string().max(50).optional(),
+    deliveryMethod: GiftDeliveryMethodEnum,
+    giftMessage: z.string().max(500).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const name = data.recipientName?.trim() ?? '';
+    const email = data.recipientEmail?.trim() ?? '';
+    const phone = data.recipientPhone?.trim() ?? '';
+    if (data.deliveryMethod === 'LINK') {
+      if (!name) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Recipient name is required for link gifts',
+          path: ['recipientName'],
+        });
+      }
+      if (!phone) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Recipient phone is required for link gifts',
+          path: ['recipientPhone'],
+        });
+      }
+      return;
+    }
+    if (!email && !phone) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Recipient email or phone is required to share a ticket',
+        path: ['recipientEmail'],
+      });
+    }
+  });
 
 export type CreateGiftDto = z.infer<typeof CreateGiftDtoSchema>;
+
+export const GiftPreviewResponseSchema = z.object({
+  status: z.enum(['PENDING', 'CLAIMED', 'REVOKED', 'EXPIRED']),
+  sourceUserName: z.string(),
+  itemName: z.string(),
+  recipientName: z.string().nullable().optional(),
+  expiresAt: z.string().nullable().optional(),
+});
+
+export type GiftPreviewResponse = z.infer<typeof GiftPreviewResponseSchema>;
 
 // =============================================================================
 // CLAIM GIFT DTO
