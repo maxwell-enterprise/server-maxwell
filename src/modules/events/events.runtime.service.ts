@@ -382,8 +382,15 @@ export class EventsRuntimeService {
       fields.push(`"endDate" = $${params.length}::date`);
     }
     if (dto.time !== undefined) {
-      params.push(dto.time?.trim() || null);
+      const syncedTime = dto.time?.trim() || null;
+      params.push(syncedTime);
       fields.push(`time = $${params.length}`);
+      if (syncedTime) {
+        params.push(syncedTime);
+        fields.push(
+          `"recurringMeta" = jsonb_set(coalesce("recurringMeta", '{}'::jsonb), '{time}', to_jsonb($${params.length}::text), true)`,
+        );
+      }
     }
     if (dto.location !== undefined) {
       params.push(dto.location.trim() || 'TBD');
@@ -987,11 +994,12 @@ export class EventsRuntimeService {
   }
 
   private normalizeEventPayload(dto: CreateEventDto) {
+    const time = dto.time?.trim() || null;
     return {
       name: dto.name.trim(),
       date: this.normalizeDate(dto.date),
       endDate: this.normalizeOptionalDate(dto.endDate),
-      time: dto.time?.trim() || null,
+      time,
       location: dto.location.trim() || 'TBD',
       locationMode: dto.locationMode,
       onlineMeetingLink: dto.onlineMeetingLink?.trim() || null,
@@ -1009,11 +1017,26 @@ export class EventsRuntimeService {
       creditTags: dto.creditTags,
       doneTag: dto.doneTag?.trim() || null,
       isRecurring: dto.isRecurring,
-      recurringMeta: dto.recurringMeta ?? null,
+      recurringMeta: this.syncRecurringMetaTime(time, dto.recurringMeta ?? null),
       selectionConfig: dto.selectionConfig ?? null,
       gates: dto.gates ?? [],
       tiers: dto.tiers ?? [],
       sessions: dto.sessions ?? [],
+    };
+  }
+
+  private syncRecurringMetaTime(
+    time: string | null,
+    recurringMeta: RecurringMeta | null,
+  ): RecurringMeta | null {
+    if (!time) {
+      return recurringMeta;
+    }
+    return {
+      frequency: recurringMeta?.frequency ?? 'WEEKLY',
+      patternDescription: recurringMeta?.patternDescription ?? '',
+      totalSessions: recurringMeta?.totalSessions ?? 1,
+      time,
     };
   }
 
