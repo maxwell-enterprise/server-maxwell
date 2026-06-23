@@ -2,6 +2,7 @@ import {
   CanActivate,
   ExecutionContext,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -11,6 +12,8 @@ import type { JwtUserPayload } from './auth.service';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
+  private readonly logger = new Logger(JwtAuthGuard.name);
+
   constructor(
     private readonly jwt: JwtService,
     private readonly prisma: PrismaService,
@@ -67,19 +70,35 @@ export class JwtAuthGuard implements CanActivate {
     if (!bearer) {
       throw new UnauthorizedException();
     }
+
+    let decoded: JwtUserPayload;
     try {
-      const decoded = this.jwt.verify<JwtUserPayload>(bearer);
+      decoded = this.jwt.verify<JwtUserPayload>(bearer);
+    } catch {
+      throw new UnauthorizedException();
+    }
+
+    let customAccess: {
+      customRoleId?: string;
+      customAllowedFeatures?: string[];
+    } = {};
+    try {
       const row = await this.prisma.user.findUnique({
         where: { id: decoded.sub },
         select: { abacContext: true },
       });
-      req.user = {
-        ...decoded,
-        ...this.readActiveCustomAccess(row?.abacContext),
-      };
-      return true;
-    } catch {
-      throw new UnauthorizedException();
+      customAccess = this.readActiveCustomAccess(row?.abacContext);
+    } catch (error) {
+      this.logger.warn(
+        `ABAC lookup failed for user ${decoded.sub}; continuing with JWT claims only`,
+        error instanceof Error ? error.message : String(error),
+      );
     }
+
+    req.user = {
+      ...decoded,
+      ...customAccess,
+    };
+    return true;
   }
 }
