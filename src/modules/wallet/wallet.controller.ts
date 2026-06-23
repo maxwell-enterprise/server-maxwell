@@ -246,6 +246,15 @@ export class WalletController {
     return this.walletService.getMemberHubContext(userId);
   }
 
+  @Get('gifts/preview')
+  previewGift(@Query('token') token?: string) {
+    const normalizedToken = token?.trim();
+    if (!normalizedToken) {
+      throw new BadRequestException('Token is required');
+    }
+    return this.walletService.previewGiftByToken(normalizedToken);
+  }
+
   @Post('gifts')
   @UseGuards(JwtAuthGuard)
   createGift(

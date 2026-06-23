@@ -1339,7 +1339,18 @@ export class WalletService {
         'Ticket sharing currently supports full-ticket transfer only',
       );
     }
-    if (!recipientEmail && !recipientPhone) {
+    if (dto.deliveryMethod === 'LINK') {
+      if (!recipientName) {
+        throw new BadRequestException(
+          'Recipient name is required for link gifts',
+        );
+      }
+      if (!recipientPhone) {
+        throw new BadRequestException(
+          'Recipient phone is required for link gifts',
+        );
+      }
+    } else if (!recipientEmail && !recipientPhone) {
       throw new BadRequestException(
         'Recipient email or phone is required to share a ticket',
       );
@@ -1538,6 +1549,75 @@ export class WalletService {
     }
 
     return allocation;
+  }
+
+  /**
+   * Public, sanitized gift preview for `/claim?token=…` (no auth).
+   */
+  async previewGiftByToken(token: string): Promise<{
+    status: 'PENDING' | 'CLAIMED' | 'REVOKED' | 'EXPIRED';
+    sourceUserName: string;
+    itemName: string;
+    recipientName?: string | null;
+    expiresAt?: string | null;
+  }> {
+    const normalizedToken = token.trim();
+    if (!normalizedToken) {
+      throw new BadRequestException('Token is required');
+    }
+
+    await this.ensureGiftAllocationRuntimeColumns();
+    const gifts = await this.selectGiftAllocations(
+      `
+      where ga."claimToken" = $1
+      limit 1
+      `,
+      [normalizedToken],
+    );
+    const gift = gifts[0];
+    if (!gift) {
+      throw new NotFoundException('Invalid gift link');
+    }
+
+    const expiresAt = gift.tokenExpiresAt
+      ? new Date(gift.tokenExpiresAt).toISOString()
+      : null;
+
+    if (gift.tokenExpiresAt && new Date(gift.tokenExpiresAt) <= new Date()) {
+      return {
+        status: 'EXPIRED',
+        sourceUserName: gift.sourceUserName,
+        itemName: gift.itemName,
+        recipientName: await this.readGiftRecipientName(gift.entitlementId),
+        expiresAt,
+      };
+    }
+
+    const recipientName = await this.readGiftRecipientName(gift.entitlementId);
+    const status =
+      gift.status === 'PENDING' ||
+      gift.status === 'CLAIMED' ||
+      gift.status === 'REVOKED'
+        ? gift.status
+        : 'PENDING';
+
+    return {
+      status,
+      sourceUserName: gift.sourceUserName,
+      itemName: gift.itemName,
+      recipientName,
+      expiresAt,
+    };
+  }
+
+  private async readGiftRecipientName(
+    entitlementId: string,
+  ): Promise<string | null> {
+    const row = await this.getWalletItemRow(entitlementId).catch(() => null);
+    if (!row) return null;
+    const meta = row.meta ?? {};
+    const name = meta.recipientName;
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
   }
 
   /**
