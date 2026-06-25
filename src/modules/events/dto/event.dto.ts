@@ -22,7 +22,14 @@ const EventTierDefinitionDtoSchema = z.object({
   quota: z.coerce.number().int().nonnegative(),
   quotaSold: z.coerce.number().int().nonnegative().optional(),
   price: z.coerce.number().nonnegative().optional(),
-  grantTagIds: z.array(z.string()).default([]),
+  grantTagIds: z.preprocess(
+    (value) => {
+      if (value === '' || value === null || value === undefined) return [];
+      if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+      return value;
+    },
+    z.array(z.string()).default([]),
+  ),
   bundledTiers: z
     .array(
       z.object({

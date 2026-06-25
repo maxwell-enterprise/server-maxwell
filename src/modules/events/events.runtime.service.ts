@@ -385,12 +385,6 @@ export class EventsRuntimeService {
       const syncedTime = dto.time?.trim() || null;
       params.push(syncedTime);
       fields.push(`time = $${params.length}`);
-      if (syncedTime) {
-        params.push(syncedTime);
-        fields.push(
-          `"recurringMeta" = jsonb_set(coalesce("recurringMeta", '{}'::jsonb), '{time}', to_jsonb($${params.length}::text), true)`,
-        );
-      }
     }
     if (dto.location !== undefined) {
       params.push(dto.location.trim() || 'TBD');
@@ -464,8 +458,21 @@ export class EventsRuntimeService {
       params.push(dto.isRecurring);
       fields.push(`"isRecurring" = $${params.length}`);
     }
+    const syncedTime =
+      dto.time !== undefined ? dto.time?.trim() || null : undefined;
     if (dto.recurringMeta !== undefined) {
-      params.push(this.toJson(dto.recurringMeta));
+      const recurringMeta =
+        syncedTime !== undefined && syncedTime
+          ? this.syncRecurringMetaTime(syncedTime, dto.recurringMeta ?? null)
+          : dto.recurringMeta;
+      params.push(this.toJson(recurringMeta));
+      fields.push(`"recurringMeta" = $${params.length}::jsonb`);
+    } else if (syncedTime) {
+      const recurringMeta = this.syncRecurringMetaTime(
+        syncedTime,
+        existing.recurringMeta ?? null,
+      );
+      params.push(this.toJson(recurringMeta));
       fields.push(`"recurringMeta" = $${params.length}::jsonb`);
     }
     if (dto.selectionConfig !== undefined) {
@@ -530,7 +537,12 @@ export class EventsRuntimeService {
       params,
     );
 
-    return this.toEvent(result.rows[0]);
+    const updated = result.rows[0];
+    if (!updated) {
+      throw new NotFoundException(`Event ${identifier} not found`);
+    }
+
+    return this.toEvent(updated);
   }
 
   async remove(identifier: string): Promise<void> {
