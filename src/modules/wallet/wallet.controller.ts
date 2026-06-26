@@ -56,6 +56,7 @@ import type { JwtUserPayload } from '../auth/auth.service';
 import {
   assertOperationsOnly,
   assertFinanceControllerOnly,
+  assertOperationsOrSuperAdmin,
 } from '../../common/security/access-policy';
 
 @Controller('wallet')
@@ -95,6 +96,20 @@ export class WalletController {
     }
 
     return this.walletService.getAllWalletItems();
+  }
+
+  @Get('workspace-users/lookup')
+  @UseGuards(JwtAuthGuard)
+  lookupWorkspaceUsers(
+    @Req() req: { user: JwtUserPayload },
+    @Query('ids') idsParam?: string,
+  ) {
+    assertOperationsOrSuperAdmin(req.user, 'Wallet workspace user lookup');
+    const ids = String(idsParam ?? '')
+      .split(',')
+      .map((id) => id.trim())
+      .filter(Boolean);
+    return this.walletService.lookupWorkspaceUsersByIds(ids);
   }
 
   @Get('items/:id')

@@ -1,4 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import { DatabaseService } from '../../common/database/database.service';
 import { MembersService } from '../members/members.service';
@@ -43,6 +46,12 @@ function toIso(v: unknown): string {
   const d = new Date(String(v));
   return Number.isNaN(d.getTime()) ? String(v) : d.toISOString();
 }
+
+export type DeleteDiscountResult = {
+  action: 'DELETED' | 'DEACTIVATED';
+  code: string;
+  message: string;
+};
 
 /** Ledger + store support: pricing_rules, discounts, inventory, transactions (finance ledger). */
 @Injectable()
@@ -289,9 +298,88 @@ export class StoreSupportService {
     );
   }
 
-  async deleteDiscount(feId: string): Promise<void> {
-    await this.db.query(`DELETE FROM discounts WHERE "feId" = $1`, [feId]);
-    await this.db.query(`DELETE FROM discounts WHERE id::text = $1`, [feId]);
+  async deleteDiscount(feId: string): Promise<DeleteDiscountResult> {
+    const trimmed = feId.trim();
+    if (!trimmed) {
+      throw new NotFoundException('Discount id is required');
+    }
+
+    const found = await this.db.query<{
+      id: string;
+      code: string;
+      currentUsageCount: number;
+      conditions: unknown;
+    }>(
+      `
+      select
+        id::text as id,
+        code,
+        coalesce("currentUsageCount", 0)::int as "currentUsageCount",
+        conditions
+      from discounts
+      where "feId" = $1 or id::text = $1
+      limit 1
+      `,
+      [trimmed],
+    );
+
+    const discount = found.rows[0];
+    if (!discount) {
+      throw new NotFoundException(`Discount ${trimmed} not found`);
+    }
+
+    const redemptionRes = await this.db.query<{ count: string }>(
+      `
+      select count(*)::text as count
+      from discount_redemption_logs
+      where "discountId" = $1::uuid
+      `,
+      [discount.id],
+    );
+    const redemptionCount = Number(redemptionRes.rows[0]?.count ?? 0);
+    const usageCount = Number(discount.currentUsageCount ?? 0);
+
+    if (usageCount > 0 || redemptionCount > 0) {
+      const deactivatedAt = new Date().toISOString();
+      const prevConditions = parseJson<Record<string, unknown>>(
+        discount.conditions,
+        {},
+      );
+      const nextConditions = {
+        ...prevConditions,
+        deactivatedBySystem: true,
+        deactivatedAt,
+        deactivationReason:
+          'Voucher deactivated by system because it already has redemption history.',
+      };
+
+      await this.db.query(
+        `
+        update discounts
+        set
+          "validUntil" = now(),
+          conditions = $2::jsonb
+        where id = $1::uuid
+        `,
+        [discount.id, JSON.stringify(nextConditions)],
+      );
+
+      return {
+        action: 'DEACTIVATED',
+        code: discount.code,
+        message: `Voucher "${discount.code}" was deactivated by the system because it has already been used.`,
+      };
+    }
+
+    await this.db.query(`delete from discounts where id = $1::uuid`, [
+      discount.id,
+    ]);
+
+    return {
+      action: 'DELETED',
+      code: discount.code,
+      message: `Voucher "${discount.code}" was deleted.`,
+    };
   }
 
   // --- inventory ---

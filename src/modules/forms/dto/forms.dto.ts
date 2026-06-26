@@ -49,7 +49,10 @@ export const CreateDeploymentDtoSchema = z.object({
 
 export const GuestContactSchema = z.object({
   name: z.string().min(1).max(255),
-  email: z.string().email().max(255),
+  email: z.preprocess(
+    (val) => (typeof val === 'string' && !val.trim() ? undefined : val),
+    z.string().email().max(255).optional(),
+  ),
   phone: z.string().min(6).max(50),
 });
 

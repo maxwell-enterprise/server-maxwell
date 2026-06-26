@@ -513,6 +513,44 @@ export class WalletService {
     return this.selectWalletItems('order by wi."createdAt" desc');
   }
 
+  async lookupWorkspaceUsersByIds(
+    ids: readonly string[],
+  ): Promise<
+    Array<{ id: string; name: string; email: string; phone: string | null }>
+  > {
+    const unique = [
+      ...new Set(ids.map((id) => id.trim()).filter(Boolean)),
+    ].slice(0, 500);
+    if (unique.length === 0) {
+      return [];
+    }
+
+    const result = await this.db.query<{
+      id: string;
+      name: string | null;
+      email: string | null;
+      phone: string | null;
+    }>(
+      `
+      select
+        id,
+        coalesce(nullif(trim(name), ''), '') as name,
+        coalesce(nullif(trim(email), ''), '') as email,
+        phone
+      from "User"
+      where id = any($1::text[])
+      `,
+      [unique],
+    );
+
+    return result.rows.map((row) => ({
+      id: row.id,
+      name: row.name?.trim() || row.email?.trim() || '',
+      email: row.email?.trim() || '',
+      phone: row.phone?.trim() || null,
+    }));
+  }
+
   async getWalletItemContractById(
     identifier: string,
   ): Promise<WalletItemContract | null> {

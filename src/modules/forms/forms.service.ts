@@ -283,7 +283,18 @@ export class FormsService {
     user: JwtUserPayload | null,
     body: Record<string, unknown>,
   ): Promise<unknown> {
-    const dto = SubmitFormResponseDtoSchema.parse(body ?? {});
+    const parsed = SubmitFormResponseDtoSchema.safeParse(body ?? {});
+    if (!parsed.success) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: 'Validation failed',
+        errors: parsed.error.issues.map((issue) => ({
+          field: issue.path.join('.'),
+          message: issue.message,
+        })),
+      });
+    }
+    const dto = parsed.data;
     const form = await this.findFormRow(dto.formId);
     if (!form.active) {
       throw new BadRequestException('Form is not accepting responses');
@@ -310,18 +321,20 @@ export class FormsService {
         );
       }
       userName = dto.guestContact.name.trim();
-      userEmail = dto.guestContact.email.trim().toLowerCase();
+      userEmail = dto.guestContact.email?.trim().toLowerCase() || '';
       userPhone = dto.guestContact.phone.trim();
 
-      const lead = await this.members.upsertFormRespondentLead({
-        fullName: userName,
-        email: userEmail,
-        phone: userPhone,
-        formTitle: form.title,
-        deploymentId: deployment?.id ?? null,
-        eventId: deployment?.eventId ?? null,
-      });
-      memberId = lead.member.id;
+      if (userEmail) {
+        const lead = await this.members.upsertFormRespondentLead({
+          fullName: userName,
+          email: userEmail,
+          phone: userPhone,
+          formTitle: form.title,
+          deploymentId: deployment?.id ?? null,
+          eventId: deployment?.eventId ?? null,
+        });
+        memberId = lead.member.id;
+      }
     } else {
       userEmail = user?.email?.trim().toLowerCase() || '';
       if (userEmail) {
