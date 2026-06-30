@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
+  Patch,
   Post,
   Req,
   UseGuards,
@@ -45,6 +47,35 @@ export class EventCampaignsController {
   ) {
     assertCampaignResourceAccess(req.user, 'Event campaign send');
     return this.eventCampaigns.sendCampaign(req.user.sub, body ?? {});
+  }
+
+  @Get(':id')
+  getOne(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+  ) {
+    assertCampaignResourceAccess(req.user, 'Event campaign detail');
+    return this.eventCampaigns.getCampaign(decodeURIComponent(id));
+  }
+
+  @Patch(':id')
+  update(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+    @Body() body: Record<string, unknown>,
+  ) {
+    assertCampaignResourceAccess(req.user, 'Event campaign update');
+    return this.eventCampaigns.updateCampaign(decodeURIComponent(id), body ?? {});
+  }
+
+  @Delete(':id')
+  async remove(
+    @Req() req: { user: JwtUserPayload },
+    @Param('id') id: string,
+  ) {
+    assertCampaignResourceAccess(req.user, 'Event campaign deletion');
+    await this.eventCampaigns.removeCampaign(decodeURIComponent(id));
+    return { ok: true };
   }
 }
 

@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { DbService } from '../../common/db.service';
 import { PrismaService } from '../../prisma/prisma.service';
-import { SendEventCampaignDtoSchema } from './dto/event-campaign.dto';
+import { SendEventCampaignDtoSchema, UpdateEventCampaignDtoSchema } from './dto/event-campaign.dto';
 
 export type EventCampaignAssignmentStatus =
   | 'PENDING_LOGIN'
@@ -177,62 +177,100 @@ export class EventCampaignsService {
       emails,
     );
 
-    let sent = 0;
-    let skippedHasTicket = 0;
-    let pendingLogin = 0;
-
-    for (const email of emails) {
-      const user = await this.findUserByEmail(email);
-      let status: EventCampaignAssignmentStatus = 'PENDING_LOGIN';
-      let userId: string | null = null;
-
-      if (user) {
-        userId = user.id;
-        const owns = await this.userOwnsProduct(user.id, dto.targetProductId);
-        status = owns ? 'SKIPPED_HAS_TICKET' : 'ACTIVE';
-        if (owns) skippedHasTicket += 1;
-        else sent += 1;
-      } else {
-        pendingLogin += 1;
-      }
-
-      await this.db.query(
-        `
-        insert into event_campaign_assignments (
-          campaign_id,
-          recipient_email,
-          recipient_name,
-          user_id,
-          status
-        )
-        values ($1::uuid, $2, $3, $4, $5)
-        on conflict (campaign_id, recipient_email)
-        do update set
-          recipient_name = excluded.recipient_name,
-          user_id = excluded.user_id,
-          status = excluded.status,
-          updated_at = now()
-        `,
-        [
-          campaignId,
-          email,
-          nameByEmail.get(email) ?? null,
-          userId,
-          status,
-        ],
-      );
-    }
+    const stats = await this.syncRecipientsToCampaign({
+      campaignInternalId: campaignId,
+      formInternalId: form.internalId,
+      targetProductId: dto.targetProductId,
+      emails,
+      nameByEmail,
+    });
 
     return {
       id: publicId,
       name: dto.name,
-      stats: {
-        targeted: emails.length,
-        active: sent,
-        pendingLogin,
-        skippedHasTicket,
-      },
+      stats,
     };
+  }
+
+  async getCampaign(identifier: string): Promise<unknown> {
+    const row = await this.findCampaignInternalRow(identifier);
+    const stats = await this.assignmentStats(row.internalId);
+    const recipients = await this.listAssignmentEmails(row.internalId);
+    return {
+      id: row.publicId,
+      name: row.name,
+      formId: row.formId,
+      formTitle: row.formTitle,
+      targetProductId: row.targetProductId,
+      linkedDiscountCode: row.linkedDiscountCode ?? undefined,
+      mustBeAccepted: row.mustBeAccepted,
+      createdAt: toIso(row.createdAt),
+      recipientEmails: recipients,
+      stats,
+    };
+  }
+
+  async updateCampaign(
+    identifier: string,
+    body: Record<string, unknown>,
+  ): Promise<unknown> {
+    const dto = UpdateEventCampaignDtoSchema.parse(body ?? {});
+    const row = await this.findCampaignInternalRow(identifier);
+    const emails = [
+      ...new Set(dto.recipientEmails.map((e) => normalizeEmail(e))),
+    ];
+
+    await this.db.query(
+      `
+      update event_campaigns
+      set
+        name = $2,
+        target_product_id = $3,
+        linked_discount_code = $4,
+        must_be_accepted = $5,
+        updated_at = now()
+      where id = $1::uuid
+      `,
+      [
+        row.internalId,
+        dto.name,
+        dto.targetProductId,
+        dto.linkedDiscountCode?.trim().toUpperCase() || null,
+        dto.mustBeAccepted === true,
+      ],
+    );
+
+    const nameByEmail = await this.loadRespondentNames(
+      row.formInternalId,
+      emails,
+    );
+
+    const stats = await this.syncRecipientsToCampaign({
+      campaignInternalId: row.internalId,
+      formInternalId: row.formInternalId,
+      targetProductId: dto.targetProductId,
+      emails,
+      nameByEmail,
+    });
+
+    await this.removeUnselectedAssignments(row.internalId, emails);
+
+    return {
+      id: row.publicId,
+      name: dto.name,
+      stats,
+    };
+  }
+
+  async removeCampaign(identifier: string): Promise<void> {
+    const row = await this.findCampaignInternalRow(identifier);
+    const result = await this.db.query(
+      `delete from event_campaigns where id = $1::uuid`,
+      [row.internalId],
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      throw new NotFoundException('Event campaign not found');
+    }
   }
 
   async getPendingForUser(
@@ -637,5 +675,163 @@ export class EventCampaignsService {
         opts?.convertedAt === true,
       ],
     );
+  }
+
+  private async syncRecipientsToCampaign(input: {
+    campaignInternalId: string;
+    formInternalId: string;
+    targetProductId: string;
+    emails: string[];
+    nameByEmail: Map<string, string>;
+  }): Promise<{
+    targeted: number;
+    active: number;
+    pendingLogin: number;
+    skippedHasTicket: number;
+  }> {
+    const { campaignInternalId, targetProductId, emails, nameByEmail } = input;
+    let active = 0;
+    let skippedHasTicket = 0;
+    let pendingLogin = 0;
+
+    for (const email of emails) {
+      const user = await this.findUserByEmail(email);
+      let status: EventCampaignAssignmentStatus = 'PENDING_LOGIN';
+      let userId: string | null = null;
+
+      if (user) {
+        userId = user.id;
+        const owns = await this.userOwnsProduct(user.id, targetProductId);
+        status = owns ? 'SKIPPED_HAS_TICKET' : 'ACTIVE';
+        if (owns) skippedHasTicket += 1;
+        else active += 1;
+      } else {
+        pendingLogin += 1;
+      }
+
+      await this.db.query(
+        `
+        insert into event_campaign_assignments (
+          campaign_id,
+          recipient_email,
+          recipient_name,
+          user_id,
+          status
+        )
+        values ($1::uuid, $2, $3, $4, $5)
+        on conflict (campaign_id, recipient_email)
+        do update set
+          recipient_name = excluded.recipient_name,
+          user_id = excluded.user_id,
+          status = case
+            when event_campaign_assignments.status = 'CONVERTED'
+              then event_campaign_assignments.status
+            else excluded.status
+          end,
+          dismissed_at = case
+            when event_campaign_assignments.status = 'CONVERTED'
+              then event_campaign_assignments.dismissed_at
+            when excluded.status = 'ACTIVE' then null
+            else event_campaign_assignments.dismissed_at
+          end,
+          updated_at = now()
+        `,
+        [
+          campaignInternalId,
+          email,
+          nameByEmail.get(email) ?? null,
+          userId,
+          status,
+        ],
+      );
+    }
+
+    return {
+      targeted: emails.length,
+      active,
+      pendingLogin,
+      skippedHasTicket,
+    };
+  }
+
+  private async removeUnselectedAssignments(
+    campaignInternalId: string,
+    keepEmails: string[],
+  ): Promise<void> {
+    if (keepEmails.length === 0) return;
+    await this.db.query(
+      `
+      delete from event_campaign_assignments
+      where campaign_id = $1::uuid
+        and status <> 'CONVERTED'
+        and not (recipient_email = any($2::text[]))
+      `,
+      [campaignInternalId, keepEmails],
+    );
+  }
+
+  private async listAssignmentEmails(
+    campaignInternalId: string,
+  ): Promise<string[]> {
+    const res = await this.db.query<{ email: string }>(
+      `
+      select recipient_email as email
+      from event_campaign_assignments
+      where campaign_id = $1::uuid
+      order by recipient_email asc
+      `,
+      [campaignInternalId],
+    );
+    return res.rows.map((row) => row.email);
+  }
+
+  private async findCampaignInternalRow(identifier: string): Promise<{
+    internalId: string;
+    publicId: string;
+    formInternalId: string;
+    name: string;
+    formId: string;
+    formTitle: string;
+    targetProductId: string;
+    linkedDiscountCode: string | null;
+    mustBeAccepted: boolean;
+    createdAt: string;
+  }> {
+    const res = await this.db.query<{
+      internalId: string;
+      publicId: string;
+      formInternalId: string;
+      name: string;
+      formId: string;
+      formTitle: string;
+      targetProductId: string;
+      linkedDiscountCode: string | null;
+      mustBeAccepted: boolean;
+      createdAt: string;
+    }>(
+      `
+      select
+        ec.id::text as "internalId",
+        coalesce(nullif(trim(ec.public_id), ''), ec.id::text) as "publicId",
+        ec.form_id::text as "formInternalId",
+        ec.name,
+        coalesce(nullif(trim(f.public_id), ''), f.id::text) as "formId",
+        ec.form_title as "formTitle",
+        ec.target_product_id as "targetProductId",
+        ec.linked_discount_code as "linkedDiscountCode",
+        ec.must_be_accepted as "mustBeAccepted",
+        ec.created_at as "createdAt"
+      from event_campaigns ec
+      join forms f on f.id = ec.form_id
+      where ec.public_id = $1 or ec.id::text = $1
+      limit 1
+      `,
+      [identifier.trim()],
+    );
+    const row = res.rows[0];
+    if (!row) {
+      throw new NotFoundException('Event campaign not found');
+    }
+    return row;
   }
 }
