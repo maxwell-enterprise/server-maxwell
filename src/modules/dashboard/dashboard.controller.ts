@@ -18,7 +18,7 @@ export class DashboardController {
 
   /**
    * Executive Dashboard KPIs from `members` + `payment_transactions` (PAID).
-   * Filters: timeRange, program, region — same semantics as the FE dashboard.
+   * Filters: timeRange, program, region apply to member metrics and finance (via member join).
    */
   @Get('executive')
   @UseGuards(JwtAuthGuard)

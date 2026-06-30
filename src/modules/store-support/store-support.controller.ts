@@ -186,6 +186,31 @@ export class StoreSupportController {
     return this.storeSupport.getFinanceForecastSummary();
   }
 
+  @Get('unified-ledger')
+  unifiedLedger() {
+    return this.storeSupport.getUnifiedLedger();
+  }
+
+  @Get('payment-transactions')
+  listPaymentTransactions() {
+    return this.storeSupport.listPaymentTransactionsForFinance();
+  }
+
+  @Get('finance-vendors')
+  listFinanceVendors() {
+    return this.storeSupport.listFinanceVendors();
+  }
+
+  @Post('finance-vendors')
+  @UseGuards(JwtAuthGuard)
+  createFinanceVendor(
+    @Req() req: { user: JwtUserPayload },
+    @Body() body: Record<string, unknown>,
+  ) {
+    this.assertFinance(req, 'Finance vendor creation');
+    return this.storeSupport.createFinanceVendor(body ?? {});
+  }
+
   @Get('ledger-transactions')
   listLedgerTransactions(
     @Query('type') type?: string,

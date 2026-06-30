@@ -1,6 +1,7 @@
 import {
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import { DatabaseService } from '../../common/database/database.service';
@@ -704,6 +705,266 @@ export class StoreSupportService {
        WHERE id = $1::uuid`,
       [id, JSON.stringify(list), nextPaid, nextStatus],
     );
+  }
+
+  /** Finance Exceptions tab — rows from `payment_transactions`. */
+  async listPaymentTransactionsForFinance(): Promise<
+    Record<string, unknown>[]
+  > {
+    const result = await this.db.query<{
+      id: string;
+      orderId: string;
+      amount: string;
+      discountAmount: string | null;
+      totalAmount: string;
+      paidAmount: string;
+      balanceDue: string;
+      method: string;
+      status: string;
+      createdAt: Date;
+      expiryTime: Date;
+      customerEmail: string;
+      refunds: unknown;
+    }>(
+      `SELECT id::text AS id, "orderId", amount::text, "discountAmount"::text,
+              "totalAmount"::text, "paidAmount"::text, "balanceDue"::text,
+              method, status, "createdAt", "expiryTime", "customerEmail", refunds
+       FROM payment_transactions
+       ORDER BY "createdAt" DESC
+       LIMIT 500`,
+    );
+    return result.rows.map((r) => ({
+      id: r.id,
+      orderId: r.orderId,
+      amount: Number(r.amount),
+      discountAmount: r.discountAmount != null ? Number(r.discountAmount) : 0,
+      totalAmount: Number(r.totalAmount),
+      paidAmount: Number(r.paidAmount),
+      balanceDue: Number(r.balanceDue),
+      method: r.method,
+      status: r.status,
+      createdAt: toIso(r.createdAt),
+      expiryTime: toIso(r.expiryTime),
+      customerEmail: r.customerEmail,
+      refunds: parseJson<unknown[]>(r.refunds, []),
+    }));
+  }
+
+  /**
+   * Unified ledger for Finance tabs (Ledger, Settlement, P&L).
+   * Single server-side merge of manual transactions, gateway payments, and payouts.
+   */
+  async getUnifiedLedger(): Promise<Record<string, unknown>[]> {
+    type Entry = {
+      id: string;
+      date: string;
+      category: 'AR' | 'AP';
+      type: string;
+      referenceId: string;
+      entityName: string;
+      description: string;
+      amount: number;
+      status: string;
+      eventId?: string;
+      txnType?: string;
+      txnStatus?: string;
+    };
+
+    const ledger: Entry[] = [];
+
+    const txRes = await this.db.query<Record<string, unknown>>(
+      `SELECT id::text AS id, legacy_id, date, type, description, amount, status, "eventId"
+       FROM transactions
+       ORDER BY date DESC, "createdAt" DESC
+       LIMIT 1000`,
+    );
+
+    for (const row of txRes.rows) {
+      const tx = this.rowToLedgerTransaction(row) as {
+        id: string;
+        date: string;
+        type: string;
+        description: string;
+        amount: number;
+        status: string;
+        eventId?: string;
+      };
+      const desc = String(tx.description ?? '');
+      const settled = String(tx.status).toLowerCase() === 'paid';
+
+      if (tx.type === 'PO' && desc.includes('Store Sale')) {
+        ledger.push({
+          id: `AR-${tx.id}`,
+          date: tx.date,
+          category: 'AR',
+          type: 'REVENUE',
+          referenceId: tx.id,
+          entityName: desc.split('(')[0].replace('Store Sale: ', '').trim(),
+          description: desc,
+          amount: tx.amount,
+          status: settled ? 'SETTLED' : 'UNRECONCILED',
+          eventId: tx.eventId,
+          txnType: tx.type,
+          txnStatus: tx.status,
+        });
+      } else if (tx.type === 'PO' || tx.type === 'Expense') {
+        ledger.push({
+          id: `AP-${tx.id}`,
+          date: tx.date,
+          category: 'AP',
+          type: 'OPERATIONAL_EXPENSE',
+          referenceId: tx.id,
+          entityName: desc.split(':')[0] || 'Vendor',
+          description: desc,
+          amount: tx.amount,
+          status: settled ? 'SETTLED' : 'UNRECONCILED',
+          eventId: tx.eventId,
+          txnType: tx.type,
+          txnStatus: tx.status,
+        });
+      } else if (tx.type === 'Royalty') {
+        ledger.push({
+          id: `AP-${tx.id}`,
+          date: tx.date,
+          category: 'AP',
+          type: 'ROYALTY',
+          referenceId: tx.id,
+          entityName: 'Royalty',
+          description: desc,
+          amount: tx.amount,
+          status: settled ? 'SETTLED' : 'UNRECONCILED',
+          eventId: tx.eventId,
+          txnType: tx.type,
+          txnStatus: tx.status,
+        });
+      }
+    }
+
+    const payRes = await this.db.query<{
+      id: string;
+      orderId: string;
+      totalAmount: string;
+      status: string;
+      createdAt: Date;
+      method: string;
+      customerEmail: string;
+    }>(
+      `SELECT id::text AS id, "orderId", "totalAmount"::text, status, "createdAt", method, "customerEmail"
+       FROM payment_transactions
+       WHERE UPPER(TRIM(status)) = 'PAID'
+       ORDER BY "createdAt" DESC
+       LIMIT 500`,
+    );
+
+    const manualSaleRefs = new Set(
+      ledger
+        .filter((e) => e.type === 'REVENUE')
+        .map((e) => e.referenceId),
+    );
+
+    for (const p of payRes.rows) {
+      if (manualSaleRefs.has(p.id)) continue;
+      const date =
+        p.createdAt instanceof Date
+          ? p.createdAt.toISOString().slice(0, 10)
+          : String(p.createdAt).slice(0, 10);
+      ledger.push({
+        id: `AR-${p.id}`,
+        date,
+        category: 'AR',
+        type: 'REVENUE',
+        referenceId: p.id,
+        entityName: p.customerEmail || p.orderId,
+        description: `Store Sale: ${p.orderId} (${p.method})`,
+        amount: Number(p.totalAmount),
+        status: 'SETTLED',
+      });
+    }
+
+    const payouts = await this.listPayouts();
+    for (const c of payouts) {
+      const createdAt = String(c.createdAt ?? '');
+      const date = createdAt.includes('T')
+        ? createdAt.slice(0, 10)
+        : createdAt.slice(0, 10);
+      const status = String(c.status ?? 'PENDING').toUpperCase();
+      ledger.push({
+        id: `COMM-${c.id}`,
+        date: date || new Date().toISOString().slice(0, 10),
+        category: 'AP',
+        type: 'COMMISSION',
+        referenceId: String(c.id),
+        entityName: String(c.beneficiaryId ?? ''),
+        description: `Commission for ${c.productName} (Member: ${c.sourceMemberName})`,
+        amount: Number(c.amount ?? 0),
+        status: status === 'PAID' ? 'SETTLED' : 'UNRECONCILED',
+      });
+    }
+
+    return ledger.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+  }
+
+  async listFinanceVendors(): Promise<
+    Array<{
+      id: string;
+      name: string;
+      contactEmail?: string;
+      contactPhone?: string;
+      isActive: boolean;
+    }>
+  > {
+    try {
+      const result = await this.db.query<{
+        id: string;
+        name: string;
+        contact_email: string | null;
+        contact_phone: string | null;
+        is_active: boolean;
+      }>(
+        `SELECT id::text, name, contact_email, contact_phone, is_active
+         FROM finance_vendors
+         WHERE is_active = true
+         ORDER BY LOWER(name)`,
+      );
+      return result.rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        contactEmail: r.contact_email ?? undefined,
+        contactPhone: r.contact_phone ?? undefined,
+        isActive: r.is_active,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  async createFinanceVendor(body: Record<string, unknown>): Promise<{ id: string }> {
+    const name = String(body.name ?? '').trim();
+    if (!name) {
+      throw new BadRequestException('Vendor name is required');
+    }
+    const existing = await this.db.query<{ id: string }>(
+      `SELECT id::text FROM finance_vendors WHERE LOWER(TRIM(name)) = LOWER(TRIM($1)) LIMIT 1`,
+      [name],
+    );
+    if (existing.rows[0]?.id) {
+      return { id: existing.rows[0].id };
+    }
+    const ins = await this.db.query<{ id: string }>(
+      `INSERT INTO finance_vendors (name, contact_email, contact_phone)
+       VALUES ($1, $2, $3)
+       RETURNING id::text`,
+      [
+        name,
+        body.contactEmail != null ? String(body.contactEmail) : null,
+        body.contactPhone != null ? String(body.contactPhone) : null,
+      ],
+    );
+    const id = ins.rows[0]?.id;
+    if (!id) throw new Error('Failed to create finance vendor');
+    return { id };
   }
 
   /**

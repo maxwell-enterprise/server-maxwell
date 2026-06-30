@@ -6,8 +6,12 @@ export type ExecutiveDashboardSummary = {
   filters: ExecutiveDashboardQueryDto;
   uniquePrograms: string[];
   members: {
+    /** All members in the filtered cohort (every lifecycle stage). */
     total: number;
+    /** MEMBER + CERTIFIED + FACILITATOR within the cohort. */
+    activeMemberCount: number;
     momPercent: number | null;
+    lifecycleBreakdown: Array<{ stage: string; count: number }>;
     scholarshipCount: number;
     scholarshipRate: number;
     nonGuestCount: number;
@@ -36,6 +40,24 @@ type MemberScope = {
   params: unknown[];
   clauses: string[];
 };
+
+type PaymentFinanceScope = {
+  fromSql: string;
+  whereSql: string;
+  params: unknown[];
+};
+
+/** Active member lifecycle stages (subset of full registry). */
+const ACTIVE_MEMBER_LIFECYCLE_SQL = `('MEMBER', 'CERTIFIED', 'FACILITATOR')`;
+
+const LIFECYCLE_DISPLAY_ORDER = [
+  'GUEST',
+  'IDENTIFIED',
+  'PARTICIPANT',
+  'MEMBER',
+  'CERTIFIED',
+  'FACILITATOR',
+] as const;
 
 @Injectable()
 export class DashboardService {
@@ -80,9 +102,16 @@ export class DashboardService {
     query: ExecutiveDashboardQueryDto,
     period: 'current' | 'previous',
     alias = 'm',
+    options?: { activeLifecycleOnly?: boolean },
   ): MemberScope {
     const params: unknown[] = [];
     const clauses: string[] = [];
+
+    if (options?.activeLifecycleOnly) {
+      clauses.push(
+        `${alias}."lifecycleStage" in ${ACTIVE_MEMBER_LIFECYCLE_SQL}`,
+      );
+    }
 
     const joinDate = `(${alias}."joinMonth" || '-01')::date`;
 
@@ -139,8 +168,8 @@ export class DashboardService {
     }
 
     if (query.program !== 'ALL') {
-      params.push(query.program);
-      clauses.push(`${alias}.program = $${params.length}`);
+      params.push(query.program.trim());
+      clauses.push(`trim(${alias}.program) = trim($${params.length}::text)`);
     }
 
     if (query.region === 'INTL') {
@@ -219,6 +248,57 @@ export class DashboardService {
     return { whereSql, params, clauses };
   }
 
+  private needsMemberFilterForPayments(
+    query: ExecutiveDashboardQueryDto,
+  ): boolean {
+    return query.program !== 'ALL' || query.region !== 'ALL';
+  }
+
+  private buildPaymentFinanceScope(
+    query: ExecutiveDashboardQueryDto,
+    period: 'current' | 'previous',
+  ): PaymentFinanceScope {
+    const payment = this.buildPaymentScope(query, period);
+    if (!this.needsMemberFilterForPayments(query)) {
+      return {
+        fromSql: 'payment_transactions pt',
+        whereSql: payment.whereSql,
+        params: payment.params,
+      };
+    }
+
+    const memberClauses: string[] = [];
+    const params = [...payment.params];
+
+    if (query.program !== 'ALL') {
+      params.push(query.program.trim());
+      memberClauses.push(`trim(m.program) = trim($${params.length}::text)`);
+    }
+    if (query.region === 'INTL') {
+      memberClauses.push(`m."regInUS" = true`);
+    } else if (query.region === 'DOMESTIC') {
+      memberClauses.push(`m."regInUS" = false`);
+    }
+
+    const allClauses = [...payment.clauses, ...memberClauses];
+
+    return {
+      fromSql: `
+        payment_transactions pt
+        inner join members m on (
+          lower(trim(m.email)) = lower(trim(pt."customerEmail"))
+          or (
+            pt."buyerUserId" is not null
+            and trim(pt."buyerUserId") <> ''
+            and m.id::text = pt."buyerUserId"
+          )
+        )
+      `,
+      whereSql: this.toWhereSql(allClauses),
+      params,
+    };
+  }
+
   private percentChange(current: number, previous: number): number | null {
     if (previous > 0) {
       return ((current - previous) / previous) * 100;
@@ -229,41 +309,80 @@ export class DashboardService {
     return null;
   }
 
+  private orderLifecycleBreakdown(
+    rows: Array<{ stage: string; count: number }>,
+  ): Array<{ stage: string; count: number }> {
+    const byStage = new Map(rows.map((row) => [row.stage, row.count]));
+    const ordered: Array<{ stage: string; count: number }> = [];
+
+    for (const stage of LIFECYCLE_DISPLAY_ORDER) {
+      if (byStage.has(stage)) {
+        ordered.push({ stage, count: byStage.get(stage) ?? 0 });
+        byStage.delete(stage);
+      }
+    }
+
+    for (const [stage, count] of byStage.entries()) {
+      ordered.push({ stage, count });
+    }
+
+    return ordered;
+  }
+
   private async buildMemberMetrics(
     query: ExecutiveDashboardQueryDto,
   ): Promise<NonNullable<ExecutiveDashboardSummary['members']>> {
-    const current = this.buildMemberScope(query, 'current');
-    const previous = this.buildMemberScope(query, 'previous');
+    const currentCohort = this.buildMemberScope(query, 'current');
+    const previousCohort = this.buildMemberScope(query, 'previous');
+    const currentActive = this.buildMemberScope(query, 'current', 'm', {
+      activeLifecycleOnly: true,
+    });
 
-    const [countsRes, growthRes, categoryRes] = await Promise.all([
+    const [countsRes, lifecycleRes, growthRes, categoryRes] = await Promise.all([
       this.db.query<{
         total: string;
         prev_total: string;
+        active_count: string;
         scholarship_count: string;
-        non_guest_count: string;
         ntag_received_count: string;
         qualified_count: string;
       }>(
         `
-        with current_members as (
+        with current_cohort as (
           select m.*
           from members m
-          ${current.whereSql}
+          ${currentCohort.whereSql}
         ),
-        previous_members as (
+        previous_cohort as (
           select m.*
           from members m
-          ${previous.whereSql}
+          ${previousCohort.whereSql}
+        ),
+        current_active as (
+          select m.*
+          from members m
+          ${currentActive.whereSql}
         )
         select
-          (select count(*)::text from current_members) as total,
-          (select count(*)::text from previous_members) as prev_total,
-          (select count(*)::text from current_members where scholarship = true) as scholarship_count,
-          (select count(*)::text from current_members where "lifecycleStage" <> 'GUEST') as non_guest_count,
-          (select count(*)::text from current_members where "nTagStatus" = 'Received') as ntag_received_count,
-          (select count(*)::text from current_members where 'Qualified' = any(coalesce(tags, '{}'::text[]))) as qualified_count
+          (select count(*)::text from current_cohort) as total,
+          (select count(*)::text from previous_cohort) as prev_total,
+          (select count(*)::text from current_active) as active_count,
+          (select count(*)::text from current_cohort where scholarship = true) as scholarship_count,
+          (select count(*)::text from current_active where "nTagStatus" = 'Received') as ntag_received_count,
+          (select count(*)::text from current_active where 'Qualified' = any(coalesce(tags, '{}'::text[]))) as qualified_count
         `,
-        current.params,
+        currentCohort.params,
+      ),
+      this.db.query<{ stage: string; value: string }>(
+        `
+        select
+          coalesce(nullif(trim(m."lifecycleStage"), ''), 'UNKNOWN') as stage,
+          count(*)::text as value
+        from members m
+        ${currentCohort.whereSql}
+        group by 1
+        `,
+        currentCohort.params,
       ),
       this.db.query<{ month: string; count: string }>(
         `
@@ -272,14 +391,14 @@ export class DashboardService {
           count(*)::text as count
         from members m
         ${this.toWhereSql([
-          ...current.clauses,
+          ...currentCohort.clauses,
           'm."joinMonth" is not null',
           `m."joinMonth" ~ '^\\d{4}-\\d{2}$'`,
         ])}
         group by m."joinMonth"
         order by m."joinMonth" asc
         `,
-        current.params,
+        currentCohort.params,
       ),
       this.db.query<{ name: string; value: string }>(
         `
@@ -287,21 +406,28 @@ export class DashboardService {
           coalesce(nullif(trim(m.category), ''), 'Uncategorized') as name,
           count(*)::text as value
         from members m
-        ${current.whereSql}
+        ${currentCohort.whereSql}
         group by 1
         order by count(*) desc, name asc
         `,
-        current.params,
+        currentCohort.params,
       ),
     ]);
 
     const row = countsRes.rows[0];
     const total = Number(row?.total ?? 0);
     const prevTotal = Number(row?.prev_total ?? 0);
+    const activeMemberCount = Number(row?.active_count ?? 0);
     const scholarshipCount = Number(row?.scholarship_count ?? 0);
-    const nonGuestCount = Number(row?.non_guest_count ?? 0);
     const nTagReceivedCount = Number(row?.ntag_received_count ?? 0);
     const qualifiedCount = Number(row?.qualified_count ?? 0);
+
+    const lifecycleBreakdown = this.orderLifecycleBreakdown(
+      lifecycleRes.rows.map((entry) => ({
+        stage: entry.stage,
+        count: Number(entry.value ?? 0),
+      })),
+    );
 
     const growthData = this.buildGrowthSeries(
       growthRes.rows.map((entry) => ({
@@ -312,15 +438,20 @@ export class DashboardService {
 
     return {
       total,
+      activeMemberCount,
       momPercent: this.percentChange(total, prevTotal),
+      lifecycleBreakdown,
       scholarshipCount,
       scholarshipRate: total > 0 ? (scholarshipCount / total) * 100 : 0,
-      nonGuestCount,
-      engagementScore: total > 0 ? (nonGuestCount / total) * 100 : 0,
+      nonGuestCount: total - (lifecycleBreakdown.find((e) => e.stage === 'GUEST')?.count ?? 0),
+      engagementScore:
+        total > 0 ? (activeMemberCount / total) * 100 : 0,
       nTagReceivedCount,
-      retentionRate: total > 0 ? (nTagReceivedCount / total) * 100 : 0,
+      retentionRate:
+        activeMemberCount > 0 ? (nTagReceivedCount / activeMemberCount) * 100 : 0,
       qualifiedCount,
-      qualifiedRate: total > 0 ? (qualifiedCount / total) * 100 : 0,
+      qualifiedRate:
+        activeMemberCount > 0 ? (qualifiedCount / activeMemberCount) * 100 : 0,
       growthData,
       categoryData: categoryRes.rows.map((entry) => ({
         name: entry.name,
@@ -329,15 +460,45 @@ export class DashboardService {
     };
   }
 
+  private padGrowthTimeline(
+    points: Array<{ month: string; count: number }>,
+  ): Array<{ month: string; count: number }> {
+    if (points.length === 0) {
+      return points;
+    }
+
+    const sorted = [...points].sort((a, b) => a.month.localeCompare(b.month));
+    if (sorted.length >= 2) {
+      return sorted;
+    }
+
+    const sole = sorted[0];
+    const match = /^(\d{4})-(\d{2})$/.exec(sole.month);
+    if (!match) {
+      return sorted;
+    }
+
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const prev = new Date(year, month - 2, 1);
+    const prevMonth = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`;
+
+    return [
+      { month: prevMonth, count: 0 },
+      sole,
+    ];
+  }
+
   private buildGrowthSeries(
     points: Array<{ month: string; count: number }>,
   ): Array<{ name: string; members: number; cumulativeMembers: number }> {
-    if (points.length === 0) {
+    const padded = this.padGrowthTimeline(points);
+    if (padded.length === 0) {
       return [];
     }
 
     let running = 0;
-    return points.map((point) => {
+    return padded.map((point) => {
       running += point.count;
       return {
         name: point.month,
@@ -350,24 +511,24 @@ export class DashboardService {
   private async buildFinanceMetrics(
     query: ExecutiveDashboardQueryDto,
   ): Promise<NonNullable<ExecutiveDashboardSummary['finance']>> {
-    const current = this.buildPaymentScope(query, 'current');
-    const previous = this.buildPaymentScope(query, 'previous');
+    const current = this.buildPaymentFinanceScope(query, 'current');
+    const previous = this.buildPaymentFinanceScope(query, 'previous');
 
     const [currentRes, previousRes] = await Promise.all([
       this.db.query<{ revenue: string; paying_customers: string }>(
         `
         select
-          coalesce(sum("totalAmount"), 0)::text as revenue,
-          count(distinct lower(trim("customerEmail")))::text as paying_customers
-        from payment_transactions pt
+          coalesce(sum(pt."totalAmount"), 0)::text as revenue,
+          count(distinct lower(trim(pt."customerEmail")))::text as paying_customers
+        from ${current.fromSql}
         ${current.whereSql}
         `,
         current.params,
       ),
       this.db.query<{ revenue: string }>(
         `
-        select coalesce(sum("totalAmount"), 0)::text as revenue
-        from payment_transactions pt
+        select coalesce(sum(pt."totalAmount"), 0)::text as revenue
+        from ${previous.fromSql}
         ${previous.whereSql}
         `,
         previous.params,
