@@ -95,6 +95,7 @@ import { AccountSettingsModule } from './modules/account-settings/account-settin
 import { ScoutModule } from './modules/scout/scout.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { FormsModule } from './modules/forms/forms.module';
+import { EventCampaignsModule } from './modules/event-campaigns/event-campaigns.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard';
@@ -153,6 +154,7 @@ import { SimpleRateLimitGuard } from './common/security/simple-rate-limit.guard'
     ScoutModule,
     DashboardModule,
     FormsModule,
+    EventCampaignsModule,
   ],
   controllers: [RootController, AppController],
   providers: [

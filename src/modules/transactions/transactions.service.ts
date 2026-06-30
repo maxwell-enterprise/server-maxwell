@@ -31,6 +31,7 @@ import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 import { VoucherBroadcastService } from '../store-support/voucher-broadcast.service';
 import { AutomationsEmitService } from '../automations/automations-emit.service';
 import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
+import { EventCampaignsService } from '../event-campaigns/event-campaigns.service';
 
 @Injectable()
 export class TransactionsService {
@@ -48,6 +49,7 @@ export class TransactionsService {
     private readonly voucherBroadcast: VoucherBroadcastService,
     private readonly automationsEmit: AutomationsEmitService,
     private readonly workspace: WorkspaceIdentityService,
+    private readonly eventCampaigns: EventCampaignsService,
   ) {}
 
   // ==========================================================================
@@ -530,6 +532,15 @@ export class TransactionsService {
     } catch (err) {
       this.logger.error(
         `Paid conversion record failed for payment ${paymentId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    try {
+      await this.eventCampaigns.markConvertedForPayment(paymentId);
+    } catch (err) {
+      this.logger.error(
+        `Event campaign conversion failed for payment ${paymentId}: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );

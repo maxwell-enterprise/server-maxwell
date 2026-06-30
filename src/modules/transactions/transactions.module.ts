@@ -19,6 +19,7 @@ import { CheckoutEntitlementsService } from './checkout-entitlements.service';
 import { StoreSupportModule } from '../store-support/store-support.module';
 import { AutomationsModule } from '../automations/automations.module';
 import { WorkspaceIdentityModule } from '../workspace-identity/workspace-identity.module';
+import { EventCampaignsModule } from '../event-campaigns/event-campaigns.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { WorkspaceIdentityModule } from '../workspace-identity/workspace-identit
     ProductsModule,
     StoreSupportModule,
     AutomationsModule,
+    EventCampaignsModule,
   ],
   controllers: [TransactionsController, WebhooksController],
   providers: [TransactionsService, CheckoutEntitlementsService],
