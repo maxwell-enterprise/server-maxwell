@@ -12,7 +12,7 @@ import { WorkspaceMeController } from './workspace-me.controller';
 @Module({
   imports: [
     forwardRef(() => MembersModule),
-    WorkspaceIdentityModule,
+    forwardRef(() => WorkspaceIdentityModule),
     JwtModule.register({
       secret:
         process.env.JWT_SECRET ||

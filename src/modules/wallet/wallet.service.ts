@@ -973,7 +973,9 @@ export class WalletService {
 
   async getGiftAllocations(): Promise<GiftAllocation[]> {
     await this.ensureGiftAllocationRuntimeColumns();
-    return this.selectGiftAllocations('order by ga."createdAt" desc');
+    return this.selectGiftAllocationsForResponse(
+      'order by ga."createdAt" desc',
+    );
   }
 
   async getGiftInbox(userEmail: string): Promise<GiftAllocation[]> {
@@ -982,7 +984,7 @@ export class WalletService {
     if (!email) {
       return [];
     }
-    return this.selectGiftAllocations(
+    return this.selectGiftAllocationsForResponse(
       `
       where ga.status = 'PENDING'
         and (
@@ -1608,7 +1610,7 @@ export class WalletService {
     }
 
     await this.ensureGiftAllocationRuntimeColumns();
-    const gifts = await this.selectGiftAllocations(
+    const gifts = await this.selectGiftAllocationsForResponse(
       `
       where ga."claimToken" = $1
       limit 1
@@ -1629,18 +1631,12 @@ export class WalletService {
         status: 'EXPIRED',
         sourceUserName: gift.sourceUserName,
         itemName: gift.itemName,
-        recipientName: await this.readGiftRecipientName(
-          gift.entitlementId,
-          gift.recipientName,
-        ),
+        recipientName: gift.recipientName ?? null,
         expiresAt,
       };
     }
 
-    const recipientName = await this.readGiftRecipientName(
-      gift.entitlementId,
-      gift.recipientName,
-    );
+    const recipientName = gift.recipientName ?? null;
     const status =
       gift.status === 'PENDING' ||
       gift.status === 'CLAIMED' ||
@@ -1657,17 +1653,104 @@ export class WalletService {
     };
   }
 
-  private async readGiftRecipientName(
-    entitlementId: string,
-    persistedName?: string | null,
-  ): Promise<string | null> {
-    const stored = persistedName?.trim();
-    if (stored) return stored;
-    const row = await this.getWalletItemRow(entitlementId).catch(() => null);
-    if (!row) return null;
-    const meta = row.meta ?? {};
-    const name = meta.recipientName;
-    return typeof name === 'string' && name.trim() ? name.trim() : null;
+  /**
+   * Claimed gifts: `User.name` is ground truth (live lookup on read).
+   * Pending gifts: keep sender-provided label from allocation / wallet meta.
+   */
+  private async enrichGiftAllocations(
+    gifts: GiftAllocation[],
+  ): Promise<GiftAllocation[]> {
+    if (gifts.length === 0) {
+      return gifts;
+    }
+
+    const claimedUserIds = [
+      ...new Set(
+        gifts
+          .map((gift) => gift.claimedByUserId?.trim())
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    ];
+
+    const userNamesById = new Map<string, string>();
+    if (claimedUserIds.length > 0) {
+      const users = await this.prisma.user.findMany({
+        where: { id: { in: claimedUserIds } },
+        select: { id: true, name: true },
+      });
+      for (const user of users) {
+        const name = user.name?.trim();
+        if (name) {
+          userNamesById.set(user.id, name);
+        }
+      }
+    }
+
+    return gifts.map((gift) => {
+      const claimedUserId = gift.claimedByUserId?.trim();
+      if (!claimedUserId) {
+        return gift;
+      }
+
+      const canonicalName = userNamesById.get(claimedUserId);
+      if (!canonicalName) {
+        return gift;
+      }
+
+      return { ...gift, recipientName: canonicalName };
+    });
+  }
+
+  private async selectGiftAllocationsForResponse(
+    suffixSql = '',
+    params: unknown[] = [],
+    executor: SqlExecutor = this.db,
+  ): Promise<GiftAllocation[]> {
+    const rows = await this.selectGiftAllocations(suffixSql, params, executor);
+    return this.enrichGiftAllocations(rows);
+  }
+
+  /**
+   * Persist canonical recipient label on claim and when workspace profile updates.
+   */
+  async syncRecipientNamesForWorkspaceUser(
+    userId: string,
+    displayName: string,
+  ): Promise<void> {
+    const trimmedUserId = userId.trim();
+    const trimmedName = displayName.trim();
+    if (!trimmedUserId || !trimmedName) {
+      return;
+    }
+
+    await this.ensureGiftAllocationRuntimeColumns();
+
+    await this.db.query(
+      `
+      update gift_allocations
+      set "recipientName" = $2
+      where "claimedByUserId" = $1
+        and coalesce(btrim("recipientName"), '') is distinct from $2
+      `,
+      [trimmedUserId, trimmedName],
+    );
+
+    await this.db.query(
+      `
+      update wallet_items wi
+      set meta = jsonb_set(
+        coalesce(wi.meta, '{}'::jsonb),
+        '{recipientName}',
+        to_jsonb($2::text),
+        true
+      )
+      from gift_allocations ga
+      where ga."entitlementId" = wi.id
+        and ga."claimedByUserId" = $1
+        and coalesce(wi.meta->>'recipientName', '') is distinct from $2
+      `,
+      [trimmedUserId, trimmedName],
+    );
   }
 
   /**
@@ -1736,8 +1819,16 @@ export class WalletService {
         );
       }
 
+      const canonicalRecipientName =
+        recipientUser?.name?.trim() ||
+        this.readWalletRecipientName(wallet.meta) ||
+        gift.recipientName?.trim() ||
+        gift.targetEmail?.split('@')[0] ||
+        'Gift Recipient';
+
       const claimedMeta = {
         ...(wallet.meta ?? {}),
+        recipientName: canonicalRecipientName,
         recipientEmail: gift.targetEmail ?? recipientEmail,
         recipientPhone:
           gift.recipientPhone ?? this.readWalletRecipientPhone(wallet.meta),
@@ -1769,10 +1860,11 @@ export class WalletService {
         update gift_allocations
         set status = 'CLAIMED',
             "claimedByUserId" = $2,
-            "claimedAt" = now()
+            "claimedAt" = now(),
+            "recipientName" = $3
         where id = $1::uuid
         `,
-        [gift.internalId, recipientId.trim()],
+        [gift.internalId, recipientId.trim(), canonicalRecipientName],
       );
 
       await this.insertWalletTransaction(
@@ -1883,7 +1975,7 @@ export class WalletService {
    */
   async getSentGifts(userId: string): Promise<GiftAllocation[]> {
     await this.ensureGiftAllocationRuntimeColumns();
-    return this.selectGiftAllocations(
+    return this.selectGiftAllocationsForResponse(
       'where ga."sourceUserId" = $1 order by ga."createdAt" desc',
       [userId],
     );
@@ -1894,7 +1986,7 @@ export class WalletService {
    */
   async getReceivedGifts(userId: string): Promise<GiftAllocation[]> {
     await this.ensureGiftAllocationRuntimeColumns();
-    return this.selectGiftAllocations(
+    return this.selectGiftAllocationsForResponse(
       'where ga."claimedByUserId" = $1 order by ga."createdAt" desc',
       [userId],
     );

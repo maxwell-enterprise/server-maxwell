@@ -9,6 +9,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { MembersService } from '../members/members.service';
+import { WalletService } from '../wallet/wallet.service';
 import { Prisma } from '@prisma/client';
 import nodemailer from 'nodemailer';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -62,6 +63,8 @@ export class WorkspaceIdentityService {
     private readonly accountDeletionBroadcast: AccountDeletionBroadcastService,
     @Inject(forwardRef(() => MembersService))
     private readonly members: MembersService,
+    @Inject(forwardRef(() => WalletService))
+    private readonly wallet: WalletService,
   ) {}
 
   private get accountDeletionRequestDelegate(): AccountDeletionRequestDelegate {
@@ -1493,6 +1496,19 @@ export class WorkspaceIdentityService {
         instagram: resolvedSelfProfile.instagram || nextInstagram,
         linkedinUrl: resolvedSelfProfile.linkedinUrl || nextLinkedinUrl,
       });
+
+      const canonicalName = row.name?.trim() || nextName?.trim() || '';
+      if (canonicalName) {
+        void this.wallet
+          .syncRecipientNamesForWorkspaceUser(userId, canonicalName)
+          .catch((err: unknown) => {
+            this.logger.warn(
+              `Gift recipient name sync failed for user ${userId}: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          });
+      }
 
       return {
         ok: true,
