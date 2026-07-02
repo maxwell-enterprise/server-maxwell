@@ -641,18 +641,31 @@ export class StoreSupportService {
 
   /** Mark gateway payment as fully received (Finance AR settlement). */
   async settlePaymentTransaction(id: string): Promise<void> {
-    const res = await this.db.query<{ customerEmail: string | null }>(
+    const res = await this.db.query<{
+      customerEmail: string | null;
+      buyerUserId: string | null;
+    }>(
       `UPDATE payment_transactions
        SET status = 'PAID', "paidAmount" = "totalAmount", "balanceDue" = 0
        WHERE id = $1::uuid
-       RETURNING "customerEmail"`,
+       RETURNING "customerEmail", "buyerUserId"`,
       [id],
     );
     if ((res.rowCount ?? 0) === 0) {
       throw new NotFoundException(`Payment transaction not found: ${id}`);
     }
     const email = res.rows[0]?.customerEmail?.trim();
+    const buyerUserId = res.rows[0]?.buyerUserId?.trim() || '';
     if (email) {
+      await this.members.ensureCrmMemberForPurchaseEmail(
+        email,
+        null,
+        buyerUserId || null,
+      );
+    }
+    if (buyerUserId) {
+      void this.members.promoteLifecycleAtLeastByUserId(buyerUserId, 'MEMBER');
+    } else if (email) {
       void this.members.promoteLifecycleAtLeastByEmail(email, 'MEMBER');
     }
   }

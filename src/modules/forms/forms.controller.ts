@@ -34,11 +34,19 @@ export class FormsController {
   }
 
   @Get('public/respond')
+  @UseGuards(OptionalJwtAuthGuard)
   getPublic(
+    @Req() req: { user?: JwtUserPayload | null },
     @Query('formId') formId: string,
     @Query('sessionId') sessionId?: string,
   ) {
-    return this.forms.getPublicFormPayload(formId, sessionId);
+    return this.forms.getPublicFormPayload(formId, sessionId, req.user ?? null);
+  }
+
+  @Post('public/lookup-contact')
+  @RateLimit({ limit: 60, windowMs: 60_000, keyBy: 'ip' })
+  lookupContact(@Body() body: { phone?: string; email?: string }) {
+    return this.forms.lookupRespondentContact(body ?? {});
   }
 
   @Post('public/respond')

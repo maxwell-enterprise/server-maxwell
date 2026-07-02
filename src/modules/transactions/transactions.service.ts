@@ -519,9 +519,21 @@ export class TransactionsService {
     customerEmail: string | null | undefined,
     attributionSource: string | null,
     totalAmount: number,
+    buyerUserId?: string | null,
   ): Promise<void> {
-    if (customerEmail?.trim()) {
-      void this.members.promoteLifecycleAtLeastByEmail(customerEmail, 'MEMBER');
+    const email = customerEmail?.trim().toLowerCase() || '';
+    const userId = buyerUserId?.trim() || '';
+    if (email) {
+      await this.members.ensureCrmMemberForPurchaseEmail(
+        email,
+        null,
+        userId || null,
+      );
+    }
+    if (userId) {
+      void this.members.promoteLifecycleAtLeastByUserId(userId, 'MEMBER');
+    } else if (email) {
+      void this.members.promoteLifecycleAtLeastByEmail(email, 'MEMBER');
     }
     await this.recordCampaignConversionForPayment(
       attributionSource,
@@ -738,6 +750,7 @@ export class TransactionsService {
         customerEmail,
         attributionSource,
         totalAmount,
+        userId,
       );
       await this.appendSecurityLog('CHECKOUT_FREE_COMPLETED', {
         orderId: payment.orderId,
@@ -981,6 +994,7 @@ export class TransactionsService {
             row.customerEmail,
             row.attributionSource ?? null,
             0,
+            row.buyerUserId ?? null,
           );
           const refreshed = await this.db.query<{
             id: string;
@@ -1126,6 +1140,7 @@ export class TransactionsService {
         customerEmail,
         attributionSource,
         totalAmount,
+        userId,
       );
       await this.appendSecurityLog('CHECKOUT_FREE_COMPLETED', {
         orderId: payment.orderId,
@@ -1260,6 +1275,7 @@ export class TransactionsService {
           paidRow.customerEmail,
           paidRow.attributionSource ?? null,
           Number(paidRow.totalAmount) || 0,
+          paidRow.buyerUserId ?? null,
         );
       }
       if (paidRow?.id) {
@@ -1890,6 +1906,7 @@ export class TransactionsService {
       attributionSource: string | null;
       totalAmount: number;
       customerEmail: string;
+      buyerUserId: string | null;
     }>(
       `
       update payment_transactions
@@ -1900,7 +1917,7 @@ export class TransactionsService {
       where id = $1::uuid
         and lower("customerEmail") = $2
         and upper(status) = 'PENDING'
-      returning "orderId", "attributionSource", "totalAmount", "customerEmail"
+      returning "orderId", "attributionSource", "totalAmount", "customerEmail", "buyerUserId"
       `,
       [transactionId, email],
     );
@@ -1953,6 +1970,7 @@ export class TransactionsService {
       paidRow.customerEmail,
       paidRow.attributionSource ?? null,
       Number(paidRow.totalAmount) || 0,
+      paidRow.buyerUserId ?? null,
     );
     await this.grantEntitlementsThenRecordVoucher(transactionId);
     await this.appendSecurityLog('PAYMENT_SIMULATION_SETTLED', {

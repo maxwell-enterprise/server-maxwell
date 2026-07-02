@@ -53,7 +53,8 @@ export const GuestContactSchema = z.object({
     (val) => (typeof val === 'string' && !val.trim() ? undefined : val),
     z.string().email().max(255).optional(),
   ),
-  phone: z.string().min(6).max(50),
+  /** Required for anonymous respondents; optional when JWT identifies the user. */
+  phone: z.string().max(50).optional(),
 });
 
 export const SubmitFormResponseDtoSchema = z.object({

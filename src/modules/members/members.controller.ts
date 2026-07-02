@@ -103,6 +103,11 @@ export class MembersController {
     return this.membersService.findAll(query);
   }
 
+  @Get('by-workspace-user/:userId')
+  findByWorkspaceUser(@Param('userId') userId: string) {
+    return this.membersService.findOneByWorkspaceUserId(userId);
+  }
+
   @Get(':identifier')
   findOne(@Param('identifier') identifier: string) {
     return this.membersService.findOne(identifier);

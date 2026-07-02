@@ -1452,6 +1452,7 @@ export class WorkspaceIdentityService {
           ...(nextName !== undefined ? { name: nextName } : {}),
           ...(nextEmail !== undefined ? { email: nextEmail } : {}),
           ...(nextImage !== undefined ? { image: nextImage } : {}),
+          ...(nextPhoneRaw !== undefined ? { phone: nextPhoneRaw } : {}),
           ...(mergedAbac !== undefined ? { abacContext: mergedAbac } : {}),
         },
         select: {
@@ -1481,6 +1482,7 @@ export class WorkspaceIdentityService {
       });
 
       await this.members.syncFromWorkspaceUserProfile({
+        userId,
         lookupEmail,
         fullName: row.name ?? nextName ?? '',
         email: row.email ?? nextEmail ?? '',
