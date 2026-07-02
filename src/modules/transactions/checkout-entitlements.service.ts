@@ -220,7 +220,11 @@ export class CheckoutEntitlementsService {
     }
     // All pool/Prisma reads must finish before withTransaction — nested pool.connect while a
     // transaction client is checked out causes "timeout exceeded when trying to connect".
-    await this.members.ensureCrmMemberForPurchaseEmail(peekRow.customerEmail);
+    await this.members.ensureCrmMemberForPurchaseEmail(
+      peekRow.customerEmail,
+      null,
+      peekRow.buyerUserId ?? null,
+    );
 
     const walletOwnerId = await this.resolveWalletOwnerId(
       peekRow.buyerUserId,

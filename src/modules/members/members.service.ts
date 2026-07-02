@@ -20,6 +20,12 @@ import {
   UpdateMemberDto,
 } from './dto';
 import {
+  phoneNormalizeSql,
+  normalizePhone,
+  workspaceUserPhoneSql,
+  workspaceUserPhoneNormalizeSql,
+} from '../../common/phone/normalize-phone';
+import {
   Member,
   MemberAddress,
   MemberEngagement,
@@ -29,6 +35,7 @@ import {
 interface MemberRow {
   internalId: string;
   id: string;
+  userId: string | null;
   name: string;
   email: string;
   phone: string | null;
@@ -74,6 +81,13 @@ const LIFECYCLE_ORDER: MemberLifecycleStage[] = [
 ];
 
 const TRIBE_MEMBER_NOTE_EVENT = '__TRIBE_MEMBER_NOTE__';
+
+export type WorkspaceUserContact = {
+  userId: string;
+  name: string;
+  email: string;
+  phone: string;
+};
 
 @Injectable()
 export class MembersService {
@@ -176,6 +190,421 @@ export class MembersService {
     return res.rows[0]?.id ?? null;
   }
 
+  /** CRM member internal id linked to a workspace user. */
+  async findMemberIdByUserId(rawUserId: string): Promise<string | null> {
+    const userId = rawUserId.trim();
+    if (!userId) return null;
+    const res = await this.db.query<{ id: string }>(
+      `
+      select m.id::text as id
+      from members m
+      where m.user_id = $1
+      limit 1
+      `,
+      [userId],
+    );
+    return res.rows[0]?.id ?? null;
+  }
+
+  async linkMemberToWorkspaceUser(
+    memberInternalId: string,
+    workspaceUserId: string,
+  ): Promise<void> {
+    const memberId = memberInternalId.trim();
+    const userId = workspaceUserId.trim();
+    if (!memberId || !userId) return;
+
+    await this.db.query(
+      `
+      update members
+      set user_id = null, "updatedAt" = now()
+      where user_id = $1
+        and id::text <> $2
+      `,
+      [userId, memberId],
+    );
+    await this.db.query(
+      `
+      update members
+      set user_id = $1, "updatedAt" = now()
+      where id::text = $2
+      `,
+      [userId, memberId],
+    );
+  }
+
+  async getWorkspaceUserContact(
+    rawUserId: string,
+  ): Promise<WorkspaceUserContact | null> {
+    const userId = rawUserId.trim();
+    if (!userId) return null;
+
+    const res = await this.db.query<{
+      id: string;
+      name: string | null;
+      email: string | null;
+      phone: string | null;
+      abacContext: unknown;
+    }>(
+      `
+      select
+        u.id,
+        u.name,
+        u.email,
+        u.phone,
+        u."abacContext" as "abacContext"
+      from "User" u
+      where u.id = $1
+      limit 1
+      `,
+      [userId],
+    );
+    const row = res.rows[0];
+    if (!row?.id) return null;
+
+    const email = row.email?.trim().toLowerCase() || '';
+    const phone = this.readWorkspaceProfilePhone({
+      phone: row.phone,
+      abacContext: row.abacContext,
+    });
+    const name =
+      row.name?.trim() ||
+      (email ? email.split('@')[0] : '') ||
+      'User';
+
+    return {
+      userId: row.id,
+      name,
+      email,
+      phone,
+    };
+  }
+
+  /** Resolve workspace user by phone first, then email (canonical account contact). */
+  async resolveWorkspaceUserByContact(input: {
+    phone?: string | null;
+    email?: string | null;
+  }): Promise<{ user: WorkspaceUserContact; matchedBy: 'phone' | 'email' } | null> {
+    const phone = input.phone?.trim() ?? '';
+    const normalizedPhone = normalizePhone(phone);
+    if (normalizedPhone) {
+      const phoneExpr = workspaceUserPhoneNormalizeSql('u');
+      const byPhone = await this.db.query<{
+        id: string;
+        name: string | null;
+        email: string | null;
+        phone: string | null;
+        abacContext: unknown;
+      }>(
+        `
+        select
+          u.id,
+          u.name,
+          u.email,
+          u.phone,
+          u."abacContext" as "abacContext"
+        from "User" u
+        where btrim(${workspaceUserPhoneSql('u')}) <> ''
+          and (${phoneExpr}) = $1
+        limit 1
+        `,
+        [normalizedPhone],
+      );
+      const row = byPhone.rows[0];
+      if (row?.id) {
+        const email = row.email?.trim().toLowerCase() || '';
+        return {
+          matchedBy: 'phone',
+          user: {
+            userId: row.id,
+            name:
+              row.name?.trim() ||
+              (email ? email.split('@')[0] : '') ||
+              'User',
+            email,
+            phone: this.readWorkspaceProfilePhone({
+              phone: row.phone,
+              abacContext: row.abacContext,
+            }),
+          },
+        };
+      }
+    }
+
+    const email = input.email?.trim().toLowerCase() ?? '';
+    if (email) {
+      const byEmail = await this.db.query<{
+        id: string;
+        name: string | null;
+        email: string | null;
+        phone: string | null;
+        abacContext: unknown;
+      }>(
+        `
+        select
+          u.id,
+          u.name,
+          u.email,
+          u.phone,
+          u."abacContext" as "abacContext"
+        from "User" u
+        where lower(trim(u.email)) = $1
+        limit 1
+        `,
+        [email],
+      );
+      const row = byEmail.rows[0];
+      if (row?.id) {
+        return {
+          matchedBy: 'email',
+          user: {
+            userId: row.id,
+            name:
+              row.name?.trim() ||
+              email.split('@')[0] ||
+              'User',
+            email,
+            phone: this.readWorkspaceProfilePhone({
+              phone: row.phone,
+              abacContext: row.abacContext,
+            }),
+          },
+        };
+      }
+    }
+
+    return null;
+  }
+
+  async promoteLifecycleAtLeastByUserId(
+    rawUserId: string,
+    minStage: MemberLifecycleStage,
+  ): Promise<void> {
+    try {
+      const userId = rawUserId.trim();
+      if (!userId) return;
+
+      const memberId = await this.findMemberIdByUserId(userId);
+      if (memberId) {
+        await this.promoteLifecycleAtLeastByMemberId(memberId, minStage);
+        return;
+      }
+
+      const contact = await this.getWorkspaceUserContact(userId);
+      if (contact?.email) {
+        await this.promoteLifecycleAtLeastByEmail(contact.email, minStage);
+      }
+    } catch (err) {
+      this.logger.warn(
+        `promoteLifecycleAtLeastByUserId(${rawUserId}, ${minStage}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /** CRM member id matched by normalized phone (most recently updated wins). */
+  async findMemberIdByPhone(rawPhone: string): Promise<string | null> {
+    const normalized = normalizePhone(rawPhone);
+    if (!normalized) return null;
+    const res = await this.db.query<{ id: string }>(
+      `
+      select m.id::text as id
+      from members m
+      where btrim(coalesce(m.phone, '')) <> ''
+        and (${phoneNormalizeSql('m')}) = $1
+      order by m."updatedAt" desc, m."createdAt" desc
+      limit 1
+      `,
+      [normalized],
+    );
+    return res.rows[0]?.id ?? null;
+  }
+
+  /**
+   * Resolve CRM member for form/contact sync: phone match first, then email.
+   */
+  async resolveMemberIdByContact(input: {
+    phone?: string | null;
+    email?: string | null;
+  }): Promise<{ id: string; matchedBy: 'phone' | 'email' } | null> {
+    const phone = input.phone?.trim() ?? '';
+    if (phone) {
+      const byPhone = await this.findMemberIdByPhone(phone);
+      if (byPhone) {
+        return { id: byPhone, matchedBy: 'phone' };
+      }
+    }
+
+    const email = input.email?.trim().toLowerCase() ?? '';
+    if (email) {
+      const byEmail = await this.findMemberIdByEmail(email);
+      if (byEmail) {
+        return { id: byEmail, matchedBy: 'email' };
+      }
+    }
+
+    return null;
+  }
+
+  private readWorkspaceProfilePhone(input: {
+    phone?: string | null;
+    abacContext?: unknown;
+  }): string {
+    const columnPhone = input.phone?.trim() ?? '';
+    if (columnPhone) return columnPhone;
+
+    const abac = input.abacContext;
+    if (!abac || typeof abac !== 'object' || Array.isArray(abac)) return '';
+    const selfProfile = (abac as Record<string, unknown>).selfProfile;
+    if (
+      !selfProfile ||
+      typeof selfProfile !== 'object' ||
+      Array.isArray(selfProfile)
+    ) {
+      return '';
+    }
+    const legacyPhone = (selfProfile as Record<string, unknown>).phone;
+    return typeof legacyPhone === 'string' && legacyPhone.trim()
+      ? legacyPhone.trim()
+      : '';
+  }
+
+  /**
+   * JWT-authenticated form submit: canonical contact from workspace User.
+   * @deprecated Prefer {@link resolveFormRespondentContext} for full form submit flow.
+   */
+  async resolveAuthenticatedFormRespondentContact(input: {
+    userId: string;
+    email: string;
+  }): Promise<{
+    workspaceUserId: string;
+    memberId: string | null;
+    userName: string;
+    userEmail: string;
+    userPhone: string;
+  }> {
+    const ctx = await this.resolveFormRespondentContact({
+      workspaceUserId: input.userId,
+      guestEmail: input.email,
+      upsertCrmLead: false,
+    });
+    return {
+      workspaceUserId: ctx.workspaceUserId ?? input.userId.trim(),
+      memberId: ctx.memberId,
+      userName: ctx.userName,
+      userEmail: ctx.userEmail,
+      userPhone: ctx.userPhone,
+    };
+  }
+
+  /**
+   * Form respondent: workspace `User` is checked first (by id, then phone, then email).
+   * CRM `members` is a side effect for pipeline/tags — never the source of canonical contact.
+   */
+  async resolveFormRespondentContext(input: {
+    workspaceUserId?: string | null;
+    guestName?: string;
+    guestEmail?: string;
+    guestPhone?: string;
+    formTitle?: string;
+    deploymentId?: string | null;
+    eventId?: string | null;
+    upsertCrmLead?: boolean;
+  }): Promise<{
+    workspaceUserId: string | null;
+    memberId: string | null;
+    userName: string;
+    userEmail: string;
+    userPhone: string;
+    matchedUserBy: 'userId' | 'phone' | 'email' | null;
+  }> {
+    const guestName = input.guestName?.trim() ?? '';
+    const guestEmail = input.guestEmail?.trim().toLowerCase() ?? '';
+    const guestPhone = input.guestPhone?.trim() ?? '';
+    const explicitUserId = input.workspaceUserId?.trim() ?? '';
+
+    let matchedUserBy: 'userId' | 'phone' | 'email' | null = null;
+    let workspaceUser: WorkspaceUserContact | null = null;
+
+    if (explicitUserId) {
+      workspaceUser = await this.getWorkspaceUserContact(explicitUserId);
+      if (workspaceUser) matchedUserBy = 'userId';
+    }
+
+    if (!workspaceUser && (guestPhone || guestEmail)) {
+      const match = await this.resolveWorkspaceUserByContact({
+        phone: guestPhone,
+        email: guestEmail,
+      });
+      if (match) {
+        workspaceUser = match.user;
+        matchedUserBy = match.matchedBy;
+      }
+    }
+
+    const userName =
+      workspaceUser?.name ||
+      guestName ||
+      (guestEmail ? guestEmail.split('@')[0] : '') ||
+      'Respondent';
+    const userEmail = workspaceUser?.email || guestEmail;
+    const userPhone = workspaceUser?.phone || guestPhone;
+
+    let memberId: string | null = null;
+    if (input.upsertCrmLead !== false && input.formTitle?.trim()) {
+      const lead = await this.upsertFormRespondentLead({
+        fullName: userName,
+        email: userEmail,
+        phone: userPhone,
+        formTitle: input.formTitle.trim(),
+        deploymentId: input.deploymentId ?? null,
+        eventId: input.eventId ?? null,
+        workspaceUserId: workspaceUser?.userId ?? (explicitUserId || null),
+      });
+      memberId = lead.memberInternalId;
+    } else if (workspaceUser) {
+      memberId = await this.findMemberIdByUserId(workspaceUser.userId);
+      if (!memberId) {
+        const linked = await this.resolveMemberIdByContact({
+          phone: userPhone,
+          email: userEmail,
+        });
+        memberId = linked?.id ?? null;
+      }
+    }
+
+    return {
+      workspaceUserId: workspaceUser?.userId ?? (explicitUserId || null),
+      memberId,
+      userName,
+      userEmail,
+      userPhone,
+      matchedUserBy,
+    };
+  }
+
+  /** Resolve workspace User contact only (no CRM side effects). */
+  async resolveFormRespondentContact(input: {
+    workspaceUserId?: string | null;
+    guestName?: string;
+    guestEmail?: string;
+    guestPhone?: string;
+    upsertCrmLead?: boolean;
+    formTitle?: string;
+    deploymentId?: string | null;
+    eventId?: string | null;
+  }): Promise<{
+    workspaceUserId: string | null;
+    memberId: string | null;
+    userName: string;
+    userEmail: string;
+    userPhone: string;
+    matchedUserBy: 'userId' | 'phone' | 'email' | null;
+  }> {
+    return this.resolveFormRespondentContext(input);
+  }
+
   /** CRM-facing id + name for wallet / membership hub (public_id when set). */
   async findMemberDigestByEmail(
     rawEmail: string,
@@ -224,10 +653,11 @@ export class MembersService {
    * this ensures `members` always has a lead for ops/reporting after a paid order.
    */
   /**
-   * Mirror Account Settings (`User` profile) into CRM `members` by email.
-   * Creates an IDENTIFIED row when missing; never changes lifecycle stage on update.
+   * Mirror Account Settings (`User` profile) into linked CRM `members`.
+   * User is source of truth for name, email, and phone.
    */
   async syncFromWorkspaceUserProfile(input: {
+    userId: string;
     lookupEmail: string;
     fullName: string;
     email: string;
@@ -239,9 +669,10 @@ export class MembersService {
     linkedinUrl?: string | null;
   }): Promise<void> {
     try {
+      const userId = input.userId.trim();
       const lookupEmail = input.lookupEmail.trim().toLowerCase();
       const email = input.email.trim().toLowerCase();
-      if (!email.includes('@')) return;
+      if (!email.includes('@') || !userId) return;
 
       const phone = input.phone.trim();
       const name = input.fullName.trim().slice(0, 255);
@@ -251,7 +682,14 @@ export class MembersService {
       const instagram = input.instagram?.trim().slice(0, 120) || null;
       const linkedinUrl = input.linkedinUrl?.trim().slice(0, 500) || null;
 
-      const memberId = await this.findMemberIdByEmail(lookupEmail || email);
+      let memberId = await this.findMemberIdByUserId(userId);
+      if (!memberId) {
+        const linked = await this.resolveMemberIdByContact({
+          phone,
+          email: lookupEmail || email,
+        });
+        memberId = linked?.id ?? null;
+      }
 
       const buildAddress = (
         existing?: MemberAddress | null,
@@ -280,6 +718,7 @@ export class MembersService {
 
       if (memberId) {
         const existing = await this.findOne(memberId);
+        await this.linkMemberToWorkspaceUser(memberId, userId);
         await this.update(memberId, {
           name,
           ...(email !== existing.email.trim().toLowerCase() ? { email } : {}),
@@ -310,7 +749,15 @@ export class MembersService {
         address: buildAddress(),
         socialProfile: buildSocialProfile(),
       });
-      await this.create(dto);
+      const created = await this.create(dto);
+      const createdInternalId =
+        (await this.findMemberIdByEmail(email)) ??
+        (await this.findMemberIdByUserId(userId));
+      if (createdInternalId) {
+        await this.linkMemberToWorkspaceUser(createdInternalId, userId);
+      } else {
+        void created;
+      }
     } catch (err) {
       this.logger.warn(
         `syncFromWorkspaceUserProfile(${input.email}): ${
@@ -323,11 +770,24 @@ export class MembersService {
   async ensureCrmMemberForPurchaseEmail(
     rawEmail: string,
     displayName?: string | null,
-  ): Promise<void> {
+    workspaceUserId?: string | null,
+  ): Promise<string | null> {
     const email = rawEmail?.trim().toLowerCase();
-    if (!email?.includes('@')) return;
+    if (!email?.includes('@')) return null;
+
+    const linkedUserId = workspaceUserId?.trim() || '';
+    if (linkedUserId) {
+      const byUser = await this.findMemberIdByUserId(linkedUserId);
+      if (byUser) return byUser;
+    }
+
     const existing = await this.findMemberIdByEmail(email);
-    if (existing) return;
+    if (existing) {
+      if (linkedUserId) {
+        await this.linkMemberToWorkspaceUser(existing, linkedUserId);
+      }
+      return existing;
+    }
     try {
       const name = (
         displayName?.trim() ||
@@ -345,14 +805,26 @@ export class MembersService {
         facilitatorType: 'INHERIT',
       });
       await this.create(dto);
+      const memberId = await this.findMemberIdByEmail(email);
+      if (memberId && linkedUserId) {
+        await this.linkMemberToWorkspaceUser(memberId, linkedUserId);
+      }
       this.logger.log(`CRM member provisioned for purchase email ${email}`);
+      return memberId;
     } catch (e) {
-      if (e instanceof ConflictException) return;
+      if (e instanceof ConflictException) {
+        const memberId = await this.findMemberIdByEmail(email);
+        if (memberId && linkedUserId) {
+          await this.linkMemberToWorkspaceUser(memberId, linkedUserId);
+        }
+        return memberId;
+      }
       this.logger.warn(
         `ensureCrmMemberForPurchaseEmail(${email}): ${
           e instanceof Error ? e.message : String(e)
         }`,
       );
+      return null;
     }
   }
 
@@ -362,12 +834,25 @@ export class MembersService {
       displayName?: string | null;
       program?: string;
       platform?: string;
+      workspaceUserId?: string | null;
     },
-  ): Promise<void> {
+  ): Promise<string | null> {
     const email = rawEmail?.trim().toLowerCase();
-    if (!email?.includes('@')) return;
+    if (!email?.includes('@')) return null;
+
+    const linkedUserId = options?.workspaceUserId?.trim() || '';
+    if (linkedUserId) {
+      const byUser = await this.findMemberIdByUserId(linkedUserId);
+      if (byUser) return byUser;
+    }
+
     const existing = await this.findMemberIdByEmail(email);
-    if (existing) return;
+    if (existing) {
+      if (linkedUserId) {
+        await this.linkMemberToWorkspaceUser(existing, linkedUserId);
+      }
+      return existing;
+    }
     try {
       const workspaceUser = await this.prisma.user.findUnique({
         where: { email },
@@ -389,14 +874,26 @@ export class MembersService {
         program: options?.program?.trim() || 'Workspace signup',
       });
       await this.create(dto);
+      const memberId = await this.findMemberIdByEmail(email);
+      if (memberId && linkedUserId) {
+        await this.linkMemberToWorkspaceUser(memberId, linkedUserId);
+      }
       this.logger.log(`CRM member provisioned for workspace email ${email}`);
+      return memberId;
     } catch (e) {
-      if (e instanceof ConflictException) return;
+      if (e instanceof ConflictException) {
+        const memberId = await this.findMemberIdByEmail(email);
+        if (memberId && linkedUserId) {
+          await this.linkMemberToWorkspaceUser(memberId, linkedUserId);
+        }
+        return memberId;
+      }
       this.logger.warn(
         `ensureCrmMemberForWorkspaceEmail(${email}): ${
           e instanceof Error ? e.message : String(e)
         }`,
       );
+      return null;
     }
   }
 
@@ -443,7 +940,8 @@ export class MembersService {
   }
 
   /**
-   * Guest form/quiz respondent: upsert CRM row for sales pipeline (update if email exists).
+   * Guest/authenticated form respondent: upsert CRM row for sales pipeline.
+   * Workspace User is resolved first; member match is by user_id then phone/email.
    */
   async upsertFormRespondentLead(input: {
     fullName: string;
@@ -452,9 +950,15 @@ export class MembersService {
     formTitle: string;
     deploymentId?: string | null;
     eventId?: string | null;
-  }): Promise<{ created: boolean; member: Member }> {
-    const email = input.email.trim().toLowerCase();
+    workspaceUserId?: string | null;
+  }): Promise<{
+    created: boolean;
+    member: Member;
+    matchedBy: 'phone' | 'email' | null;
+    memberInternalId: string;
+  }> {
     const phone = input.phone.trim();
+    const email = input.email.trim().toLowerCase();
     const name = input.fullName.trim().slice(0, 255);
     const formTag = `Form: ${input.formTitle.trim().slice(0, 120)}`;
     const deploymentTag = input.deploymentId?.trim()
@@ -467,9 +971,43 @@ export class MembersService {
       (t): t is string => !!t,
     );
 
-    const existingId = await this.findMemberIdByEmail(email);
-    if (existingId) {
-      const existing = await this.findOne(existingId);
+    let workspaceUser: WorkspaceUserContact | null = null;
+    const explicitUserId = input.workspaceUserId?.trim() ?? '';
+    if (explicitUserId) {
+      workspaceUser = await this.getWorkspaceUserContact(explicitUserId);
+    }
+    if (!workspaceUser) {
+      const workspaceMatch = await this.resolveWorkspaceUserByContact({
+        phone,
+        email,
+      });
+      workspaceUser = workspaceMatch?.user ?? null;
+    }
+
+    const canonicalName = workspaceUser?.name || name;
+    const canonicalEmail = workspaceUser?.email || email;
+    const canonicalPhone = workspaceUser?.phone || phone;
+
+    let memberId: string | null = null;
+    let matchedBy: 'phone' | 'email' | null = null;
+
+    if (workspaceUser) {
+      memberId = await this.findMemberIdByUserId(workspaceUser.userId);
+    }
+    if (!memberId) {
+      const resolved = await this.resolveMemberIdByContact({
+        phone: canonicalPhone || phone,
+        email: canonicalEmail || email,
+      });
+      memberId = resolved?.id ?? null;
+      matchedBy = resolved?.matchedBy ?? null;
+      if (memberId && workspaceUser) {
+        await this.safeLinkMemberToWorkspaceUser(memberId, workspaceUser.userId);
+      }
+    }
+
+    if (memberId) {
+      const existing = await this.findOne(memberId);
       const mergedTags = Array.from(
         new Set([...(existing.tags ?? []), ...extraTags]),
       );
@@ -478,21 +1016,58 @@ export class MembersService {
       const nextLifecycle =
         lifecycleRank >= identifiedRank ? existing.lifecycleStage : 'IDENTIFIED';
 
-      const updated = await this.update(existingId, {
-        name: name || existing.name,
-        phone: phone || existing.phone,
+      const basePatch = {
         tags: mergedTags,
         platform: existing.platform?.trim() || 'Form',
         program: existing.program?.trim() || `Form: ${input.formTitle.trim()}`,
         lifecycleStage: nextLifecycle,
-      });
-      return { created: false, member: updated };
+      };
+
+      const withContact = workspaceUser
+        ? {
+            name: canonicalName,
+            email: canonicalEmail,
+            phone: canonicalPhone || existing.phone,
+            ...basePatch,
+          }
+        : {
+            ...(!existing.phone?.trim() && phone ? { phone } : {}),
+            ...(!existing.email?.trim() && email ? { email } : {}),
+            ...basePatch,
+          };
+
+      const updated = await this.safeUpdateFormLeadMember(
+        memberId,
+        withContact,
+        workspaceUser
+          ? {
+              name: canonicalName,
+              phone: canonicalPhone || existing.phone,
+              ...basePatch,
+            }
+          : null,
+      );
+      return {
+        created: false,
+        member: updated,
+        matchedBy,
+        memberInternalId: memberId,
+      };
     }
 
+    const normalizedPhone = normalizePhone(canonicalPhone || phone);
+    const createEmail =
+      canonicalEmail ||
+      email ||
+      (normalizedPhone ? `${normalizedPhone}@forms.lead` : '');
+
     const memberDto = CreateMemberDtoSchema.parse({
-      name: name || email.split('@')[0] || 'Form Respondent',
-      email,
-      phone,
+      name:
+        canonicalName ||
+        createEmail.split('@')[0] ||
+        'Form Respondent',
+      email: createEmail,
+      phone: canonicalPhone || phone,
       category: 'Guest',
       scholarship: false,
       joinMonth: new Date().toISOString().slice(0, 7),
@@ -512,8 +1087,111 @@ export class MembersService {
       },
     });
 
-    const member = await this.create(memberDto);
-    return { created: true, member };
+    let member: Member;
+    try {
+      member = await this.create(memberDto);
+    } catch (err) {
+      if (err instanceof ConflictException) {
+        const existingId =
+          (await this.findMemberIdByEmail(createEmail)) ??
+          (await this.findMemberIdByPhone(canonicalPhone || phone));
+        if (existingId) {
+          const existing = await this.findOne(existingId);
+          const mergedTags = Array.from(
+            new Set([...(existing.tags ?? []), 'Form_Lead', ...extraTags]),
+          );
+          member = await this.safeUpdateFormLeadMember(
+            existingId,
+            {
+              name: canonicalName || existing.name,
+              phone: canonicalPhone || existing.phone || phone,
+              tags: mergedTags,
+              platform: existing.platform?.trim() || 'Form',
+              program: existing.program?.trim() || `Form: ${input.formTitle.trim()}`,
+              lifecycleStage:
+                this.lifecycleRank(existing.lifecycleStage) >=
+                this.lifecycleRank('IDENTIFIED')
+                  ? existing.lifecycleStage
+                  : 'IDENTIFIED',
+            },
+            workspaceUser
+              ? {
+                  name: canonicalName,
+                  phone: canonicalPhone || existing.phone || phone,
+                  tags: mergedTags,
+                  platform: existing.platform?.trim() || 'Form',
+                  program:
+                    existing.program?.trim() || `Form: ${input.formTitle.trim()}`,
+                  lifecycleStage:
+                    this.lifecycleRank(existing.lifecycleStage) >=
+                    this.lifecycleRank('IDENTIFIED')
+                      ? existing.lifecycleStage
+                      : 'IDENTIFIED',
+                }
+              : null,
+          );
+          if (workspaceUser) {
+            await this.safeLinkMemberToWorkspaceUser(
+              existingId,
+              workspaceUser.userId,
+            );
+          }
+          return {
+            created: false,
+            member,
+            matchedBy: 'email',
+            memberInternalId: existingId,
+          };
+        }
+      }
+      throw err;
+    }
+
+    const memberInternalId =
+      (await this.findMemberIdByEmail(createEmail)) ??
+      (await this.findMemberIdByPhone(canonicalPhone || phone));
+    if (!memberInternalId) {
+      throw new BadRequestException(
+        'Failed to resolve CRM member after form lead creation',
+      );
+    }
+    if (workspaceUser) {
+      await this.safeLinkMemberToWorkspaceUser(
+        memberInternalId,
+        workspaceUser.userId,
+      );
+    }
+    return { created: true, member, matchedBy: null, memberInternalId };
+  }
+
+  private async safeLinkMemberToWorkspaceUser(
+    memberInternalId: string,
+    workspaceUserId: string,
+  ): Promise<void> {
+    try {
+      await this.linkMemberToWorkspaceUser(memberInternalId, workspaceUserId);
+    } catch (err) {
+      this.logger.warn(
+        `linkMemberToWorkspaceUser(${memberInternalId}, ${workspaceUserId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  private async safeUpdateFormLeadMember(
+    memberId: string,
+    patch: UpdateMemberDto,
+    fallbackWithoutEmail: UpdateMemberDto | null,
+  ): Promise<Member> {
+    try {
+      return await this.update(memberId, patch);
+    } catch (err) {
+      if (err instanceof ConflictException && fallbackWithoutEmail) {
+        return await this.update(memberId, fallbackWithoutEmail);
+      }
+      throw err;
+    }
   }
 
   private lifecycleRank(stage: string): number {
@@ -600,10 +1278,12 @@ export class MembersService {
         $23,
         $24,
         $25,
-        $26::jsonb,
-        $27::text[],
+        $26,
+        $27,
         $28::jsonb,
-        $29,
+        $29::text[],
+        $30::jsonb,
+        $31,
         now(),
         now()
       )
@@ -726,6 +1406,7 @@ export class MembersService {
       select
         m.id::text as "internalId",
         coalesce(m.public_id, m.id::text) as id,
+        m.user_id as "userId",
         m.name,
         m.email,
         m.phone,
@@ -771,6 +1452,14 @@ export class MembersService {
   async findOne(identifier: string): Promise<Member> {
     const row = await this.findRowByIdentifier(identifier);
     return this.toMember(row);
+  }
+
+  async findOneByWorkspaceUserId(workspaceUserId: string): Promise<Member | null> {
+    const userId = workspaceUserId.trim();
+    if (!userId) return null;
+    const memberId = await this.findMemberIdByUserId(userId);
+    if (!memberId) return null;
+    return this.findOne(memberId);
   }
 
   async update(
@@ -1008,6 +1697,7 @@ export class MembersService {
       select
         m.id::text as "internalId",
         coalesce(m.public_id, m.id::text) as id,
+        m.user_id as "userId",
         m.name,
         m.email,
         m.phone,
@@ -1745,6 +2435,7 @@ export class MembersService {
   private toMember(row: MemberRow): Member {
     return {
       id: row.id,
+      userId: row.userId?.trim() || undefined,
       name: row.name,
       email: row.email,
       phone: row.phone ?? '',

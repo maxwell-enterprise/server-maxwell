@@ -1,5 +1,4 @@
 import {
-  ConflictException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -10,7 +9,6 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { appendInvitationEmailLog } from '../../common/logging/invitation-email-log';
 import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
 import { MembersService } from '../members/members.service';
-import { CreateMemberDtoSchema } from '../members/dto';
 import {
   parseAppRoleList,
   parseAppRoleString,
@@ -523,7 +521,7 @@ export class AuthService {
       );
     }
     try {
-      await this.syncCrmMember(displayName, email);
+      await this.syncCrmMember(userId, displayName, email);
     } catch (err) {
       this.logger.warn(
         `syncCrmMember failed for ${email}: ${err instanceof Error ? err.message : err}`,
@@ -621,23 +619,22 @@ export class AuthService {
     return this.prisma.user.findUniqueOrThrow({ where: { id: user.id } });
   }
 
-  private async syncCrmMember(name: string, email: string): Promise<void> {
-    const joinMonth = new Date().toISOString().slice(0, 7);
-    try {
-      const dto = CreateMemberDtoSchema.parse({
-        name,
-        email,
-        phone: '',
-        joinMonth,
-        lifecycleStage: 'IDENTIFIED',
-      });
-      await this.membersService.create(dto);
-    } catch (e) {
-      if (e instanceof ConflictException) return;
-      this.logger.warn(
-        `CRM member sync skipped for ${email}: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
+  private async syncCrmMember(
+    userId: string,
+    name: string,
+    email: string,
+  ): Promise<void> {
+    const contact = await this.membersService.getWorkspaceUserContact(userId);
+    await this.membersService.syncFromWorkspaceUserProfile({
+      userId,
+      lookupEmail: email,
+      fullName: contact?.name || name,
+      email: contact?.email || email,
+      phone: contact?.phone || '',
+      jobTitle: contact ? '' : '',
+      company: '',
+      domicile: '',
+    });
   }
 
   signAccessToken(

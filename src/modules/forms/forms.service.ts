@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { DbService } from '../../common/db.service';
@@ -54,6 +55,8 @@ type ResponseRow = {
 
 @Injectable()
 export class FormsService {
+  private readonly logger = new Logger(FormsService.name);
+
   constructor(
     private readonly db: DbService,
     private readonly members: MembersService,
@@ -264,18 +267,81 @@ export class FormsService {
   async getPublicFormPayload(
     formId: string,
     sessionId?: string | null,
+    user?: JwtUserPayload | null,
   ): Promise<unknown> {
     const form = await this.findFormRow(formId);
     if (!form.active) {
       throw new NotFoundException('Form is not available');
     }
     let session: DeploymentRow | null = null;
+    let sessionWarning: string | null = null;
     if (sessionId?.trim()) {
-      session = await this.findDeploymentRow(sessionId.trim(), form.internalId);
+      session = await this.tryFindDeploymentRow(sessionId.trim(), form.internalId);
+      if (!session) {
+        sessionWarning =
+          'The QR session link is invalid or expired. You can still submit this form.';
+      }
     }
+
+    let respondentContact: {
+      name: string;
+      email: string;
+      phone: string;
+      workspaceUserId: string | null;
+    } | null = null;
+    const workspaceUserId = user?.sub?.trim() || '';
+    if (workspaceUserId) {
+      const ctx = await this.members.resolveFormRespondentContext({
+        workspaceUserId,
+        guestEmail: user?.email?.trim().toLowerCase(),
+        upsertCrmLead: false,
+      });
+      respondentContact = {
+        name: ctx.userName,
+        email: ctx.userEmail,
+        phone: ctx.userPhone,
+        workspaceUserId: ctx.workspaceUserId,
+      };
+    }
+
     return {
       form: this.toFormContract(form),
       session: session ? this.toDeploymentContract(session, form.id) : null,
+      respondentContact,
+      sessionWarning,
+    };
+  }
+
+  /** Guest prefill: resolve canonical contact from workspace User (phone first, then email). */
+  async lookupRespondentContact(body: {
+    phone?: string;
+    email?: string;
+  }): Promise<{
+    matched: boolean;
+    matchedUserBy: 'phone' | 'email' | null;
+    name: string;
+    email: string;
+    phone: string;
+  }> {
+    const guestPhone = body.phone?.trim() ?? '';
+    const guestEmail = body.email?.trim().toLowerCase() ?? '';
+    if (!guestPhone && !guestEmail) {
+      throw new BadRequestException('phone or email required');
+    }
+
+    const ctx = await this.members.resolveFormRespondentContext({
+      guestPhone,
+      guestEmail,
+      upsertCrmLead: false,
+    });
+
+    return {
+      matched: ctx.matchedUserBy !== null,
+      matchedUserBy:
+        ctx.matchedUserBy === 'userId' ? null : ctx.matchedUserBy,
+      name: ctx.userName,
+      email: ctx.userEmail,
+      phone: ctx.userPhone,
     };
   }
 
@@ -301,53 +367,58 @@ export class FormsService {
     }
 
     let deployment: DeploymentRow | null = null;
+    let sessionWarning: string | null = null;
     if (dto.sessionId?.trim()) {
-      deployment = await this.findDeploymentRow(
+      deployment = await this.tryFindDeploymentRow(
         dto.sessionId.trim(),
         form.internalId,
       );
+      if (!deployment) {
+        sessionWarning =
+          'The QR session link is invalid or expired. Your response was saved without session attribution.';
+      }
     }
 
-    const isGuest = !user?.sub?.trim();
-    let userName = user?.email?.trim() || '';
-    let userEmail = user?.email?.trim().toLowerCase() || '';
-    let userPhone = '';
-    let memberId: string | null = null;
+    const jwtUserId = user?.sub?.trim() || '';
+    const isAnonymous = !jwtUserId;
+    const contact = dto.guestContact;
 
-    if (isGuest) {
-      if (!dto.guestContact) {
+    if (isAnonymous) {
+      if (!contact) {
         throw new BadRequestException(
           'Contact information is required for guest respondents',
         );
       }
-      userName = dto.guestContact.name.trim();
-      userEmail = dto.guestContact.email?.trim().toLowerCase() || '';
-      userPhone = dto.guestContact.phone.trim();
-
-      if (userEmail) {
-        const lead = await this.members.upsertFormRespondentLead({
-          fullName: userName,
-          email: userEmail,
-          phone: userPhone,
-          formTitle: form.title,
-          deploymentId: deployment?.id ?? null,
-          eventId: deployment?.eventId ?? null,
+      const phone = contact.phone?.trim() ?? '';
+      if (!phone || phone.length < 6) {
+        throw new BadRequestException({
+          statusCode: 400,
+          message: 'Validation failed',
+          errors: [
+            {
+              field: 'guestContact.phone',
+              message: 'Phone must be at least 6 characters',
+            },
+          ],
         });
-        memberId = lead.member.id;
       }
-    } else {
-      userEmail = user?.email?.trim().toLowerCase() || '';
-      if (userEmail) {
-        const existing = await this.members.findMemberIdByEmail(userEmail);
-        if (existing) {
-          memberId = existing;
-          const member = await this.members.findOne(existing);
-          userName = member.name;
-          userPhone = member.phone || '';
-        }
-      }
-      memberId = memberId || user?.sub?.trim() || null;
     }
+
+    this.validateRequiredAnswers(form.questions, dto.answers ?? {});
+
+    const respondent = await this.members.resolveFormRespondentContext({
+      workspaceUserId: jwtUserId || null,
+      guestName: contact?.name,
+      guestEmail: contact?.email ?? user?.email,
+      guestPhone: contact?.phone,
+      upsertCrmLead: false,
+    });
+
+    const workspaceUserId = respondent.workspaceUserId;
+    const memberId = respondent.memberId;
+    const userName = respondent.userName;
+    const userEmail = respondent.userEmail;
+    const userPhone = respondent.userPhone;
 
     const { score, maxScore } = form.isQuiz
       ? this.scoreQuiz(form.questions, dto.answers)
@@ -358,7 +429,8 @@ export class FormsService {
       deploymentName: deployment?.name ?? null,
       eventId: deployment?.eventId ?? null,
       formTitle: form.title,
-      isGuest,
+      isGuest: isAnonymous,
+      sessionWarning,
     };
 
     const inserted = await this.db.query<ResponseRow>(
@@ -410,7 +482,7 @@ export class FormsService {
         publicId,
         form.internalId,
         deployment?.internalId ?? null,
-        user?.sub?.trim() || null,
+        user?.sub?.trim() || workspaceUserId,
         memberId,
         userName || null,
         userEmail || null,
@@ -422,12 +494,86 @@ export class FormsService {
       ],
     );
 
+    void this.syncFormRespondentCrmLead({
+      fullName: userName,
+      email: userEmail,
+      phone: userPhone,
+      formTitle: form.title,
+      deploymentId: deployment?.id ?? null,
+      eventId: deployment?.eventId ?? null,
+      workspaceUserId: workspaceUserId ?? (jwtUserId || null),
+      responseId: inserted.rows[0]?.id ?? publicId,
+    });
+
     return {
       ...inserted.rows[0],
       formId: form.id,
       sessionId: deployment?.id ?? null,
       successMessage: form.successMessage,
+      sessionWarning,
     };
+  }
+
+  /** CRM pipeline sync — must not block form response persistence. */
+  private syncFormRespondentCrmLead(input: {
+    fullName: string;
+    email: string;
+    phone: string;
+    formTitle: string;
+    deploymentId?: string | null;
+    eventId?: string | null;
+    workspaceUserId?: string | null;
+    responseId: string;
+  }): Promise<void> {
+    return this.members
+      .upsertFormRespondentLead({
+        fullName: input.fullName,
+        email: input.email,
+        phone: input.phone,
+        formTitle: input.formTitle,
+        deploymentId: input.deploymentId ?? null,
+        eventId: input.eventId ?? null,
+        workspaceUserId: input.workspaceUserId ?? null,
+      })
+      .then(() => undefined)
+      .catch((err: unknown) => {
+        this.logger.warn(
+          `CRM form lead sync skipped for response ${input.responseId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+  }
+
+  private validateRequiredAnswers(
+    questions: QuestionDto[],
+    answers: Record<string, unknown>,
+  ): void {
+    const errors: Array<{ field: string; message: string }> = [];
+    for (const q of questions) {
+      if (!q.required) continue;
+      const value = answers[q.id];
+      if (this.isAnswerEmpty(value)) {
+        errors.push({
+          field: `answers.${q.id}`,
+          message: 'This question is required',
+        });
+      }
+    }
+    if (errors.length > 0) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: 'Validation failed',
+        errors,
+      });
+    }
+  }
+
+  private isAnswerEmpty(value: unknown): boolean {
+    if (value === undefined || value === null) return true;
+    if (typeof value === 'string') return !value.trim();
+    if (Array.isArray(value)) return value.length === 0;
+    return false;
   }
 
   async getReports(formIdentifier: string): Promise<unknown> {
@@ -580,6 +726,20 @@ export class FormsService {
       }
     }
     return { score, maxScore };
+  }
+
+  private async tryFindDeploymentRow(
+    identifier: string,
+    formInternalId: string,
+  ): Promise<DeploymentRow | null> {
+    try {
+      return await this.findDeploymentRow(identifier, formInternalId);
+    } catch (err) {
+      if (err instanceof NotFoundException) {
+        return null;
+      }
+      throw err;
+    }
   }
 
   private async findFormRow(identifier: string): Promise<FormRow> {

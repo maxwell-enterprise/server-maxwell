@@ -28,6 +28,8 @@ export interface MemberEngagement {
 
 export class Member {
   id: string;
+  /** Workspace `"User".id` when this CRM row is linked to a login account. */
+  userId?: string;
   name: string;
   email: string;
   phone: string;
