@@ -20,6 +20,7 @@ import {
   CreateRefundDto,
   MidtransWebhookDto,
   UpdateCheckoutConfigDto,
+  ManualLeadConversionDto,
 } from './dto';
 import { DbService } from '../../common/db.service';
 import { AppConfigService } from '../../common/config/app-config.service';
@@ -1984,6 +1985,294 @@ export class TransactionsService {
       totalAmount: Number(paidRow.totalAmount) || 0,
       orderId: paidRow.orderId,
     };
+  }
+
+  /**
+   * Sales closing tool: record a manual/offline deal for a pipeline lead.
+   * Creates a PAID `payment_transactions` row, grants entitlements, and records paid conversion.
+   */
+  async manualLeadConversion(
+    actorUserId: string,
+    dto: ManualLeadConversionDto,
+  ): Promise<{
+    paymentId: string;
+    orderId: string;
+    totalAmount: number;
+    paymentStatus: string;
+    buyerEmail: string;
+    memberId: string;
+    productsSummary: string | null;
+  }> {
+    const memberRes = await this.db.query<{
+      internalId: string;
+      publicId: string;
+      email: string | null;
+      name: string;
+      lifecycleStage: string;
+      userId: string | null;
+    }>(
+      `
+      select
+        m.id::text as "internalId",
+        coalesce(nullif(trim(m.public_id), ''), m.id::text) as "publicId",
+        nullif(trim(m.email), '') as email,
+        m.name,
+        coalesce(m."lifecycleStage", 'GUEST')::text as "lifecycleStage",
+        nullif(trim(m.user_id), '') as "userId"
+      from members m
+      where m.public_id = $1 or m.id::text = $1
+      limit 1
+      `,
+      [dto.memberId.trim()],
+    );
+
+    const member = memberRes.rows[0];
+    if (!member) {
+      throw new NotFoundException(`Member ${dto.memberId} not found`);
+    }
+
+    if (!this.isSalesPipelineLead(member.lifecycleStage, member.email)) {
+      throw new BadRequestException(
+        'Member is not an active pipeline lead (GUEST/IDENTIFIED/PARTICIPANT)',
+      );
+    }
+
+    const customerEmail = member.email?.trim().toLowerCase() || '';
+    if (!customerEmail) {
+      throw new BadRequestException(
+        'Lead must have an email address before manual conversion',
+      );
+    }
+
+    const productIds = [...new Set(dto.items.map((i) => i.productId))];
+    const products = await this.loadProductsForCheckout(productIds);
+
+    let subtotalRaw = 0;
+    const enrichedItems = dto.items.map((item) => {
+      const prod = products.find(
+        (product) =>
+          product.id === item.productId || product.lookupId === item.productId,
+      );
+      if (!prod) {
+        throw new BadRequestException(`Product ${item.productId} not found`);
+      }
+      if (!prod.isActive) {
+        throw new BadRequestException(
+          `Product ${item.productId} is not active`,
+        );
+      }
+      const unitPrice = this.resolveCheckoutUnitPrice(prod, item.variantId);
+      subtotalRaw += unitPrice * item.quantity;
+      return {
+        productId: prod.lookupId,
+        productName: prod.title,
+        quantity: item.quantity,
+        variantId: item.variantId ?? null,
+        variantName: this.resolveVariantLabel(prod, item.variantId),
+        unitPrice,
+        lineTotal: unitPrice * item.quantity,
+      };
+    });
+
+    const subtotal = Math.round(subtotalRaw);
+    const checkoutLike: CheckoutDto = {
+      items: dto.items,
+      paymentMethod: dto.paymentMethod,
+      voucherCode: dto.voucherCode,
+      attributionSource: dto.attributionSource,
+      guestEmail: customerEmail,
+      guestName: member.name,
+    };
+
+    await this.assertVoucherNotAlreadyRedeemed(
+      dto.voucherCode,
+      member.userId,
+      customerEmail,
+    );
+
+    const pricing = await this.calculatePricing(
+      checkoutLike,
+      products,
+      subtotal,
+      member.userId,
+      'GUEST',
+      customerEmail,
+    );
+
+    const discountAmount = pricing.discountAmount;
+    const totalAmount = pricing.totalAmount;
+    if (totalAmount < 0) {
+      throw new BadRequestException('Invalid totalAmount');
+    }
+
+    const attributionSource = await this.resolveAttributionSource(
+      dto.attributionSource,
+    );
+
+    const now = new Date();
+    const expiry = new Date(now.getTime() + 2 * 60 * 60 * 1000);
+    const orderId = `ORD-MANUAL-${now.getTime()}-${member.publicId.slice(0, 8).toUpperCase()}`;
+
+    const paymentRes = await this.db.query<{
+      id: string;
+      orderId: string;
+      totalAmount: number;
+      status: string;
+    }>(
+      `
+      insert into payment_transactions (
+        id,
+        "orderId",
+        amount,
+        "discountAmount",
+        "voucherCode",
+        "uniqueCode",
+        "totalAmount",
+        "paidAmount",
+        "balanceDue",
+        "installmentPlan",
+        refunds,
+        method,
+        status,
+        "createdAt",
+        "expiryTime",
+        "customerEmail",
+        "buyerUserId",
+        "attributionSource",
+        "virtualAccountNumber",
+        "qrisUrl",
+        "bankDetails",
+        "proofOfPaymentUrl",
+        "itemsSnapshot"
+      )
+      values (
+        gen_random_uuid(),
+        $1,
+        $2::numeric,
+        $3::numeric,
+        $4,
+        null,
+        $5::numeric,
+        $5::numeric,
+        0::numeric,
+        null,
+        null,
+        $6,
+        'PAID',
+        $7,
+        $8,
+        $9,
+        $10,
+        $11,
+        null,
+        null,
+        null,
+        null,
+        $12::jsonb
+      )
+      returning id::text as id, "orderId", "totalAmount"::float8 as "totalAmount", status
+      `,
+      [
+        orderId,
+        subtotal,
+        discountAmount,
+        dto.voucherCode?.trim().toUpperCase() || null,
+        totalAmount,
+        dto.paymentMethod,
+        now.toISOString(),
+        expiry.toISOString(),
+        customerEmail,
+        member.userId,
+        attributionSource,
+        JSON.stringify(enrichedItems),
+      ],
+    );
+
+    const payment = paymentRes.rows[0];
+    if (!payment?.id) {
+      throw new BadRequestException('Failed to create manual conversion payment');
+    }
+
+    await this.onCheckoutPaidSideEffects(
+      payment.id,
+      customerEmail,
+      attributionSource,
+      totalAmount,
+      member.userId,
+    );
+    await this.grantEntitlementsThenRecordVoucher(payment.id);
+
+    const joinMonth = now.toISOString().slice(0, 7);
+    try {
+      await this.members.update(member.internalId, {
+        lifecycleStage: 'MEMBER',
+        joinMonth,
+      });
+    } catch (err) {
+      this.logger.warn(
+        `joinMonth update after manual conversion for ${member.publicId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    await this.appendSecurityLog(
+      'MANUAL_LEAD_CONVERSION',
+      {
+        paymentId: payment.id,
+        orderId: payment.orderId,
+        memberId: member.publicId,
+        totalAmount,
+        paymentMethod: dto.paymentMethod,
+        closingNotes: dto.closingNotes ?? null,
+      },
+      actorUserId,
+    );
+
+    const productsSummary = enrichedItems
+      .map((item) => item.productName)
+      .filter(Boolean)
+      .join(', ');
+
+    return {
+      paymentId: payment.id,
+      orderId: payment.orderId,
+      totalAmount: Number(payment.totalAmount) || 0,
+      paymentStatus: payment.status,
+      buyerEmail: customerEmail,
+      memberId: member.publicId,
+      productsSummary: productsSummary || null,
+    };
+  }
+
+  private isSalesPipelineLead(
+    lifecycleStage: string,
+    email: string | null,
+  ): boolean {
+    const stage = String(lifecycleStage ?? 'GUEST').trim().toUpperCase();
+    const hasEmail = String(email ?? '').trim().length > 0;
+    const effective = stage === 'GUEST' && hasEmail ? 'IDENTIFIED' : stage;
+    if (effective === 'IDENTIFIED' || effective === 'PARTICIPANT') return true;
+    if (effective === 'GUEST') return !hasEmail;
+    return false;
+  }
+
+  private resolveVariantLabel(
+    row: { hasVariants: boolean; variants: unknown },
+    variantId?: string,
+  ): string | null {
+    const vid = variantId?.trim();
+    if (!vid) return null;
+    const variants = Array.isArray(row.variants) ? row.variants : [];
+    const match = variants.find(
+      (x: unknown) =>
+        typeof x === 'object' &&
+        x !== null &&
+        'id' in x &&
+        String((x as { id: string }).id) === vid,
+    ) as { name?: unknown } | undefined;
+    const name = match?.name;
+    return typeof name === 'string' && name.trim() ? name.trim() : null;
   }
 
   // ==========================================================================

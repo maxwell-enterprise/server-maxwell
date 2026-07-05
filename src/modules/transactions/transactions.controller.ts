@@ -24,6 +24,7 @@ import {
   PublicTransactionStatusDtoSchema,
   SimulatePaymentSettleDtoSchema,
   UpdateCheckoutConfigDtoSchema,
+  ManualLeadConversionDtoSchema,
 } from './dto';
 import type {
   CheckoutDto,
@@ -34,6 +35,7 @@ import type {
   PublicTransactionStatusDto,
   SimulatePaymentSettleDto,
   UpdateCheckoutConfigDto,
+  ManualLeadConversionDto,
 } from './dto';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -43,6 +45,7 @@ import { RateLimit } from '../../common/security/rate-limit.decorator';
 import {
   assertFinanceControllerOnly,
   assertWorkspaceStaffOnly,
+  assertCrmLeadsResourceAccess,
 } from '../../common/security/access-policy';
 
 @Controller('transactions')
@@ -137,6 +140,24 @@ export class TransactionsController {
     return this.transactionsService.simulateSettlePaymentForTesting(
       dto.transactionId,
       dto.customerEmail,
+    );
+  }
+
+  /**
+   * Sales closing tool — manual/offline lead conversion (B2B, cash, scholarship via Rp 0).
+   * POST /transactions/manual-lead-conversion
+   */
+  @Post('manual-lead-conversion')
+  @UseGuards(JwtAuthGuard)
+  manualLeadConversion(
+    @Req() req: { user: JwtUserPayload },
+    @Body(new ZodValidationPipe(ManualLeadConversionDtoSchema))
+    dto: ManualLeadConversionDto,
+  ) {
+    assertCrmLeadsResourceAccess(req.user, 'Manual lead conversion');
+    return this.transactionsService.manualLeadConversion(
+      String(req.user.sub),
+      dto,
     );
   }
 

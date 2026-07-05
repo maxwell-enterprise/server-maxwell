@@ -1454,6 +1454,210 @@ export class MembersService {
     return this.toMember(row);
   }
 
+  /**
+   * Unified audit trail: CRM activity logs + paid conversion events (SIGNED_IN / PAID).
+   */
+  async getMemberJourney(identifier: string): Promise<
+    Array<{
+      id: string;
+      date: string;
+      userId: string;
+      category:
+        | 'ACQUISITION'
+        | 'ENGAGEMENT'
+        | 'COMMERCE'
+        | 'MARKETING'
+        | 'SYSTEM'
+        | 'MENTORING';
+      title: string;
+      description: string;
+      metadata?: Record<string, unknown>;
+    }>
+  > {
+    const row = await this.findRowByIdentifier(identifier);
+    const publicId = row.id;
+    const email = row.email?.trim().toLowerCase() || '';
+
+    const events: Array<{
+      id: string;
+      date: string;
+      userId: string;
+      category:
+        | 'ACQUISITION'
+        | 'ENGAGEMENT'
+        | 'COMMERCE'
+        | 'MARKETING'
+        | 'SYSTEM'
+        | 'MENTORING';
+      title: string;
+      description: string;
+      metadata?: Record<string, unknown>;
+    }> = [];
+
+    if (row.createdAt) {
+      const createdIso = new Date(row.createdAt).toISOString();
+      events.push({
+        id: `profile-${row.internalId}`,
+        date: createdIso,
+        userId: publicId,
+        category: 'ACQUISITION',
+        title: 'Profile Created',
+        description: `Joined CRM as ${row.lifecycleStage}.`,
+        metadata: {
+          lifecycleStage: row.lifecycleStage,
+          program: row.program ?? null,
+        },
+      });
+    }
+
+    const logsRes = await this.db.query<{
+      id: string;
+      date: string;
+      category: string;
+      action: string;
+      details: string | null;
+      metadata: Record<string, unknown> | null;
+    }>(
+      `
+      select
+        id::text as id,
+        date::text as date,
+        category,
+        action,
+        details,
+        metadata
+      from member_activity_logs
+      where "memberId" = $1 or "memberId" = $2
+      order by date desc, "createdAt" desc
+      `,
+      [publicId, row.internalId],
+    );
+
+    for (const log of logsRes.rows) {
+      events.push({
+        id: `log-${log.id}`,
+        date: this.toJourneyIsoDate(log.date),
+        userId: publicId,
+        category: this.normalizeJourneyCategory(log.category),
+        title: log.action,
+        description: log.details?.trim() || log.action,
+        metadata: log.metadata ?? undefined,
+      });
+    }
+
+    const conversionRes = await this.db.query<{
+      id: string;
+      eventType: string;
+      campaignName: string | null;
+      campaignSourceCode: string | null;
+      productsSummary: string | null;
+      totalAmount: number;
+      orderId: string | null;
+      picNameSnapshot: string | null;
+      paidAt: string;
+    }>(
+      `
+      select
+        pcr.id::text as id,
+        pcr.event_type as "eventType",
+        pcr.campaign_name as "campaignName",
+        pcr.campaign_source_code as "campaignSourceCode",
+        pcr.products_summary as "productsSummary",
+        pcr."totalAmount"::float8 as "totalAmount",
+        pcr."orderId" as "orderId",
+        pcr.pic_name_snapshot as "picNameSnapshot",
+        coalesce(pcr.paid_at, pcr."createdAt")::text as "paidAt"
+      from paid_conversion_records pcr
+      where (
+        ($1::uuid is not null and pcr.buyer_member_id = $1::uuid)
+        or ($2 <> '' and lower(trim(pcr.buyer_email)) = lower($2))
+      )
+      order by coalesce(pcr.paid_at, pcr."createdAt") desc
+      `,
+      [row.internalId, email],
+    );
+
+    for (const conv of conversionRes.rows) {
+      const eventType = String(conv.eventType ?? '').toUpperCase();
+      const occurredAt = conv.paidAt || new Date().toISOString();
+      if (eventType === 'SIGNED_IN') {
+        const campaignLabel =
+          conv.campaignName?.trim() ||
+          conv.campaignSourceCode?.trim() ||
+          'Campaign';
+        events.push({
+          id: `pcr-${conv.id}`,
+          date: occurredAt,
+          userId: publicId,
+          category: 'MARKETING',
+          title: 'Campaign Sign-In',
+          description: `Signed in via ${campaignLabel}.`,
+          metadata: {
+            campaignSourceCode: conv.campaignSourceCode,
+            campaignName: conv.campaignName,
+            orderId: conv.orderId,
+          },
+        });
+        continue;
+      }
+
+      if (eventType === 'PAID') {
+        const productLabel = conv.productsSummary?.trim() || 'Membership package';
+        events.push({
+          id: `pcr-${conv.id}`,
+          date: occurredAt,
+          userId: publicId,
+          category: 'COMMERCE',
+          title: 'Payment Received',
+          description: `${productLabel}${conv.orderId ? ` (${conv.orderId})` : ''}.`,
+          metadata: {
+            revenue: Number(conv.totalAmount) || 0,
+            orderId: conv.orderId,
+            picName: conv.picNameSnapshot,
+            productsSummary: conv.productsSummary,
+          },
+        });
+      }
+    }
+
+    events.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+
+    return events;
+  }
+
+  private toJourneyIsoDate(raw: string): string {
+    const parsed = new Date(raw);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toISOString();
+    }
+    return new Date().toISOString();
+  }
+
+  private normalizeJourneyCategory(raw: string):
+    | 'ACQUISITION'
+    | 'ENGAGEMENT'
+    | 'COMMERCE'
+    | 'MARKETING'
+    | 'SYSTEM'
+    | 'MENTORING' {
+    const normalized = String(raw ?? '')
+      .trim()
+      .toUpperCase();
+    switch (normalized) {
+      case 'ACQUISITION':
+      case 'ENGAGEMENT':
+      case 'COMMERCE':
+      case 'MARKETING':
+      case 'SYSTEM':
+      case 'MENTORING':
+        return normalized;
+      default:
+        return 'SYSTEM';
+    }
+  }
+
   async findOneByWorkspaceUserId(workspaceUserId: string): Promise<Member | null> {
     const userId = workspaceUserId.trim();
     if (!userId) return null;

@@ -27,6 +27,7 @@ import type { JwtUserPayload } from '../auth/auth.service';
 import {
   assertCrmMembersResourceAccess,
   assertCrmFacilitatorAssignmentAccess,
+  assertRole,
 } from '../../common/security/access-policy';
 import { parseAppRoleString, USER_ROLE } from '../workspace-identity/user-role.constants';
 import { ForbiddenException } from '@nestjs/common';
@@ -106,6 +107,25 @@ export class MembersController {
   @Get('by-workspace-user/:userId')
   findByWorkspaceUser(@Param('userId') userId: string) {
     return this.membersService.findOneByWorkspaceUserId(userId);
+  }
+
+  @Get(':identifier/journey')
+  @UseGuards(JwtAuthGuard)
+  getJourney(
+    @Req() req: { user: JwtUserPayload },
+    @Param('identifier') identifier: string,
+  ) {
+    assertRole(
+      req.user,
+      [
+        USER_ROLE.SUPER_ADMIN,
+        USER_ROLE.SALES,
+        USER_ROLE.MARKETING,
+        USER_ROLE.OPERATIONS,
+      ],
+      'Member journey',
+    );
+    return this.membersService.getMemberJourney(identifier);
   }
 
   @Get(':identifier')

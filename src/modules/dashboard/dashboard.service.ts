@@ -33,6 +33,12 @@ export type ExecutiveDashboardSummary = {
     payingCustomerCount: number;
     avgLtv: number;
   } | null;
+  conversions: {
+    pipelineLeadCount: number;
+    paidConversionsInPeriod: number;
+    leadToPaidRate: number;
+    momPercent: number | null;
+  } | null;
 };
 
 type MemberScope = {
@@ -49,6 +55,8 @@ type PaymentFinanceScope = {
 
 /** Active member lifecycle stages (subset of full registry). */
 const ACTIVE_MEMBER_LIFECYCLE_SQL = `('MEMBER', 'CERTIFIED', 'FACILITATOR')`;
+
+const PIPELINE_LIFECYCLE_SQL = `('GUEST', 'IDENTIFIED', 'PARTICIPANT')`;
 
 const LIFECYCLE_DISPLAY_ORDER = [
   'GUEST',
@@ -69,12 +77,15 @@ export class DashboardService {
   ): Promise<ExecutiveDashboardSummary> {
     const uniquePrograms = await this.listUniquePrograms();
 
-    const [members, finance] = await Promise.all([
+    const [members, finance, conversions] = await Promise.all([
       options.includeMembers
         ? this.buildMemberMetrics(query)
         : Promise.resolve(null),
       options.includeFinance
         ? this.buildFinanceMetrics(query)
+        : Promise.resolve(null),
+      options.includeMembers
+        ? this.buildConversionMetrics(query)
         : Promise.resolve(null),
     ]);
 
@@ -83,6 +94,7 @@ export class DashboardService {
       uniquePrograms,
       members,
       finance,
+      conversions,
     };
   }
 
@@ -506,6 +518,172 @@ export class DashboardService {
         cumulativeMembers: running,
       };
     });
+  }
+
+  /** Program + region only (snapshot metrics — no joinMonth time window). */
+  private buildProgramRegionScope(
+    query: ExecutiveDashboardQueryDto,
+    alias = 'm',
+  ): MemberScope {
+    const params: unknown[] = [];
+    const clauses: string[] = [];
+
+    if (query.program !== 'ALL') {
+      params.push(query.program.trim());
+      clauses.push(`trim(${alias}.program) = trim($${params.length}::text)`);
+    }
+
+    if (query.region === 'INTL') {
+      clauses.push(`${alias}."regInUS" = true`);
+    } else if (query.region === 'DOMESTIC') {
+      clauses.push(`${alias}."regInUS" = false`);
+    }
+
+    return {
+      whereSql: this.toWhereSql(clauses),
+      params,
+      clauses,
+    };
+  }
+
+  private buildPaidConversionScope(
+    query: ExecutiveDashboardQueryDto,
+    period: 'current' | 'previous',
+    alias = 'pcr',
+  ): MemberScope {
+    const params: unknown[] = [];
+    const clauses: string[] = [`${alias}.event_type = 'PAID'`];
+    const paidAt = `coalesce(${alias}.paid_at, ${alias}."createdAt")`;
+
+    if (period === 'current') {
+      switch (query.timeRange) {
+        case 'LAST_30':
+          clauses.push(
+            `${paidAt} >= (CURRENT_TIMESTAMP - interval '30 days')`,
+          );
+          break;
+        case 'THIS_QUARTER':
+          clauses.push(
+            `date_trunc('quarter', ${paidAt}) = date_trunc('quarter', CURRENT_TIMESTAMP)`,
+          );
+          break;
+        case 'YTD':
+          clauses.push(
+            `extract(year from ${paidAt}) = extract(year from CURRENT_TIMESTAMP)`,
+          );
+          break;
+        default:
+          break;
+      }
+    } else {
+      switch (query.timeRange) {
+        case 'LAST_30':
+          clauses.push(
+            `${paidAt} >= (CURRENT_TIMESTAMP - interval '60 days')`,
+          );
+          clauses.push(
+            `${paidAt} < (CURRENT_TIMESTAMP - interval '30 days')`,
+          );
+          break;
+        case 'THIS_QUARTER':
+          clauses.push(
+            `date_trunc('quarter', ${paidAt}) = date_trunc('quarter', CURRENT_TIMESTAMP - interval '3 months')`,
+          );
+          break;
+        case 'YTD':
+          clauses.push(
+            `extract(year from ${paidAt}) = extract(year from CURRENT_TIMESTAMP) - 1`,
+          );
+          clauses.push(
+            `${paidAt} <= (CURRENT_TIMESTAMP - interval '1 year')`,
+          );
+          break;
+        default:
+          clauses.push(
+            `date_trunc('month', ${paidAt}) = date_trunc('month', CURRENT_TIMESTAMP - interval '1 month')`,
+          );
+          break;
+      }
+    }
+
+    return {
+      whereSql: this.toWhereSql(clauses),
+      params,
+      clauses,
+    };
+  }
+
+  private async buildConversionMetrics(
+    query: ExecutiveDashboardQueryDto,
+  ): Promise<NonNullable<ExecutiveDashboardSummary['conversions']>> {
+    const pipelineScope = this.buildProgramRegionScope(query, 'm');
+    const currentPaid = this.buildPaidConversionScope(query, 'current', 'pcr');
+    const previousPaid = this.buildPaidConversionScope(query, 'previous', 'pcr');
+
+    const pipelineWhere = this.toWhereSql([
+      ...pipelineScope.clauses,
+      `coalesce(m."lifecycleStage", 'GUEST') in ${PIPELINE_LIFECYCLE_SQL}`,
+    ]);
+
+    const conversionMemberClauses = pipelineScope.clauses.map((clause) =>
+      clause.replace(/\bm\./g, 'm.'),
+    );
+    const currentConversionWhere = this.toWhereSql([
+      ...currentPaid.clauses,
+      ...conversionMemberClauses,
+    ]);
+    const previousConversionWhere = this.toWhereSql([
+      ...previousPaid.clauses,
+      ...conversionMemberClauses,
+    ]);
+
+    const conversionFromSql = `
+      paid_conversion_records pcr
+      inner join members m on (
+        (pcr.buyer_member_id is not null and pcr.buyer_member_id = m.id)
+        or lower(trim(pcr.buyer_email)) = lower(trim(m.email))
+      )
+    `;
+
+    const [pipelineRes, currentRes, previousRes] = await Promise.all([
+      this.db.query<{ count: string }>(
+        `
+        select count(*)::text as count
+        from members m
+        ${pipelineWhere}
+        `,
+        pipelineScope.params,
+      ),
+      this.db.query<{ count: string }>(
+        `
+        select count(*)::text as count
+        from ${conversionFromSql}
+        ${currentConversionWhere}
+        `,
+        [...currentPaid.params, ...pipelineScope.params],
+      ),
+      this.db.query<{ count: string }>(
+        `
+        select count(*)::text as count
+        from ${conversionFromSql}
+        ${previousConversionWhere}
+        `,
+        [...previousPaid.params, ...pipelineScope.params],
+      ),
+    ]);
+
+    const pipelineLeadCount = Number(pipelineRes.rows[0]?.count ?? 0);
+    const paidConversionsInPeriod = Number(currentRes.rows[0]?.count ?? 0);
+    const prevPaid = Number(previousRes.rows[0]?.count ?? 0);
+    const denominator = pipelineLeadCount + paidConversionsInPeriod;
+
+    return {
+      pipelineLeadCount,
+      paidConversionsInPeriod,
+      leadToPaidRate:
+        denominator > 0 ? (paidConversionsInPeriod / denominator) * 100 : 0,
+      momPercent: this.percentChange(paidConversionsInPeriod, prevPaid),
+    };
   }
 
   private async buildFinanceMetrics(
