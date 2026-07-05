@@ -1484,6 +1484,7 @@ export class MembersService {
     const requestedFacilitatorName = dto.facilitatorName?.trim() || '';
     let manualFacilitatorName: string | null | undefined;
     let manualFacilitatorType: string | null | undefined;
+    let manualFacilitatorLinkageKey: string | null | undefined;
 
     if (!preserveExplicitFacilitatorType && dto.facilitatorName !== undefined) {
       if (requestedFacilitatorName) {
@@ -1495,6 +1496,7 @@ export class MembersService {
           existingFacilitatorName.toLowerCase() ===
           facilitator.name.trim().toLowerCase();
         manualFacilitatorName = facilitator.name.trim();
+        manualFacilitatorLinkageKey = facilitator.id;
         manualFacilitatorType = sameFacilitator
           ? existing.facilitatorType?.trim() || null
           : existingFacilitatorName
@@ -1616,6 +1618,14 @@ export class MembersService {
     if (!preserveExplicitFacilitatorType && manualFacilitatorType !== undefined) {
       params.push(manualFacilitatorType);
       fields.push(`facilitator_type = $${params.length}`);
+    }
+    if (
+      !preserveExplicitFacilitatorType &&
+      manualFacilitatorLinkageKey &&
+      dto.nTagStatus === undefined
+    ) {
+      params.push(manualFacilitatorLinkageKey);
+      fields.push(`"nTagStatus" = $${params.length}`);
     }
     if (dto.serviceLevel !== undefined) {
       params.push(dto.serviceLevel?.trim() || null);

@@ -41,11 +41,42 @@ type PaymentRow = {
 };
 
 type ActivePicAssignment = {
-  id: string;
+  id: string | null;
   picMemberId: string | null;
   picName: string | null;
   resolvedPicName: string | null;
 };
+
+/** Join buyer + facilitator from CRM (`members.facilitator_*`, `nTagStatus`). */
+const MEMBER_FACILITATOR_JOINS = `
+  left join members buyer on (
+    (pcr.buyer_member_id is not null and buyer.id = pcr.buyer_member_id)
+    or lower(trim(buyer.email)) = lower(trim(pcr.buyer_email))
+  )
+  left join members facilitator on (
+    btrim(coalesce(buyer."nTagStatus", '')) <> ''
+    and (
+      facilitator.id::text = buyer."nTagStatus"
+      or facilitator.public_id = buyer."nTagStatus"
+      or facilitator.user_id = buyer."nTagStatus"
+    )
+  )
+`;
+
+const RESOLVED_PIC_NAME_SQL = `
+  coalesce(
+    nullif(trim(pcr.pic_name_snapshot), ''),
+    nullif(trim(buyer.facilitator_name), ''),
+    nullif(trim(facilitator.name), '')
+  )
+`;
+
+const RESOLVED_PIC_MEMBER_ID_SQL = `
+  coalesce(
+    pcr.pic_member_id_snapshot::text,
+    facilitator.id::text
+  )
+`;
 
 @Injectable()
 export class PaidConversionsService {
@@ -56,13 +87,102 @@ export class PaidConversionsService {
   async list(params: {
     search?: string;
     campaignSourceCode?: string;
+    campaignOnly?: boolean;
     picMemberId?: string;
     eventType?: string;
     startDate?: string;
     endDate?: string;
     limit?: number;
     offset?: number;
-  }): Promise<{ items: PaidConversionRecord[]; total: number }> {
+  }): Promise<{
+    items: PaidConversionRecord[];
+    total: number;
+    counts: { all: number; signedIn: number; paid: number };
+  }> {
+    const base = this.buildListFilters(params, { includeEventType: false });
+    const filtered = this.buildListFilters(params, { includeEventType: true });
+    const limit = Math.min(Math.max(params.limit ?? 100, 1), 500);
+    const offset = Math.max(params.offset ?? 0, 0);
+    const memberJoins = MEMBER_FACILITATOR_JOINS;
+
+    const countsRes = await this.db.query<{
+      totalAll: string;
+      signedIn: string;
+      paid: string;
+    }>(
+      `
+      select
+        count(*)::text as "totalAll",
+        count(*) filter (where pcr.event_type = 'SIGNED_IN')::text as "signedIn",
+        count(*) filter (where pcr.event_type = 'PAID')::text as paid
+      from paid_conversion_records pcr
+      ${memberJoins}
+      ${base.where}
+      `,
+      base.values,
+    );
+
+    const countRes = await this.db.query<{ total: string }>(
+      `select count(*)::text as total from paid_conversion_records pcr ${memberJoins} ${filtered.where}`,
+      filtered.values,
+    );
+
+    const listIdx = filtered.nextIdx;
+    const listRes = await this.db.query<Record<string, unknown>>(
+      `
+      select
+        pcr.id::text as id,
+        pcr.event_type as "eventType",
+        pcr.payment_transaction_id::text as "paymentTransactionId",
+        pcr."orderId" as "orderId",
+        pcr.buyer_email as "buyerEmail",
+        pcr.buyer_name as "buyerName",
+        pcr.buyer_member_id::text as "buyerMemberId",
+        pcr.campaign_source_code as "campaignSourceCode",
+        pcr.campaign_name as "campaignName",
+        pcr.acquisition_type as "acquisitionType",
+        ${RESOLVED_PIC_MEMBER_ID_SQL} as "picMemberIdSnapshot",
+        ${RESOLVED_PIC_NAME_SQL} as "picNameSnapshot",
+        pcr.pic_assignment_id_snapshot::text as "picAssignmentIdSnapshot",
+        pcr.amount::float8 as amount,
+        pcr."totalAmount"::float8 as "totalAmount",
+        pcr.products_summary as "productsSummary",
+        pcr."itemsSnapshot" as "itemsSnapshot",
+        pcr.paid_at::text as "paidAt",
+        pcr."createdAt"::text as "createdAt"
+      from paid_conversion_records pcr
+      ${memberJoins}
+      ${filtered.where}
+      order by pcr.paid_at desc
+      limit $${listIdx} offset $${listIdx + 1}
+      `,
+      [...filtered.values, limit, offset],
+    );
+
+    const countsRow = countsRes.rows[0];
+    return {
+      items: listRes.rows.map((row) => this.mapRow(row)),
+      total: Number(countRes.rows[0]?.total ?? 0),
+      counts: {
+        all: Number(countsRow?.totalAll ?? 0),
+        signedIn: Number(countsRow?.signedIn ?? 0),
+        paid: Number(countsRow?.paid ?? 0),
+      },
+    };
+  }
+
+  private buildListFilters(
+    params: {
+      search?: string;
+      campaignSourceCode?: string;
+      campaignOnly?: boolean;
+      picMemberId?: string;
+      eventType?: string;
+      startDate?: string;
+      endDate?: string;
+    },
+    options: { includeEventType: boolean },
+  ): { where: string; values: unknown[]; nextIdx: number } {
     const conditions: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
@@ -73,10 +193,21 @@ export class PaidConversionsService {
           or lower(coalesce(pcr.buyer_name, '')) like $${idx}
           or lower(coalesce(pcr."orderId", '')) like $${idx}
           or lower(coalesce(pcr.campaign_source_code, '')) like $${idx}
-          or lower(coalesce(pcr.pic_name_snapshot, '')) like $${idx})`,
+          or lower(coalesce(pcr.campaign_name, '')) like $${idx}
+          or lower(coalesce(pcr.products_summary, '')) like $${idx}
+          or lower(coalesce(pcr.pic_name_snapshot, '')) like $${idx}
+          or lower(coalesce(buyer.facilitator_name, '')) like $${idx}
+          or lower(coalesce(facilitator.name, '')) like $${idx}
+          or lower(coalesce(${RESOLVED_PIC_NAME_SQL}, '')) like $${idx})`,
       );
       values.push(`%${params.search.trim().toLowerCase()}%`);
       idx += 1;
+    }
+
+    if (params.campaignOnly) {
+      conditions.push(
+        `pcr.campaign_source_code is not null and btrim(pcr.campaign_source_code) <> ''`,
+      );
     }
 
     if (params.campaignSourceCode?.trim()) {
@@ -86,12 +217,12 @@ export class PaidConversionsService {
     }
 
     if (params.picMemberId?.trim()) {
-      conditions.push(`pcr.pic_member_id_snapshot = $${idx}::uuid`);
+      conditions.push(`${RESOLVED_PIC_MEMBER_ID_SQL} = $${idx}`);
       values.push(params.picMemberId.trim());
       idx += 1;
     }
 
-    if (params.eventType?.trim()) {
+    if (options.includeEventType && params.eventType?.trim()) {
       conditions.push(`pcr.event_type = $${idx}`);
       values.push(params.eventType.trim().toUpperCase());
       idx += 1;
@@ -110,48 +241,7 @@ export class PaidConversionsService {
     }
 
     const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
-    const limit = Math.min(Math.max(params.limit ?? 100, 1), 500);
-    const offset = Math.max(params.offset ?? 0, 0);
-
-    const countRes = await this.db.query<{ total: string }>(
-      `select count(*)::text as total from paid_conversion_records pcr ${where}`,
-      values,
-    );
-
-    const listRes = await this.db.query<Record<string, unknown>>(
-      `
-      select
-        pcr.id::text as id,
-        pcr.event_type as "eventType",
-        pcr.payment_transaction_id::text as "paymentTransactionId",
-        pcr."orderId" as "orderId",
-        pcr.buyer_email as "buyerEmail",
-        pcr.buyer_name as "buyerName",
-        pcr.buyer_member_id::text as "buyerMemberId",
-        pcr.campaign_source_code as "campaignSourceCode",
-        pcr.campaign_name as "campaignName",
-        pcr.acquisition_type as "acquisitionType",
-        pcr.pic_member_id_snapshot::text as "picMemberIdSnapshot",
-        pcr.pic_name_snapshot as "picNameSnapshot",
-        pcr.pic_assignment_id_snapshot::text as "picAssignmentIdSnapshot",
-        pcr.amount::float8 as amount,
-        pcr."totalAmount"::float8 as "totalAmount",
-        pcr.products_summary as "productsSummary",
-        pcr."itemsSnapshot" as "itemsSnapshot",
-        pcr.paid_at::text as "paidAt",
-        pcr."createdAt"::text as "createdAt"
-      from paid_conversion_records pcr
-      ${where}
-      order by pcr.paid_at desc
-      limit $${idx} offset $${idx + 1}
-      `,
-      [...values, limit, offset],
-    );
-
-    return {
-      items: listRes.rows.map((row) => this.mapRow(row)),
-      total: Number(countRes.rows[0]?.total ?? 0),
-    };
+    return { where, values, nextIdx: idx };
   }
 
   /**
@@ -200,7 +290,7 @@ export class PaidConversionsService {
     const buyer = buyerMember.rows[0];
 
     const paidAt = payment.createdAt;
-    const pic = await this.resolveActivePicAssignment({
+    const pic = await this.resolvePicForBuyer({
       buyerMemberId: buyer?.id ?? null,
       buyerEmail: payment.customerEmail,
       at: paidAt,
@@ -314,7 +404,7 @@ export class PaidConversionsService {
       String(input.name ?? '').trim() || buyer?.name || buyerEmail.split('@')[0];
     const occurredAt = new Date().toISOString();
 
-    const pic = await this.resolveActivePicAssignment({
+    const pic = await this.resolvePicForBuyer({
       buyerMemberId: buyer?.id ?? null,
       buyerEmail,
       at: occurredAt,
@@ -474,8 +564,8 @@ export class PaidConversionsService {
         pcr.campaign_source_code as "campaignSourceCode",
         pcr.campaign_name as "campaignName",
         pcr.acquisition_type as "acquisitionType",
-        pcr.pic_member_id_snapshot::text as "picMemberIdSnapshot",
-        pcr.pic_name_snapshot as "picNameSnapshot",
+        ${RESOLVED_PIC_MEMBER_ID_SQL} as "picMemberIdSnapshot",
+        ${RESOLVED_PIC_NAME_SQL} as "picNameSnapshot",
         pcr.pic_assignment_id_snapshot::text as "picAssignmentIdSnapshot",
         pcr.amount::float8 as amount,
         pcr."totalAmount"::float8 as "totalAmount",
@@ -484,6 +574,7 @@ export class PaidConversionsService {
         pcr.paid_at::text as "paidAt",
         pcr."createdAt"::text as "createdAt"
       from paid_conversion_records pcr
+      ${MEMBER_FACILITATOR_JOINS}
       where pcr.id = $1::uuid
       limit 1
       `,
@@ -491,6 +582,63 @@ export class PaidConversionsService {
     );
     const row = res.rows[0];
     return row ? this.mapRow(row) : null;
+  }
+
+  /**
+   * PIC priority: explicit pic_assignments, then CRM facilitator on members (SO truth).
+   */
+  private async resolvePicForBuyer(input: {
+    buyerMemberId: string | null;
+    buyerEmail: string;
+    at: string;
+  }): Promise<ActivePicAssignment | null> {
+    const fromAssignment = await this.resolveActivePicAssignment(input);
+    if (fromAssignment) {
+      return fromAssignment;
+    }
+    return this.resolvePicFromMemberFacilitator(input);
+  }
+
+  private async resolvePicFromMemberFacilitator(input: {
+    buyerMemberId: string | null;
+    buyerEmail: string;
+  }): Promise<ActivePicAssignment | null> {
+    const res = await this.db.query<ActivePicAssignment>(
+      `
+      select
+        null::text as id,
+        facilitator.id::text as "picMemberId",
+        nullif(trim(buyer.facilitator_name), '') as "picName",
+        coalesce(
+          nullif(trim(buyer.facilitator_name), ''),
+          nullif(trim(facilitator.name), '')
+        ) as "resolvedPicName"
+      from members buyer
+      left join members facilitator on (
+        btrim(coalesce(buyer."nTagStatus", '')) <> ''
+        and (
+          facilitator.id::text = buyer."nTagStatus"
+          or facilitator.public_id = buyer."nTagStatus"
+          or facilitator.user_id = buyer."nTagStatus"
+        )
+      )
+      where (
+          ($1::uuid is not null and buyer.id = $1::uuid)
+          or lower(trim(buyer.email)) = lower(trim($2))
+        )
+        and (
+          nullif(trim(buyer.facilitator_name), '') is not null
+          or facilitator.id is not null
+        )
+      limit 1
+      `,
+      [input.buyerMemberId, input.buyerEmail],
+    );
+    const row = res.rows[0];
+    if (!row?.resolvedPicName?.trim()) {
+      return null;
+    }
+    return row;
   }
 
   private async resolveActivePicAssignment(input: {
