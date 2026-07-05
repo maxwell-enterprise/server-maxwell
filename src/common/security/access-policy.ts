@@ -270,6 +270,19 @@ export function assertCmsResourceAccess(
   );
 }
 
+/** AI usage logs dashboard; custom roles via `view_ai_usage` / `sys_ai_usage`. */
+export function assertAiUsageResourceAccess(
+  user: JwtUserPayload,
+  actionLabel = 'AI usage',
+): void {
+  assertRoleOrCustomResource(
+    user,
+    [USER_ROLE.SUPER_ADMIN],
+    ['sys_ai_usage', 'view_ai_usage'],
+    actionLabel,
+  );
+}
+
 export function assertCommunicationResourceAccess(
   user: JwtUserPayload,
   actionLabel: string,

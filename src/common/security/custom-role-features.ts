@@ -24,6 +24,8 @@ export const CUSTOM_VIEW_RESOURCE_LINKS: ReadonlyArray<{
   { viewFeatureId: 'view_automation_center', resourceId: 'sys_database' },
   { viewFeatureId: 'view_db_schema', resourceId: 'sys_database' },
   { viewFeatureId: 'view_security', resourceId: 'sys_iam' },
+  { viewFeatureId: 'view_ai_usage', resourceId: 'sys_ai_usage' },
+  { viewFeatureId: 'view_system_maintenance', resourceId: 'sys_maintenance' },
 ];
 
 export function customRoleGrantsResource(

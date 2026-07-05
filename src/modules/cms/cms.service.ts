@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -44,6 +45,26 @@ function nullableTimestamp(v: unknown): string | null {
 const CMS_AI_FEATURE_NAME = 'CMS_CONTENT_EDITOR';
 const CMS_AI_UNAVAILABLE_MESSAGE =
   'AI content generation is temporarily unavailable.';
+const CMS_AI_TIMEOUT_MS = 45_000;
+const CMS_AI_MAX_OUTPUT_TOKENS = 2048;
+const CMS_PROMPT_BODY_MAX_CHARS = 1_500;
+const GEMINI_API_URL =
+  'https://generativelanguage.googleapis.com/v1beta/models';
+
+function stripHtmlAndTruncate(html: string, maxLen: number): string {
+  const plain = html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (plain.length <= maxLen) {
+    return plain;
+  }
+  return `${plain.slice(0, maxLen)}…`;
+}
 const USD_TO_IDR_RATE = 16_300;
 const MODEL_PRICING_USD_PER_1M_TOKENS: Record<
   string,
@@ -78,6 +99,8 @@ type GeminiGenerateResponse = {
 
 @Injectable()
 export class CmsService {
+  private readonly logger = new Logger(CmsService.name);
+
   constructor(
     private readonly db: DatabaseService,
     private readonly config: AppConfigService,
@@ -135,6 +158,13 @@ export class CmsService {
         ? { ...defaultStats, ...body.stats }
         : defaultStats;
 
+    const rawSlug = String(body.slug ?? '').trim();
+    const slug = await this.resolveUniqueSlug(
+      rawSlug ||
+        this.slugFromTitle(String(body.title ?? '')) ||
+        `post-${Date.now()}`,
+    );
+
     const result = await this.db.query<Record<string, unknown>>(
       `INSERT INTO cms_content (
         title, slug, body, "imageUrl", type, status,
@@ -150,7 +180,7 @@ export class CmsService {
                 author, tags, stats`,
       [
         String(body.title ?? ''),
-        String(body.slug ?? ''),
+        slug,
         String(body.body ?? ''),
         body.imageUrl ?? null,
         String(body.type ?? 'ARTICLE'),
@@ -184,7 +214,15 @@ export class CmsService {
         : prevStats;
 
     const title = body.title != null ? String(body.title) : String(row0.title);
-    const slug = body.slug != null ? String(body.slug) : String(row0.slug);
+    const requestedSlug =
+      body.slug != null ? String(body.slug).trim() : String(row0.slug);
+    const slug =
+      requestedSlug !== String(row0.slug)
+        ? await this.resolveUniqueSlug(
+            requestedSlug || this.slugFromTitle(title) || String(row0.slug),
+            id,
+          )
+        : String(row0.slug);
     const b = body.body != null ? String(body.body) : String(row0.body);
     const imageUrl =
       body.imageUrl !== undefined ? body.imageUrl : row0.imageUrl;
@@ -310,7 +348,15 @@ export class CmsService {
 
     const prompt = this.buildCmsPrompt(body);
     const result = await this.generateWithGemini(prompt, apiKey);
-    await this.logAiUsage(actorUserId, prompt, result);
+    try {
+      await this.logAiUsage(actorUserId, prompt, result);
+    } catch (error) {
+      this.logger.warn(
+        `CMS AI usage log failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
 
     return {
       title: result.title,
@@ -322,7 +368,10 @@ export class CmsService {
     const contentType = String(body.contentType ?? 'ARTICLE').trim();
     const userPrompt = String(body.prompt ?? '').trim();
     const existingTitle = String(body.existingTitle ?? '').trim();
-    const existingBody = String(body.existingBody ?? '').trim();
+    const existingBody = stripHtmlAndTruncate(
+      String(body.existingBody ?? '').trim(),
+      CMS_PROMPT_BODY_MAX_CHARS,
+    );
     const ctaLabel = String(body.ctaLabel ?? '').trim();
     const linkedProduct =
       body.linkedProduct && typeof body.linkedProduct === 'object'
@@ -362,18 +411,51 @@ export class CmsService {
     ].join('\n');
   }
 
+  private slugFromTitle(title: string): string {
+    const slug = title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+    return slug;
+  }
+
+  private async resolveUniqueSlug(
+    baseSlug: string,
+    excludeId?: string,
+  ): Promise<string> {
+    const normalized = baseSlug.trim() || `post-${Date.now()}`;
+    let candidate = normalized;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const result = excludeId
+        ? await this.db.query<{ id: string }>(
+            `SELECT id FROM cms_content WHERE slug = $1 AND id != $2::uuid LIMIT 1`,
+            [candidate, excludeId],
+          )
+        : await this.db.query<{ id: string }>(
+            `SELECT id FROM cms_content WHERE slug = $1 LIMIT 1`,
+            [candidate],
+          );
+      if (result.rows.length === 0) {
+        return candidate;
+      }
+      candidate = `${normalized}-${attempt + 2}`;
+    }
+    return `${normalized}-${Date.now()}`;
+  }
+
   private async generateWithGemini(
     prompt: string,
     apiKey: string,
   ): Promise<CmsAiGenerateResult> {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20_000);
+    const timeout = setTimeout(() => controller.abort(), CMS_AI_TIMEOUT_MS);
 
     try {
+      const model = this.config.geminiModel;
       const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-          this.config.geminiModel,
-        )}:generateContent`,
+        `${GEMINI_API_URL}/${encodeURIComponent(model)}:generateContent`,
         {
           method: 'POST',
           headers: {
@@ -390,7 +472,7 @@ export class CmsService {
             generationConfig: {
               temperature: 0.6,
               topP: 0.9,
-              maxOutputTokens: 900,
+              maxOutputTokens: CMS_AI_MAX_OUTPUT_TOKENS,
               responseMimeType: 'application/json',
             },
           }),
@@ -399,6 +481,10 @@ export class CmsService {
       );
 
       if (!response.ok) {
+        const detail = await response.text();
+        this.logger.error(
+          `CMS Gemini request failed ${response.status}: ${detail.slice(0, 500)}`,
+        );
         throw new ServiceUnavailableException(CMS_AI_UNAVAILABLE_MESSAGE);
       }
 
@@ -409,19 +495,28 @@ export class CmsService {
           .join('')
           .trim() ?? '';
       if (!raw) {
+        this.logger.warn('CMS Gemini returned empty candidate content.');
         throw new ServiceUnavailableException(CMS_AI_UNAVAILABLE_MESSAGE);
       }
 
       let parsed: { title?: unknown; body?: unknown } = {};
       try {
         parsed = JSON.parse(raw) as { title?: unknown; body?: unknown };
-      } catch {
+      } catch (error) {
+        this.logger.warn(
+          `CMS Gemini JSON parse failed: ${
+            error instanceof Error ? error.message : String(error)
+          }; raw=${raw.slice(0, 200)}`,
+        );
         parsed = {};
       }
 
       const title = String(parsed.title ?? '').trim();
       const body = String(parsed.body ?? '').trim();
       if (!title || !body) {
+        this.logger.warn(
+          `CMS Gemini response missing title/body. raw=${raw.slice(0, 200)}`,
+        );
         throw new ServiceUnavailableException(CMS_AI_UNAVAILABLE_MESSAGE);
       }
 
@@ -442,6 +537,25 @@ export class CmsService {
         completionTokens,
         totalTokens,
       };
+    } catch (error) {
+      if (error instanceof ServiceUnavailableException) {
+        throw error;
+      }
+      const message =
+        error instanceof Error ? error.message : String(error);
+      const isTimeout =
+        error instanceof Error &&
+        (error.name === 'AbortError' || message.includes('aborted'));
+      this.logger.error(
+        isTimeout
+          ? `CMS Gemini request timed out after ${CMS_AI_TIMEOUT_MS}ms`
+          : `CMS Gemini request failed: ${message}`,
+      );
+      throw new ServiceUnavailableException(
+        isTimeout
+          ? 'AI content generation timed out. Try a shorter prompt or try again.'
+          : CMS_AI_UNAVAILABLE_MESSAGE,
+      );
     } finally {
       clearTimeout(timeout);
     }

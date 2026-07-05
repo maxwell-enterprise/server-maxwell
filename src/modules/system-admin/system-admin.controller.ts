@@ -13,6 +13,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import type { JwtUserPayload } from '../auth/auth.service';
 import {
   assertAutomationQueueAccess,
+  assertAiUsageResourceAccess,
   assertSuperAdminOnly,
 } from '../../common/security/access-policy';
 
@@ -167,7 +168,7 @@ export class SystemAdminController {
   // --- AI usage ---
   @Get('ai-usage/logs')
   listAiUsageLogs(@Req() req: { user: JwtUserPayload }) {
-    this.assertSystemAdmin(req);
+    assertAiUsageResourceAccess(req.user, 'List AI usage logs');
     return this.systemAdmin.listAiUsageLogs();
   }
 
@@ -176,7 +177,7 @@ export class SystemAdminController {
     @Req() req: { user: JwtUserPayload },
     @Body() body: Record<string, unknown>,
   ) {
-    this.assertSystemAdmin(req);
+    assertAiUsageResourceAccess(req.user, 'Insert AI usage log');
     return this.systemAdmin.insertAiUsageLog(body);
   }
 
