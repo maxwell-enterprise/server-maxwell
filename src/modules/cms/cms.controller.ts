@@ -24,6 +24,12 @@ export class CmsController {
     return this.cms.list();
   }
 
+  /** Public reader page — no JWT. Must stay above `:id` param routes. */
+  @Get('published/:slug')
+  getPublishedBySlug(@Param('slug') slug: string) {
+    return this.cms.getPublishedBySlug(decodeURIComponent(slug));
+  }
+
   @Post()
   @UseGuards(JwtAuthGuard)
   create(

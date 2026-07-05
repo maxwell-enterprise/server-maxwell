@@ -97,6 +97,28 @@ type GeminiGenerateResponse = {
   };
 };
 
+const CMS_POST_RETURNING = `
+  id, title, slug, body, "imageUrl", type, status,
+  "publishDate", "unpublishDate", "linkedProductId", "ctaLabel",
+  author, tags, stats,
+  (
+    SELECT p.public_id
+    FROM products p
+    WHERE p.id = cms_content."linkedProductId"
+    LIMIT 1
+  ) AS "linkedProductPublicId"
+`;
+
+const CMS_LIST_SELECT = `
+  SELECT
+    c.id, c.title, c.slug, c.body, c."imageUrl", c.type, c.status,
+    c."publishDate", c."unpublishDate", c."linkedProductId", c."ctaLabel",
+    c.author, c.tags, c.stats,
+    p.public_id AS "linkedProductPublicId"
+  FROM cms_content c
+  LEFT JOIN products p ON p.id = c."linkedProductId"
+`;
+
 @Injectable()
 export class CmsService {
   private readonly logger = new Logger(CmsService.name);
@@ -106,8 +128,40 @@ export class CmsService {
     private readonly config: AppConfigService,
   ) {}
 
+  /** FE catalog uses product `public_id`; DB FK stores internal UUID. */
+  private async resolveLinkedProductUuid(
+    productRef: unknown,
+  ): Promise<string | null> {
+    if (productRef == null) {
+      return null;
+    }
+    const raw = String(productRef).trim();
+    if (!raw) {
+      return null;
+    }
+
+    if (UUID_RE.test(raw)) {
+      const byUuid = await this.db.query<{ id: string }>(
+        `SELECT id::text AS id FROM products WHERE id = $1::uuid LIMIT 1`,
+        [raw],
+      );
+      return byUuid.rows[0]?.id ?? null;
+    }
+
+    const byPublicId = await this.db.query<{ id: string }>(
+      `SELECT id::text AS id FROM products WHERE public_id = $1 LIMIT 1`,
+      [raw],
+    );
+    return byPublicId.rows[0]?.id ?? null;
+  }
+
   private rowToPost(row: Record<string, unknown>) {
     const stats = parseJson<Record<string, unknown>>(row.stats, {});
+    const linkedPublicId =
+      row.linkedProductPublicId != null &&
+      String(row.linkedProductPublicId).trim() !== ''
+        ? String(row.linkedProductPublicId)
+        : undefined;
     return {
       id: String(row.id),
       title: String(row.title),
@@ -118,9 +172,9 @@ export class CmsService {
       status: String(row.status),
       publishDate: toIso(row.publishDate),
       unpublishDate: row.unpublishDate ? toIso(row.unpublishDate) : undefined,
-      linkedProductId: row.linkedProductId
-        ? String(row.linkedProductId)
-        : undefined,
+      linkedProductId:
+        linkedPublicId ??
+        (row.linkedProductId ? String(row.linkedProductId) : undefined),
       ctaLabel: row.ctaLabel ? String(row.ctaLabel) : undefined,
       author: String(row.author),
       tags: Array.isArray(row.tags) ? (row.tags as string[]) : [],
@@ -136,13 +190,42 @@ export class CmsService {
 
   async list(): Promise<unknown[]> {
     const result = await this.db.query<Record<string, unknown>>(
-      `SELECT id, title, slug, body, "imageUrl", type, status,
-              "publishDate", "unpublishDate", "linkedProductId", "ctaLabel",
-              author, tags, stats
-       FROM cms_content
-       ORDER BY "publishDate" DESC NULLS LAST`,
+      `${CMS_LIST_SELECT}
+       ORDER BY c."publishDate" DESC NULLS LAST`,
     );
     return result.rows.map((r) => this.rowToPost(r));
+  }
+
+  /** Public article page — published post by slug, within schedule window. */
+  async getPublishedBySlug(slug: string): Promise<unknown> {
+    const normalized = String(slug ?? '').trim();
+    if (!normalized) {
+      throw new NotFoundException('Content not found');
+    }
+
+    const result = await this.db.query<Record<string, unknown>>(
+      `${CMS_LIST_SELECT}
+       WHERE c.slug = $1
+       LIMIT 1`,
+      [normalized],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      throw new NotFoundException('Content not found');
+    }
+
+    const post = this.rowToPost(row);
+    const now = new Date();
+    const isPublished = post.status === 'PUBLISHED';
+    const started = new Date(post.publishDate) <= now;
+    const ended = post.unpublishDate
+      ? new Date(post.unpublishDate) > now
+      : true;
+    if (!isPublished || !started || !ended) {
+      throw new NotFoundException('Content not found');
+    }
+
+    return post;
   }
 
   async create(body: Record<string, unknown>): Promise<unknown> {
@@ -164,6 +247,9 @@ export class CmsService {
         this.slugFromTitle(String(body.title ?? '')) ||
         `post-${Date.now()}`,
     );
+    const linkedProductId = await this.resolveLinkedProductUuid(
+      body.linkedProductId,
+    );
 
     const result = await this.db.query<Record<string, unknown>>(
       `INSERT INTO cms_content (
@@ -175,9 +261,7 @@ export class CmsService {
         $7::timestamptz, $8::timestamptz, $9::uuid, $10,
         $11, $12::text[], $13::jsonb
       )
-      RETURNING id, title, slug, body, "imageUrl", type, status,
-                "publishDate", "unpublishDate", "linkedProductId", "ctaLabel",
-                author, tags, stats`,
+      RETURNING ${CMS_POST_RETURNING}`,
       [
         String(body.title ?? ''),
         slug,
@@ -187,8 +271,10 @@ export class CmsService {
         String(body.status ?? 'DRAFT'),
         nullableTimestamp(body.publishDate) ?? new Date().toISOString(),
         nullableTimestamp(body.unpublishDate),
-        uuidOrNull(body.linkedProductId),
-        body.ctaLabel ?? null,
+        linkedProductId,
+        body.ctaLabel != null && String(body.ctaLabel).trim() !== ''
+          ? String(body.ctaLabel).trim()
+          : null,
         String(body.author ?? ''),
         Array.isArray(body.tags) ? body.tags : [],
         JSON.stringify(statsPayload),
@@ -239,10 +325,14 @@ export class CmsService {
         : nullableTimestamp(row0.unpublishDate);
     const linkedProductId =
       body.linkedProductId !== undefined
-        ? uuidOrNull(body.linkedProductId)
+        ? await this.resolveLinkedProductUuid(body.linkedProductId)
         : uuidOrNull(row0.linkedProductId);
     const ctaLabel =
-      body.ctaLabel !== undefined ? body.ctaLabel : row0.ctaLabel;
+      body.ctaLabel !== undefined
+        ? body.ctaLabel != null && String(body.ctaLabel).trim() !== ''
+          ? String(body.ctaLabel).trim()
+          : null
+        : row0.ctaLabel;
     const author =
       body.author != null ? String(body.author) : String(row0.author);
     const tags = Array.isArray(body.tags) ? body.tags : row0.tags;
@@ -263,9 +353,7 @@ export class CmsService {
         tags = $13::text[],
         stats = $14::jsonb
        WHERE id = $1::uuid
-       RETURNING id, title, slug, body, "imageUrl", type, status,
-                 "publishDate", "unpublishDate", "linkedProductId", "ctaLabel",
-                 author, tags, stats`,
+       RETURNING ${CMS_POST_RETURNING}`,
       [
         id,
         title,
