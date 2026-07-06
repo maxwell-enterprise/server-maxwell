@@ -136,3 +136,27 @@ export const SimulatePaymentSettleDtoSchema = z.object({
 export type SimulatePaymentSettleDto = z.infer<
   typeof SimulatePaymentSettleDtoSchema
 >;
+
+// =============================================================================
+// MANUAL LEAD CONVERSION (Sales closing tool)
+// =============================================================================
+
+export const ManualLeadConversionPaymentMethodEnum = z.enum([
+  'CASH',
+  'BANK_TRANSFER',
+  'E_WALLET',
+  'INSTALLMENT',
+]);
+
+export const ManualLeadConversionDtoSchema = z.object({
+  memberId: z.string().trim().min(1).max(120),
+  items: z.array(CheckoutItemDtoSchema).min(1),
+  paymentMethod: ManualLeadConversionPaymentMethodEnum,
+  voucherCode: z.string().trim().max(50).optional(),
+  attributionSource: z.string().trim().min(1).max(120).optional(),
+  closingNotes: z.string().trim().max(500).optional(),
+});
+
+export type ManualLeadConversionDto = z.infer<
+  typeof ManualLeadConversionDtoSchema
+>;

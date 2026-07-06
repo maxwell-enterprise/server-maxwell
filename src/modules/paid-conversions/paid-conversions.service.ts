@@ -5,15 +5,21 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DbService } from '../../common/db.service';
+import { MembersService } from '../members/members.service';
 
 export type PaidConversionRecord = {
   id: string;
-  eventType: 'SIGNED_IN' | 'PAID' | string;
+  eventType: 'SIGNED_IN' | 'PAID' | 'LEAD' | string;
   paymentTransactionId: string | null;
   orderId: string | null;
   buyerEmail: string;
   buyerName: string | null;
   buyerMemberId: string | null;
+  memberPublicId: string | null;
+  lifecycleStage: string | null;
+  hasPaidEvent: boolean;
+  hasSignedInEvent: boolean;
+  displayStage: 'LEAD' | 'PAID';
   campaignSourceCode: string | null;
   campaignName: string | null;
   acquisitionType: string;
@@ -41,116 +47,439 @@ type PaymentRow = {
 };
 
 type ActivePicAssignment = {
-  id: string;
+  id: string | null;
   picMemberId: string | null;
   picName: string | null;
   resolvedPicName: string | null;
 };
 
+/** Join buyer + facilitator from CRM (`members.facilitator_*`, `nTagStatus`). */
+const MEMBER_FACILITATOR_JOINS = `
+  left join members buyer on (
+    (pcr.buyer_member_id is not null and buyer.id = pcr.buyer_member_id)
+    or lower(trim(buyer.email)) = lower(trim(pcr.buyer_email))
+  )
+  left join members facilitator on (
+    btrim(coalesce(buyer."nTagStatus", '')) <> ''
+    and (
+      facilitator.id::text = buyer."nTagStatus"
+      or facilitator.public_id = buyer."nTagStatus"
+      or facilitator.user_id = buyer."nTagStatus"
+    )
+  )
+`;
+
+const RESOLVED_PIC_NAME_SQL = `
+  coalesce(
+    nullif(trim(pcr.pic_name_snapshot), ''),
+    nullif(trim(buyer.facilitator_name), ''),
+    nullif(trim(facilitator.name), '')
+  )
+`;
+
+const RESOLVED_PIC_MEMBER_ID_SQL = `
+  coalesce(
+    pcr.pic_member_id_snapshot::text,
+    facilitator.id::text
+  )
+`;
+
+/** Lifecycle rank for merged entity current-state (never use MAX string). */
+const PIPELINE_LIFECYCLE_SQL = `('GUEST', 'IDENTIFIED', 'PARTICIPANT')`;
+
+const PAID_LIFECYCLE_SQL = `('MEMBER', 'CERTIFIED', 'FACILITATOR')`;
+
+/** Live display name: CRM (synced from biodata) → workspace User → snapshot → email. */
+const MEANINGFUL_NAME_PREDICATE = (
+  nameExpr: string,
+  emailExpr: string,
+): string => `
+  (
+    nullif(trim(${nameExpr}), '') is not null
+    and length(trim(${nameExpr})) >= 2
+    and lower(trim(${nameExpr})) <> lower(trim(${emailExpr}))
+    and lower(trim(${nameExpr})) <> lower(split_part(trim(${emailExpr}), '@', 1))
+  )
+`;
+
+const RESOLVED_BUYER_NAME_UNIFIED_SQL = `
+  coalesce(
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('m.name', 'coalesce(m.email, ek.email_key)')}
+      then trim(m.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('wu_id.name', 'ek.email_key')}
+      then trim(wu_id.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('wu_email.name', 'ek.email_key')}
+      then trim(wu_email.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('ap.buyer_name', 'ek.email_key')}
+      then trim(ap.buyer_name)
+    end,
+    nullif(trim(ek.email_key), '')
+  )
+`;
+
+const RESOLVED_BUYER_NAME_PCR_SQL = `
+  coalesce(
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('buyer.name', 'pcr.buyer_email')}
+      then trim(buyer.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('wu.name', 'pcr.buyer_email')}
+      then trim(wu.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('pcr.buyer_name', 'pcr.buyer_email')}
+      then trim(pcr.buyer_name)
+    end,
+    nullif(trim(pcr.buyer_email), '')
+  )
+`;
+
+type StageSegment = 'ALL' | 'LEAD' | 'PAID';
+
 @Injectable()
 export class PaidConversionsService {
   private readonly logger = new Logger(PaidConversionsService.name);
 
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly members: MembersService,
+  ) {}
 
   async list(params: {
     search?: string;
     campaignSourceCode?: string;
+    campaignOnly?: boolean;
     picMemberId?: string;
     eventType?: string;
+    stageSegment?: string;
     startDate?: string;
     endDate?: string;
     limit?: number;
     offset?: number;
-  }): Promise<{ items: PaidConversionRecord[]; total: number }> {
-    const conditions: string[] = [];
-    const values: unknown[] = [];
-    let idx = 1;
-
-    if (params.search?.trim()) {
-      conditions.push(
-        `(lower(pcr.buyer_email) like $${idx}
-          or lower(coalesce(pcr.buyer_name, '')) like $${idx}
-          or lower(coalesce(pcr."orderId", '')) like $${idx}
-          or lower(coalesce(pcr.campaign_source_code, '')) like $${idx}
-          or lower(coalesce(pcr.pic_name_snapshot, '')) like $${idx})`,
-      );
-      values.push(`%${params.search.trim().toLowerCase()}%`);
-      idx += 1;
-    }
-
-    if (params.campaignSourceCode?.trim()) {
-      conditions.push(`lower(pcr.campaign_source_code) = $${idx}`);
-      values.push(params.campaignSourceCode.trim().toLowerCase());
-      idx += 1;
-    }
-
-    if (params.picMemberId?.trim()) {
-      conditions.push(`pcr.pic_member_id_snapshot = $${idx}::uuid`);
-      values.push(params.picMemberId.trim());
-      idx += 1;
-    }
-
-    if (params.eventType?.trim()) {
-      conditions.push(`pcr.event_type = $${idx}`);
-      values.push(params.eventType.trim().toUpperCase());
-      idx += 1;
-    }
-
-    if (params.startDate?.trim()) {
-      conditions.push(`pcr.paid_at >= $${idx}::timestamptz`);
-      values.push(params.startDate.trim());
-      idx += 1;
-    }
-
-    if (params.endDate?.trim()) {
-      conditions.push(`pcr.paid_at <= $${idx}::timestamptz`);
-      values.push(params.endDate.trim());
-      idx += 1;
-    }
-
-    const where = conditions.length ? `where ${conditions.join(' and ')}` : '';
+  }): Promise<{
+    items: PaidConversionRecord[];
+    total: number;
+    counts: { all: number; lead: number; paid: number };
+  }> {
+    const stageSegment = this.resolveStageSegment(
+      params.stageSegment,
+      params.eventType,
+    );
     const limit = Math.min(Math.max(params.limit ?? 100, 1), 500);
     const offset = Math.max(params.offset ?? 0, 0);
 
+    const filterValues: unknown[] = [];
+    let filterIdx = 1;
+    const filterConditions: string[] = [];
+
+    if (params.search?.trim()) {
+      filterConditions.push(
+        `(lower(coalesce(u.buyer_email, '')) like $${filterIdx}
+          or lower(coalesce(u.buyer_name, '')) like $${filterIdx}
+          or lower(coalesce(u.lifecycle_stage, '')) like $${filterIdx}
+          or lower(coalesce(u.first_campaign_code, '')) like $${filterIdx}
+          or lower(coalesce(u.first_campaign_name, '')) like $${filterIdx}
+          or lower(coalesce(u.products_summary, '')) like $${filterIdx}
+          or lower(coalesce(u.pic_name, '')) like $${filterIdx}
+          or lower(coalesce(u."orderId", '')) like $${filterIdx})`,
+      );
+      filterValues.push(`%${params.search.trim().toLowerCase()}%`);
+      filterIdx += 1;
+    }
+
+    if (params.campaignOnly) {
+      filterConditions.push(
+        `u.first_campaign_code is not null and btrim(u.first_campaign_code) <> ''`,
+      );
+    }
+
+    if (params.campaignSourceCode?.trim()) {
+      filterConditions.push(
+        `lower(u.first_campaign_code) = $${filterIdx}`,
+      );
+      filterValues.push(params.campaignSourceCode.trim().toLowerCase());
+      filterIdx += 1;
+    }
+
+    if (params.picMemberId?.trim()) {
+      filterConditions.push(`u.pic_member_id = $${filterIdx}`);
+      filterValues.push(params.picMemberId.trim());
+      filterIdx += 1;
+    }
+
+    if (params.startDate?.trim()) {
+      filterConditions.push(`u.latest_activity_at >= $${filterIdx}::timestamptz`);
+      filterValues.push(params.startDate.trim());
+      filterIdx += 1;
+    }
+
+    if (params.endDate?.trim()) {
+      filterConditions.push(`u.latest_activity_at <= $${filterIdx}::timestamptz`);
+      filterValues.push(params.endDate.trim());
+      filterIdx += 1;
+    }
+
+    const baseFilterWhere = filterConditions.length
+      ? `where ${filterConditions.join(' and ')}`
+      : '';
+
+    const segmentCondition =
+      stageSegment === 'LEAD'
+        ? `where u.is_lead`
+        : stageSegment === 'PAID'
+          ? `where u.is_paid`
+          : '';
+
+    const unifiedCte = this.unifiedEntitiesCte();
+
+    const countsRes = await this.db.query<{
+      totalAll: string;
+      lead: string;
+      paid: string;
+    }>(
+      `
+      ${unifiedCte}
+      select
+        count(*)::text as "totalAll",
+        count(*) filter (where u.is_lead)::text as lead,
+        count(*) filter (where u.is_paid)::text as paid
+      from unified u
+      ${baseFilterWhere}
+      `,
+      filterValues,
+    );
+
     const countRes = await this.db.query<{ total: string }>(
-      `select count(*)::text as total from paid_conversion_records pcr ${where}`,
-      values,
+      `
+      ${unifiedCte}
+      select count(*)::text as total
+      from unified u
+      ${baseFilterWhere}
+      ${segmentCondition ? (baseFilterWhere ? segmentCondition.replace('where', 'and') : segmentCondition) : ''}
+      `,
+      filterValues,
     );
 
     const listRes = await this.db.query<Record<string, unknown>>(
       `
+      ${unifiedCte}
       select
-        pcr.id::text as id,
-        pcr.event_type as "eventType",
-        pcr.payment_transaction_id::text as "paymentTransactionId",
-        pcr."orderId" as "orderId",
-        pcr.buyer_email as "buyerEmail",
-        pcr.buyer_name as "buyerName",
-        pcr.buyer_member_id::text as "buyerMemberId",
-        pcr.campaign_source_code as "campaignSourceCode",
-        pcr.campaign_name as "campaignName",
-        pcr.acquisition_type as "acquisitionType",
-        pcr.pic_member_id_snapshot::text as "picMemberIdSnapshot",
-        pcr.pic_name_snapshot as "picNameSnapshot",
-        pcr.pic_assignment_id_snapshot::text as "picAssignmentIdSnapshot",
-        pcr.amount::float8 as amount,
-        pcr."totalAmount"::float8 as "totalAmount",
-        pcr.products_summary as "productsSummary",
-        pcr."itemsSnapshot" as "itemsSnapshot",
-        pcr.paid_at::text as "paidAt",
-        pcr."createdAt"::text as "createdAt"
-      from paid_conversion_records pcr
-      ${where}
-      order by pcr.paid_at desc
-      limit $${idx} offset $${idx + 1}
+        u.entity_id as id,
+        u.display_stage as "displayStage",
+        u.lifecycle_stage as "lifecycleStage",
+        u.has_paid_event as "hasPaidEvent",
+        u.has_signed_in_event as "hasSignedInEvent",
+        u.member_public_id as "memberPublicId",
+        u.payment_transaction_id as "paymentTransactionId",
+        u."orderId" as "orderId",
+        u.buyer_email as "buyerEmail",
+        u.buyer_name as "buyerName",
+        u.member_uuid::text as "buyerMemberId",
+        u.first_campaign_code as "campaignSourceCode",
+        u.first_campaign_name as "campaignName",
+        u.acquisition_type as "acquisitionType",
+        u.pic_member_id as "picMemberIdSnapshot",
+        u.pic_name as "picNameSnapshot",
+        u.pic_assignment_id as "picAssignmentIdSnapshot",
+        u.amount::float8 as amount,
+        u."totalAmount"::float8 as "totalAmount",
+        u.products_summary as "productsSummary",
+        u."itemsSnapshot" as "itemsSnapshot",
+        u.latest_activity_at::text as "paidAt",
+        u.latest_activity_at::text as "createdAt"
+      from unified u
+      ${baseFilterWhere}
+      ${segmentCondition ? (baseFilterWhere ? segmentCondition.replace('where', 'and') : segmentCondition) : ''}
+      order by u.latest_activity_at desc nulls last, u.buyer_name asc nulls last
+      limit $${filterIdx} offset $${filterIdx + 1}
       `,
-      [...values, limit, offset],
+      [...filterValues, limit, offset],
     );
 
+    const countsRow = countsRes.rows[0];
     return {
-      items: listRes.rows.map((row) => this.mapRow(row)),
+      items: listRes.rows.map((row) => this.mapUnifiedRow(row)),
       total: Number(countRes.rows[0]?.total ?? 0),
+      counts: {
+        all: Number(countsRow?.totalAll ?? 0),
+        lead: Number(countsRow?.lead ?? 0),
+        paid: Number(countsRow?.paid ?? 0),
+      },
+    };
+  }
+
+  private resolveStageSegment(
+    stageSegment?: string,
+    eventType?: string,
+  ): StageSegment {
+    const raw = String(stageSegment ?? eventType ?? '')
+      .trim()
+      .toUpperCase();
+    if (raw === 'LEAD' || raw === 'SIGNED_IN') return 'LEAD';
+    if (raw === 'PAID') return 'PAID';
+    return 'ALL';
+  }
+
+  private unifiedEntitiesCte(): string {
+    return `
+      with pcr_email_agg as (
+        select
+          lower(trim(pcr.buyer_email)) as email_key,
+          bool_or(pcr.event_type = 'PAID') as has_paid_event,
+          bool_or(pcr.event_type = 'SIGNED_IN') as has_signed_in_event,
+          (
+            array_agg(pcr.campaign_source_code order by pcr.paid_at asc)
+            filter (where pcr.campaign_source_code is not null and btrim(pcr.campaign_source_code) <> '')
+          )[1] as first_campaign_code,
+          (
+            array_agg(pcr.campaign_name order by pcr.paid_at asc)
+            filter (where pcr.campaign_name is not null and btrim(pcr.campaign_name) <> '')
+          )[1] as first_campaign_name,
+          max(pcr.paid_at) as latest_activity_at,
+          min(pcr.paid_at) as first_activity_at
+        from paid_conversion_records pcr
+        group by lower(trim(pcr.buyer_email))
+      ),
+      latest_paid as (
+        select distinct on (lower(trim(pcr.buyer_email)))
+          pcr.id::text as pcr_id,
+          lower(trim(pcr.buyer_email)) as email_key,
+          pcr.payment_transaction_id::text as payment_transaction_id,
+          pcr."orderId" as "orderId",
+          pcr.acquisition_type as acquisition_type,
+          pcr.pic_assignment_id_snapshot::text as pic_assignment_id,
+          pcr.pic_member_id_snapshot,
+          pcr.amount::float8 as amount,
+          pcr."totalAmount"::float8 as "totalAmount",
+          pcr.products_summary as products_summary,
+          pcr."itemsSnapshot" as "itemsSnapshot",
+          pcr.paid_at as paid_at
+        from paid_conversion_records pcr
+        where pcr.event_type = 'PAID'
+        order by lower(trim(pcr.buyer_email)), pcr.paid_at desc
+      ),
+      any_pcr as (
+        select distinct on (lower(trim(pcr.buyer_email)))
+          lower(trim(pcr.buyer_email)) as email_key,
+          pcr.buyer_name as buyer_name
+        from paid_conversion_records pcr
+        order by lower(trim(pcr.buyer_email)), pcr.paid_at desc
+      ),
+      entity_keys as (
+        select lower(trim(m.email)) as email_key
+        from members m
+        where upper(coalesce(m."lifecycleStage", 'GUEST')) in ${PIPELINE_LIFECYCLE_SQL}
+        union
+        select p.email_key from pcr_email_agg p
+      ),
+      unified as (
+        select
+          coalesce(m.id::text, 'email:' || ek.email_key) as entity_id,
+          m.id as member_uuid,
+          coalesce(nullif(trim(m.public_id), ''), m.id::text) as member_public_id,
+          ek.email_key,
+          coalesce(nullif(trim(m.email), ''), ek.email_key) as buyer_email,
+          ${RESOLVED_BUYER_NAME_UNIFIED_SQL} as buyer_name,
+          upper(coalesce(m."lifecycleStage", case when coalesce(p.has_paid_event, false) then 'MEMBER' else 'IDENTIFIED' end)) as lifecycle_stage,
+          coalesce(p.has_paid_event, false) as has_paid_event,
+          coalesce(p.has_signed_in_event, false) as has_signed_in_event,
+          p.first_campaign_code,
+          p.first_campaign_name,
+          lp.payment_transaction_id,
+          lp."orderId",
+          coalesce(
+            lp.acquisition_type,
+            case
+              when p.first_campaign_code is not null and btrim(p.first_campaign_code) <> ''
+              then 'CAMPAIGN'
+              else 'DIRECT'
+            end
+          ) as acquisition_type,
+          lp.pic_assignment_id,
+          coalesce(lp.amount, 0) as amount,
+          coalesce(lp."totalAmount", 0) as "totalAmount",
+          lp.products_summary,
+          lp."itemsSnapshot",
+          coalesce(
+            nullif(trim(m.facilitator_name), ''),
+            nullif(trim(facilitator.name), '')
+          ) as pic_name,
+          coalesce(
+            facilitator.id::text,
+            lp.pic_member_id_snapshot::text
+          ) as pic_member_id,
+          coalesce(p.latest_activity_at, m."createdAt", lp.paid_at) as latest_activity_at,
+          case
+            when coalesce(p.has_paid_event, false)
+              or upper(coalesce(m."lifecycleStage", 'GUEST')) in ${PAID_LIFECYCLE_SQL}
+            then 'PAID'
+            else 'LEAD'
+          end as display_stage,
+          upper(coalesce(m."lifecycleStage", 'GUEST')) in ${PIPELINE_LIFECYCLE_SQL}
+            and not coalesce(p.has_paid_event, false)
+            and upper(coalesce(m."lifecycleStage", 'GUEST')) not in ${PAID_LIFECYCLE_SQL} as is_lead,
+          coalesce(p.has_paid_event, false)
+            or upper(coalesce(m."lifecycleStage", 'GUEST')) in ${PAID_LIFECYCLE_SQL} as is_paid
+        from entity_keys ek
+        left join members m on lower(trim(m.email)) = ek.email_key
+        left join pcr_email_agg p on p.email_key = ek.email_key
+        left join latest_paid lp on lp.email_key = ek.email_key
+        left join any_pcr ap on ap.email_key = ek.email_key
+        left join members facilitator on (
+          m.id is not null
+          and btrim(coalesce(m."nTagStatus", '')) <> ''
+          and (
+            facilitator.id::text = m."nTagStatus"
+            or facilitator.public_id = m."nTagStatus"
+            or facilitator.user_id = m."nTagStatus"
+          )
+        )
+        left join "User" wu_id on (
+          m.id is not null
+          and btrim(coalesce(m.user_id, '')) <> ''
+          and wu_id.id = m.user_id
+        )
+        left join "User" wu_email on lower(trim(wu_email.email)) = ek.email_key
+      )
+    `;
+  }
+
+  private mapUnifiedRow(row: Record<string, unknown>): PaidConversionRecord {
+    const displayStage = String(row.displayStage ?? 'LEAD') as 'LEAD' | 'PAID';
+    return {
+      id: String(row.id ?? ''),
+      eventType: displayStage,
+      displayStage,
+      lifecycleStage: (row.lifecycleStage as string | null) ?? null,
+      hasPaidEvent: Boolean(row.hasPaidEvent),
+      hasSignedInEvent: Boolean(row.hasSignedInEvent),
+      memberPublicId: (row.memberPublicId as string | null) ?? null,
+      paymentTransactionId: (row.paymentTransactionId as string | null) ?? null,
+      orderId: (row.orderId as string | null) ?? null,
+      buyerEmail: String(row.buyerEmail ?? ''),
+      buyerName: (row.buyerName as string | null) ?? null,
+      buyerMemberId: (row.buyerMemberId as string | null) ?? null,
+      campaignSourceCode: (row.campaignSourceCode as string | null) ?? null,
+      campaignName: (row.campaignName as string | null) ?? null,
+      acquisitionType: String(row.acquisitionType ?? 'DIRECT'),
+      picMemberIdSnapshot: (row.picMemberIdSnapshot as string | null) ?? null,
+      picNameSnapshot: (row.picNameSnapshot as string | null) ?? null,
+      picAssignmentIdSnapshot:
+        (row.picAssignmentIdSnapshot as string | null) ?? null,
+      amount: Number(row.amount) || 0,
+      totalAmount: Number(row.totalAmount) || 0,
+      productsSummary: (row.productsSummary as string | null) ?? null,
+      itemsSnapshot: (row.itemsSnapshot as unknown[] | null) ?? null,
+      paidAt: String(row.paidAt ?? ''),
+      createdAt: String(row.createdAt ?? ''),
     };
   }
 
@@ -158,7 +487,7 @@ export class PaidConversionsService {
    * Idempotent: one row per PAID payment. Resolves campaign + active PIC at payment time.
    */
   async recordForPayment(paymentId: string): Promise<PaidConversionRecord | null> {
-    const paymentRes = await this.db.query<PaymentRow>(
+    const paymentRes = await this.db.query<PaymentRow & { buyerUserId: string | null }>(
       `
       select
         id::text as id,
@@ -169,7 +498,8 @@ export class PaidConversionsService {
         "totalAmount"::float8 as "totalAmount",
         "itemsSnapshot" as "itemsSnapshot",
         status,
-        "createdAt"::text as "createdAt"
+        "createdAt"::text as "createdAt",
+        nullif(trim("buyerUserId"), '') as "buyerUserId"
       from payment_transactions
       where id = $1::uuid
       limit 1
@@ -198,9 +528,13 @@ export class PaidConversionsService {
       [payment.customerEmail],
     );
     const buyer = buyerMember.rows[0];
+    const buyerName = await this.members.resolveBuyerDisplayNameForEmail(
+      payment.customerEmail,
+      payment.buyerUserId,
+    );
 
     const paidAt = payment.createdAt;
-    const pic = await this.resolveActivePicAssignment({
+    const pic = await this.resolvePicForBuyer({
       buyerMemberId: buyer?.id ?? null,
       buyerEmail: payment.customerEmail,
       at: paidAt,
@@ -243,7 +577,7 @@ export class PaidConversionsService {
         paymentId,
         payment.orderId,
         payment.customerEmail,
-        buyer?.name ?? null,
+        buyerName,
         buyer?.id ?? null,
         campaignSource,
         campaignName,
@@ -314,7 +648,7 @@ export class PaidConversionsService {
       String(input.name ?? '').trim() || buyer?.name || buyerEmail.split('@')[0];
     const occurredAt = new Date().toISOString();
 
-    const pic = await this.resolveActivePicAssignment({
+    const pic = await this.resolvePicForBuyer({
       buyerMemberId: buyer?.id ?? null,
       buyerEmail,
       at: occurredAt,
@@ -469,13 +803,13 @@ export class PaidConversionsService {
         pcr.payment_transaction_id::text as "paymentTransactionId",
         pcr."orderId" as "orderId",
         pcr.buyer_email as "buyerEmail",
-        pcr.buyer_name as "buyerName",
+        ${RESOLVED_BUYER_NAME_PCR_SQL} as "buyerName",
         pcr.buyer_member_id::text as "buyerMemberId",
         pcr.campaign_source_code as "campaignSourceCode",
         pcr.campaign_name as "campaignName",
         pcr.acquisition_type as "acquisitionType",
-        pcr.pic_member_id_snapshot::text as "picMemberIdSnapshot",
-        pcr.pic_name_snapshot as "picNameSnapshot",
+        ${RESOLVED_PIC_MEMBER_ID_SQL} as "picMemberIdSnapshot",
+        ${RESOLVED_PIC_NAME_SQL} as "picNameSnapshot",
         pcr.pic_assignment_id_snapshot::text as "picAssignmentIdSnapshot",
         pcr.amount::float8 as amount,
         pcr."totalAmount"::float8 as "totalAmount",
@@ -484,6 +818,15 @@ export class PaidConversionsService {
         pcr.paid_at::text as "paidAt",
         pcr."createdAt"::text as "createdAt"
       from paid_conversion_records pcr
+      ${MEMBER_FACILITATOR_JOINS}
+      left join "User" wu on (
+        (
+          buyer.id is not null
+          and btrim(coalesce(buyer.user_id, '')) <> ''
+          and wu.id = buyer.user_id
+        )
+        or lower(trim(wu.email)) = lower(trim(pcr.buyer_email))
+      )
       where pcr.id = $1::uuid
       limit 1
       `,
@@ -491,6 +834,63 @@ export class PaidConversionsService {
     );
     const row = res.rows[0];
     return row ? this.mapRow(row) : null;
+  }
+
+  /**
+   * PIC priority: explicit pic_assignments, then CRM facilitator on members (SO truth).
+   */
+  private async resolvePicForBuyer(input: {
+    buyerMemberId: string | null;
+    buyerEmail: string;
+    at: string;
+  }): Promise<ActivePicAssignment | null> {
+    const fromAssignment = await this.resolveActivePicAssignment(input);
+    if (fromAssignment) {
+      return fromAssignment;
+    }
+    return this.resolvePicFromMemberFacilitator(input);
+  }
+
+  private async resolvePicFromMemberFacilitator(input: {
+    buyerMemberId: string | null;
+    buyerEmail: string;
+  }): Promise<ActivePicAssignment | null> {
+    const res = await this.db.query<ActivePicAssignment>(
+      `
+      select
+        null::text as id,
+        facilitator.id::text as "picMemberId",
+        nullif(trim(buyer.facilitator_name), '') as "picName",
+        coalesce(
+          nullif(trim(buyer.facilitator_name), ''),
+          nullif(trim(facilitator.name), '')
+        ) as "resolvedPicName"
+      from members buyer
+      left join members facilitator on (
+        btrim(coalesce(buyer."nTagStatus", '')) <> ''
+        and (
+          facilitator.id::text = buyer."nTagStatus"
+          or facilitator.public_id = buyer."nTagStatus"
+          or facilitator.user_id = buyer."nTagStatus"
+        )
+      )
+      where (
+          ($1::uuid is not null and buyer.id = $1::uuid)
+          or lower(trim(buyer.email)) = lower(trim($2))
+        )
+        and (
+          nullif(trim(buyer.facilitator_name), '') is not null
+          or facilitator.id is not null
+        )
+      limit 1
+      `,
+      [input.buyerMemberId, input.buyerEmail],
+    );
+    const row = res.rows[0];
+    if (!row?.resolvedPicName?.trim()) {
+      return null;
+    }
+    return row;
   }
 
   private async resolveActivePicAssignment(input: {
@@ -568,9 +968,17 @@ export class PaidConversionsService {
   }
 
   private mapRow(row: Record<string, unknown>): PaidConversionRecord {
+    const eventType = String(row.eventType ?? 'PAID');
+    const displayStage: 'LEAD' | 'PAID' =
+      eventType === 'PAID' ? 'PAID' : 'LEAD';
     return {
       id: String(row.id ?? ''),
-      eventType: String(row.eventType ?? 'PAID'),
+      eventType,
+      displayStage,
+      lifecycleStage: null,
+      hasPaidEvent: eventType === 'PAID',
+      hasSignedInEvent: eventType === 'SIGNED_IN',
+      memberPublicId: null,
       paymentTransactionId: (row.paymentTransactionId as string | null) ?? null,
       orderId: (row.orderId as string | null) ?? null,
       buyerEmail: String(row.buyerEmail ?? ''),

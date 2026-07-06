@@ -23,8 +23,10 @@ export class PaidConversionsController {
     @Req() req: { user: JwtUserPayload },
     @Query('search') search?: string,
     @Query('campaignSourceCode') campaignSourceCode?: string,
+    @Query('campaignOnly') campaignOnly?: string,
     @Query('picMemberId') picMemberId?: string,
     @Query('eventType') eventType?: string,
+    @Query('stageSegment') stageSegment?: string,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('limit') limit?: string,
@@ -35,11 +37,17 @@ export class PaidConversionsController {
       [USER_ROLE.SUPER_ADMIN, USER_ROLE.SALES, USER_ROLE.MARKETING],
       'Paid conversions list',
     );
+    const campaignOnlyFlag =
+      campaignOnly === '1' ||
+      campaignOnly === 'true' ||
+      campaignOnly === 'yes';
     return this.paidConversions.list({
       search,
       campaignSourceCode,
+      campaignOnly: campaignOnlyFlag,
       picMemberId,
       eventType,
+      stageSegment,
       startDate,
       endDate,
       limit: limit ? Number(limit) : undefined,

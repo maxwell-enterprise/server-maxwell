@@ -106,6 +106,27 @@ export const PublicScoutLeadDtoSchema = z.object({
 });
 export type PublicScoutLeadDto = z.infer<typeof PublicScoutLeadDtoSchema>;
 
+export const MemberJourneyEventCategoryEnum = z.enum([
+  'ACQUISITION',
+  'ENGAGEMENT',
+  'COMMERCE',
+  'MARKETING',
+  'SYSTEM',
+  'MENTORING',
+]);
+
+export const MemberJourneyEventSchema = z.object({
+  id: z.string(),
+  date: z.string(),
+  userId: z.string(),
+  category: MemberJourneyEventCategoryEnum,
+  title: z.string(),
+  description: z.string(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+export type MemberJourneyEvent = z.infer<typeof MemberJourneyEventSchema>;
+
 export const UpdateMemberDtoSchema = z.object(updateMemberShape);
 export type UpdateMemberDto = z.infer<typeof UpdateMemberDtoSchema>;
 
