@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DbService } from '../../common/db.service';
+import { MembersService } from '../members/members.service';
 
 export type PaidConversionRecord = {
   id: string;
@@ -88,13 +89,69 @@ const PIPELINE_LIFECYCLE_SQL = `('GUEST', 'IDENTIFIED', 'PARTICIPANT')`;
 
 const PAID_LIFECYCLE_SQL = `('MEMBER', 'CERTIFIED', 'FACILITATOR')`;
 
+/** Live display name: CRM (synced from biodata) → workspace User → snapshot → email. */
+const MEANINGFUL_NAME_PREDICATE = (
+  nameExpr: string,
+  emailExpr: string,
+): string => `
+  (
+    nullif(trim(${nameExpr}), '') is not null
+    and length(trim(${nameExpr})) >= 2
+    and lower(trim(${nameExpr})) <> lower(trim(${emailExpr}))
+    and lower(trim(${nameExpr})) <> lower(split_part(trim(${emailExpr}), '@', 1))
+  )
+`;
+
+const RESOLVED_BUYER_NAME_UNIFIED_SQL = `
+  coalesce(
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('m.name', 'coalesce(m.email, ek.email_key)')}
+      then trim(m.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('wu_id.name', 'ek.email_key')}
+      then trim(wu_id.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('wu_email.name', 'ek.email_key')}
+      then trim(wu_email.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('ap.buyer_name', 'ek.email_key')}
+      then trim(ap.buyer_name)
+    end,
+    nullif(trim(ek.email_key), '')
+  )
+`;
+
+const RESOLVED_BUYER_NAME_PCR_SQL = `
+  coalesce(
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('buyer.name', 'pcr.buyer_email')}
+      then trim(buyer.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('wu.name', 'pcr.buyer_email')}
+      then trim(wu.name)
+    end,
+    case
+      when ${MEANINGFUL_NAME_PREDICATE('pcr.buyer_name', 'pcr.buyer_email')}
+      then trim(pcr.buyer_name)
+    end,
+    nullif(trim(pcr.buyer_email), '')
+  )
+`;
+
 type StageSegment = 'ALL' | 'LEAD' | 'PAID';
 
 @Injectable()
 export class PaidConversionsService {
   private readonly logger = new Logger(PaidConversionsService.name);
 
-  constructor(private readonly db: DbService) {}
+  constructor(
+    private readonly db: DbService,
+    private readonly members: MembersService,
+  ) {}
 
   async list(params: {
     search?: string;
@@ -330,7 +387,7 @@ export class PaidConversionsService {
           coalesce(nullif(trim(m.public_id), ''), m.id::text) as member_public_id,
           ek.email_key,
           coalesce(nullif(trim(m.email), ''), ek.email_key) as buyer_email,
-          coalesce(nullif(trim(m.name), ''), nullif(trim(ap.buyer_name), '')) as buyer_name,
+          ${RESOLVED_BUYER_NAME_UNIFIED_SQL} as buyer_name,
           upper(coalesce(m."lifecycleStage", case when coalesce(p.has_paid_event, false) then 'MEMBER' else 'IDENTIFIED' end)) as lifecycle_stage,
           coalesce(p.has_paid_event, false) as has_paid_event,
           coalesce(p.has_signed_in_event, false) as has_signed_in_event,
@@ -385,6 +442,12 @@ export class PaidConversionsService {
             or facilitator.user_id = m."nTagStatus"
           )
         )
+        left join "User" wu_id on (
+          m.id is not null
+          and btrim(coalesce(m.user_id, '')) <> ''
+          and wu_id.id = m.user_id
+        )
+        left join "User" wu_email on lower(trim(wu_email.email)) = ek.email_key
       )
     `;
   }
@@ -424,7 +487,7 @@ export class PaidConversionsService {
    * Idempotent: one row per PAID payment. Resolves campaign + active PIC at payment time.
    */
   async recordForPayment(paymentId: string): Promise<PaidConversionRecord | null> {
-    const paymentRes = await this.db.query<PaymentRow>(
+    const paymentRes = await this.db.query<PaymentRow & { buyerUserId: string | null }>(
       `
       select
         id::text as id,
@@ -435,7 +498,8 @@ export class PaidConversionsService {
         "totalAmount"::float8 as "totalAmount",
         "itemsSnapshot" as "itemsSnapshot",
         status,
-        "createdAt"::text as "createdAt"
+        "createdAt"::text as "createdAt",
+        nullif(trim("buyerUserId"), '') as "buyerUserId"
       from payment_transactions
       where id = $1::uuid
       limit 1
@@ -464,6 +528,10 @@ export class PaidConversionsService {
       [payment.customerEmail],
     );
     const buyer = buyerMember.rows[0];
+    const buyerName = await this.members.resolveBuyerDisplayNameForEmail(
+      payment.customerEmail,
+      payment.buyerUserId,
+    );
 
     const paidAt = payment.createdAt;
     const pic = await this.resolvePicForBuyer({
@@ -509,7 +577,7 @@ export class PaidConversionsService {
         paymentId,
         payment.orderId,
         payment.customerEmail,
-        buyer?.name ?? null,
+        buyerName,
         buyer?.id ?? null,
         campaignSource,
         campaignName,
@@ -735,7 +803,7 @@ export class PaidConversionsService {
         pcr.payment_transaction_id::text as "paymentTransactionId",
         pcr."orderId" as "orderId",
         pcr.buyer_email as "buyerEmail",
-        pcr.buyer_name as "buyerName",
+        ${RESOLVED_BUYER_NAME_PCR_SQL} as "buyerName",
         pcr.buyer_member_id::text as "buyerMemberId",
         pcr.campaign_source_code as "campaignSourceCode",
         pcr.campaign_name as "campaignName",
@@ -751,6 +819,14 @@ export class PaidConversionsService {
         pcr."createdAt"::text as "createdAt"
       from paid_conversion_records pcr
       ${MEMBER_FACILITATOR_JOINS}
+      left join "User" wu on (
+        (
+          buyer.id is not null
+          and btrim(coalesce(buyer.user_id, '')) <> ''
+          and wu.id = buyer.user_id
+        )
+        or lower(trim(wu.email)) = lower(trim(pcr.buyer_email))
+      )
       where pcr.id = $1::uuid
       limit 1
       `,

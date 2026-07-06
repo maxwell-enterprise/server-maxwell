@@ -525,9 +525,13 @@ export class TransactionsService {
     const email = customerEmail?.trim().toLowerCase() || '';
     const userId = buyerUserId?.trim() || '';
     if (email) {
+      const displayName = await this.members.resolveBuyerDisplayNameForEmail(
+        email,
+        userId || null,
+      );
       await this.members.ensureCrmMemberForPurchaseEmail(
         email,
-        null,
+        displayName,
         userId || null,
       );
     }

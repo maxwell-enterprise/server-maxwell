@@ -776,9 +776,22 @@ export class MembersService {
     if (!email?.includes('@')) return null;
 
     const linkedUserId = workspaceUserId?.trim() || '';
+    const workspaceName = await this.lookupWorkspaceUserDisplayName(
+      email,
+      linkedUserId || null,
+    );
+    const resolvedName = (
+      displayName?.trim() ||
+      workspaceName ||
+      email
+    ).slice(0, 255);
+
     if (linkedUserId) {
       const byUser = await this.findMemberIdByUserId(linkedUserId);
-      if (byUser) return byUser;
+      if (byUser) {
+        await this.maybeUpgradePlaceholderMemberName(byUser, resolvedName, email);
+        return byUser;
+      }
     }
 
     const existing = await this.findMemberIdByEmail(email);
@@ -786,13 +799,14 @@ export class MembersService {
       if (linkedUserId) {
         await this.linkMemberToWorkspaceUser(existing, linkedUserId);
       }
+      await this.maybeUpgradePlaceholderMemberName(existing, resolvedName, email);
       return existing;
     }
     try {
       const name = (
-        displayName?.trim() ||
-        email.split('@')[0] ||
-        'Customer'
+        this.isMeaningfulDisplayName(resolvedName, email)
+          ? resolvedName
+          : email
       ).slice(0, 255);
       const dto = CreateMemberDtoSchema.parse({
         name,
@@ -817,6 +831,13 @@ export class MembersService {
         if (memberId && linkedUserId) {
           await this.linkMemberToWorkspaceUser(memberId, linkedUserId);
         }
+        if (memberId) {
+          await this.maybeUpgradePlaceholderMemberName(
+            memberId,
+            resolvedName,
+            email,
+          );
+        }
         return memberId;
       }
       this.logger.warn(
@@ -825,6 +846,113 @@ export class MembersService {
         }`,
       );
       return null;
+    }
+  }
+
+  /**
+   * Display label for paid conversions / checkout: live biodata first, else email.
+   * `members.name` is kept in sync via {@link syncFromWorkspaceUserProfile}.
+   */
+  async resolveBuyerDisplayNameForEmail(
+    rawEmail: string,
+    workspaceUserId?: string | null,
+  ): Promise<string> {
+    const email = rawEmail?.trim().toLowerCase();
+    if (!email?.includes('@')) {
+      return rawEmail?.trim() || 'Unknown';
+    }
+
+    const memberRes = await this.db.query<{ id: string; name: string | null }>(
+      `
+      select id::text as id, name
+      from members
+      where lower(trim(email)) = $1
+      limit 1
+      `,
+      [email],
+    );
+    const member = memberRes.rows[0];
+    if (member?.name && this.isMeaningfulDisplayName(member.name, email)) {
+      return member.name.trim().slice(0, 255);
+    }
+
+    const workspaceName = await this.lookupWorkspaceUserDisplayName(
+      email,
+      workspaceUserId?.trim() || null,
+    );
+    if (workspaceName && this.isMeaningfulDisplayName(workspaceName, email)) {
+      return workspaceName;
+    }
+
+    if (member?.name?.trim()) {
+      return member.name.trim().slice(0, 255);
+    }
+    if (workspaceName) {
+      return workspaceName;
+    }
+
+    return email;
+  }
+
+  /** True when `name` is more than an email echo (local part / full address). */
+  isMeaningfulDisplayName(name: string, email: string): boolean {
+    const normalizedName = String(name ?? '').trim().toLowerCase();
+    const normalizedEmail = String(email ?? '').trim().toLowerCase();
+    if (!normalizedName || normalizedName.length < 2) {
+      return false;
+    }
+    if (normalizedName === normalizedEmail) {
+      return false;
+    }
+    const localPart = normalizedEmail.split('@')[0] || '';
+    if (localPart && normalizedName === localPart) {
+      return false;
+    }
+    return true;
+  }
+
+  private async lookupWorkspaceUserDisplayName(
+    email: string,
+    workspaceUserId?: string | null,
+  ): Promise<string | null> {
+    const userId = workspaceUserId?.trim() || '';
+    if (userId) {
+      const byId = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+      const name = byId?.name?.trim();
+      if (name) return name.slice(0, 255);
+    }
+
+    const byEmail = await this.prisma.user.findUnique({
+      where: { email },
+      select: { name: true },
+    });
+    const name = byEmail?.name?.trim();
+    return name ? name.slice(0, 255) : null;
+  }
+
+  private async maybeUpgradePlaceholderMemberName(
+    memberId: string,
+    candidateName: string,
+    email: string,
+  ): Promise<void> {
+    if (!this.isMeaningfulDisplayName(candidateName, email)) {
+      return;
+    }
+    try {
+      const row = await this.findRowByIdentifier(memberId);
+      if (this.isMeaningfulDisplayName(row.name, email)) {
+        return;
+      }
+      await this.update(memberId, { name: candidateName.trim().slice(0, 255) });
+    } catch (err) {
+      this.logger.warn(
+        `maybeUpgradePlaceholderMemberName(${memberId}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
     }
   }
 
