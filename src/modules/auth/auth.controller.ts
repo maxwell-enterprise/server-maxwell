@@ -115,7 +115,24 @@ export class AuthController {
     if (result.bypass && result.token) {
       return { ok: true, bypass: true, token: result.token };
     }
-    return { ok: true, bypass: false };
+    return {
+      ok: true,
+      bypass: false,
+      channel: result.channel ?? 'magic_link',
+    };
+  }
+
+  /** Mobile app: verify Nest-issued email OTP (does not use Supabase Auth). */
+  @Post('email/verify-otp')
+  @RateLimit({ limit: 12, windowMs: 60_000, keyBy: 'email' })
+  async verifyEmailOtp(@Body() body: { email?: string; otp?: string }) {
+    const email = typeof body.email === 'string' ? body.email.trim() : '';
+    const otp = typeof body.otp === 'string' ? body.otp.trim() : '';
+    if (!email || !otp) {
+      throw new BadRequestException('email and otp required');
+    }
+    const token = await this.auth.verifyMobileEmailOtp(email, otp);
+    return { ok: true, token };
   }
 
   @Post('supabase/exchange')

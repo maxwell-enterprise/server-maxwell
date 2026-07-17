@@ -4,7 +4,9 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
+import { createHash, randomInt } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
+import nodemailer from 'nodemailer';
 import { PrismaService } from '../../prisma/prisma.service';
 import { appendInvitationEmailLog } from '../../common/logging/invitation-email-log';
 import { WorkspaceIdentityService } from '../workspace-identity/workspace-identity.service';
@@ -131,12 +133,16 @@ export interface JwtUserPayload {
 export interface MagicLinkDispatchResult {
   bypass: boolean;
   token?: string;
+  /** Mobile uses Nest-issued email OTP (not Supabase magic link). */
+  channel?: 'otp' | 'magic_link';
 }
 
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private supabaseAdminClient: SupabaseClient | null = null;
+  /** Failed mobile OTP verify attempts per email (in-process). */
+  private readonly mobileOtpFailures = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -880,6 +886,12 @@ export class AuthService {
       };
     }
 
+    // Mobile: Nest-owned email OTP. Does not touch Supabase Auth / templates.
+    // Web continues with Supabase magic link below.
+    if (client === 'mobile') {
+      return this.sendMobileEmailOtp(email);
+    }
+
     if (!this.isSupabaseAuthEnabled()) {
       throw new UnauthorizedException(
         'Supabase Auth is not configured for magic link login',
@@ -889,7 +901,7 @@ export class AuthService {
     const supabase = this.getSupabaseAdminClient();
     const callbackUrl = this.buildSupabaseFrontendCallbackUrl(
       rawReturnSearch,
-      client === 'mobile' ? 'mobile' : undefined,
+      undefined,
     );
     try {
       const runOtp = () =>
@@ -913,7 +925,7 @@ export class AuthService {
             'Magic link provider rejected the request. Check Supabase Auth email provider settings and redirect URL allow-list.',
         );
       }
-      return { bypass: false };
+      return { bypass: false, channel: 'magic_link' };
     } catch (err) {
       if (err instanceof UnauthorizedException) {
         throw err;
@@ -1226,6 +1238,138 @@ export class AuthService {
         `Supabase gift magic link unexpected error for ${email}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  private mobileOtpIdentifier(email: string): string {
+    return `mobile-otp:${email}`;
+  }
+
+  private hashMobileOtp(email: string, otp: string): string {
+    return createHash('sha256')
+      .update(`${email}:${otp}`)
+      .digest('hex');
+  }
+
+  private async dispatchMobileOtpEmail(
+    email: string,
+    otp: string,
+  ): Promise<void> {
+    const host = process.env.SMTP_HOST?.trim();
+    const portRaw = Number(process.env.SMTP_PORT ?? 587);
+    const port = Number.isFinite(portRaw) && portRaw > 0 ? portRaw : 587;
+    const user = process.env.SMTP_USER?.trim();
+    const pass = process.env.SMTP_PASS?.trim();
+    const from = process.env.EMAIL_FROM?.trim() ?? user ?? '';
+    const html = `
+      <div style="font-family: system-ui, sans-serif; line-height: 1.5; color: #0f172a;">
+        <p>Your Maxwell login code is:</p>
+        <p style="font-size: 28px; font-weight: 800; letter-spacing: 6px;">${otp}</p>
+        <p>This code expires in 10 minutes. If you did not request it, you can ignore this email.</p>
+      </div>
+    `;
+
+    if (!host || !user || !pass || !from) {
+      // Dev/QA fallback: do not call Supabase; surface code in server logs only.
+      this.logger.warn(
+        `Mobile OTP for ${email} (SMTP not configured): ${otp}`,
+      );
+      if (process.env.NODE_ENV === 'production') {
+        throw new ServiceUnavailableException(
+          'Email OTP is not configured (SMTP_HOST/SMTP_USER/SMTP_PASS/EMAIL_FROM).',
+        );
+      }
+      return;
+    }
+
+    const secure = String(process.env.SMTP_SECURE ?? '').toLowerCase() === 'true';
+    const transporter = nodemailer.createTransport({
+      host,
+      port,
+      secure,
+      auth: { user, pass },
+    });
+    try {
+      await transporter.sendMail({
+        from,
+        to: email,
+        subject: 'Your Maxwell login code',
+        html,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Mobile OTP email failed for ${email}: ${message}`);
+      throw new ServiceUnavailableException(
+        `Could not send login code email: ${message}`,
+      );
+    }
+  }
+
+  /**
+   * Mobile app email login: 6-digit OTP via Nest SMTP.
+   * Does not use Supabase Auth email templates or magic links.
+   */
+  private async sendMobileEmailOtp(
+    email: string,
+  ): Promise<MagicLinkDispatchResult> {
+    const otp = String(randomInt(100000, 1000000));
+    const identifier = this.mobileOtpIdentifier(email);
+    const tokenHash = this.hashMobileOtp(email, otp);
+    const expires = new Date(Date.now() + 10 * 60 * 1000);
+
+    await this.prisma.verificationToken.deleteMany({ where: { identifier } });
+    await this.prisma.verificationToken.create({
+      data: {
+        identifier,
+        token: tokenHash,
+        expires,
+      },
+    });
+    this.mobileOtpFailures.delete(email);
+
+    await this.dispatchMobileOtpEmail(email, otp);
+    return { bypass: false, channel: 'otp' };
+  }
+
+  async verifyMobileEmailOtp(rawEmail: string, rawOtp: string): Promise<string> {
+    const email = rawEmail.trim().toLowerCase();
+    const otp = String(rawOtp ?? '').trim();
+    if (!email.includes('@')) {
+      throw new UnauthorizedException('Invalid email');
+    }
+    if (!/^\d{6}$/.test(otp)) {
+      throw new UnauthorizedException('Enter the 6-digit code from your email');
+    }
+
+    const failures = this.mobileOtpFailures.get(email) ?? 0;
+    if (failures >= 5) {
+      throw new UnauthorizedException(
+        'Too many invalid attempts. Request a new code.',
+      );
+    }
+
+    const identifier = this.mobileOtpIdentifier(email);
+    const tokenHash = this.hashMobileOtp(email, otp);
+    const row = await this.prisma.verificationToken.findFirst({
+      where: { identifier, token: tokenHash },
+    });
+    if (!row || row.expires < new Date()) {
+      this.mobileOtpFailures.set(email, failures + 1);
+      throw new UnauthorizedException('Invalid or expired code');
+    }
+
+    await this.prisma.verificationToken.deleteMany({ where: { identifier } });
+    this.mobileOtpFailures.delete(email);
+
+    const user = await this.upsertVerifiedEmailUser(email);
+    await this.runPostOAuthSideEffects(
+      user.id,
+      email,
+      user.name ?? email.split('@')[0],
+    );
+    const fresh = await this.prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+    });
+    return this.signAccessToken(fresh.id, fresh.email!, fresh.appRole);
   }
 
   async verifyEmailToken(email: string, token: string): Promise<string> {
