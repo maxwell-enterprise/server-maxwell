@@ -266,9 +266,18 @@ export class AuthService {
     return email.trim().toLowerCase() === configured;
   }
 
-  private buildSupabaseFrontendCallbackUrl(rawReturnSearch?: string): string {
+  private buildSupabaseFrontendCallbackUrl(
+    rawReturnSearch?: string,
+    client?: string,
+  ): string {
     const base = this.getFrontendBaseUrl().replace(/\/+$/, '');
     const params = new URLSearchParams({ provider: 'supabase' });
+    // Mobile app requests magic link with client=mobile. Callback stays on the
+    // same https web URL (Supabase allow-list), then the web page handoffs to
+    // the app deep link. Web login omits this flag and is unchanged.
+    if (client === 'mobile') {
+      params.set('client', 'mobile');
+    }
     const normalizedReturnSearch = (() => {
       const raw = String(rawReturnSearch ?? '').trim();
       if (!raw) return '';
@@ -847,6 +856,7 @@ export class AuthService {
   async sendMagicLinkEmail(
     rawEmail: string,
     rawReturnSearch?: string,
+    client?: string,
   ): Promise<MagicLinkDispatchResult> {
     const email = rawEmail.trim().toLowerCase();
     if (!email.includes('@')) {
@@ -877,7 +887,10 @@ export class AuthService {
     }
 
     const supabase = this.getSupabaseAdminClient();
-    const callbackUrl = this.buildSupabaseFrontendCallbackUrl(rawReturnSearch);
+    const callbackUrl = this.buildSupabaseFrontendCallbackUrl(
+      rawReturnSearch,
+      client === 'mobile' ? 'mobile' : undefined,
+    );
     try {
       const runOtp = () =>
         supabase.auth.signInWithOtp({

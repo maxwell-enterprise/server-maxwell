@@ -100,7 +100,9 @@ export class AuthController {
 
   @Post('email/send')
   @RateLimit({ limit: 6, windowMs: 60_000, keyBy: 'email' })
-  async sendEmail(@Body() body: { email?: string; returnSearch?: string }) {
+  async sendEmail(
+    @Body() body: { email?: string; returnSearch?: string; client?: string },
+  ) {
     const email = typeof body.email === 'string' ? body.email.trim() : '';
     if (!email) {
       throw new BadRequestException('email required');
@@ -108,6 +110,7 @@ export class AuthController {
     const result = await this.auth.sendMagicLinkEmail(
       email,
       typeof body.returnSearch === 'string' ? body.returnSearch : undefined,
+      body.client === 'mobile' ? 'mobile' : undefined,
     );
     if (result.bypass && result.token) {
       return { ok: true, bypass: true, token: result.token };
