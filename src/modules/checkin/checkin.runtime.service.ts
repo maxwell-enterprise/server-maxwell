@@ -124,7 +124,9 @@ export class CheckinRuntimeService {
       };
     }
 
-    if (ticket.status === 'USED') {
+    const isSeriesPass = this.isSeriesParentTicketForEvent(ticket, event);
+
+    if (ticket.status === 'USED' && !isSeriesPass) {
       return {
         success: false,
         status: 'ALREADY_USED',
@@ -132,7 +134,11 @@ export class CheckinRuntimeService {
       };
     }
 
-    if (ticket.status !== 'ACTIVE' && ticket.status !== 'CLAIMED') {
+    if (
+      ticket.status !== 'ACTIVE' &&
+      ticket.status !== 'CLAIMED' &&
+      !(ticket.status === 'USED' && isSeriesPass)
+    ) {
       return {
         success: false,
         status: 'BLOCKED',
@@ -246,16 +252,7 @@ export class CheckinRuntimeService {
       ],
     );
 
-    await this.db.query(
-      `
-      update wallet_items
-      set status = 'USED',
-          "updatedAt" = now()
-      where id::text = $1
-         or coalesce(public_id, id::text) = $2
-      `,
-      [ticket.internalId, ticket.id],
-    );
+    await this.consumeTicketIfNeeded(ticket, event);
 
     try {
       await this.automationsEmit.enqueueTrigger({
@@ -885,7 +882,16 @@ export class CheckinRuntimeService {
       from wallet_items wi
       where wi."userId" = $1
         and wi.type = 'TICKET'
-        and wi.status in ('ACTIVE', 'CLAIMED')
+        and (
+          wi.status in ('ACTIVE', 'CLAIMED')
+          -- Series/container passes may already be USED from an earlier session;
+          -- still allow them for other child sessions of the same parent.
+          or (
+            wi.status = 'USED'
+            and $3 <> ''
+            and coalesce(wi.meta->>'eventId', '') = $3
+          )
+        )
         and (
           coalesce(wi.meta->>'eventId', '') = $2
           or ($3 <> '' and coalesce(wi.meta->>'eventId', '') = $3)
@@ -1196,6 +1202,44 @@ export class CheckinRuntimeService {
     return Math.random().toString(36).slice(2, 8).toUpperCase();
   }
 
+  /**
+   * True when the wallet ticket belongs to a parent CONTAINER event and the
+   * check-in target is one of its child sessions. Those passes must remain
+   * reusable across the series (one ticket → many weeks).
+   */
+  private isSeriesParentTicketForEvent(
+    ticket: WalletTicketRow,
+    event: EventRow,
+  ): boolean {
+    const ticketEventId = this.readMetaString(ticket.meta, 'eventId');
+    return (
+      Boolean(event.parentEventId) &&
+      Boolean(ticketEventId) &&
+      ticketEventId === event.parentEventId &&
+      ticketEventId !== event.id
+    );
+  }
+
+  private async consumeTicketIfNeeded(
+    ticket: WalletTicketRow,
+    event: EventRow,
+  ): Promise<void> {
+    if (this.isSeriesParentTicketForEvent(ticket, event)) {
+      return;
+    }
+
+    await this.db.query(
+      `
+      update wallet_items
+      set status = 'USED',
+          "updatedAt" = now()
+      where id::text = $1
+         or coalesce(public_id, id::text) = $2
+      `,
+      [ticket.internalId, ticket.id],
+    );
+  }
+
   private async recordTicketAttendance(input: {
     event: EventRow;
     member: AttendanceIdentityRow;
@@ -1292,16 +1336,7 @@ export class CheckinRuntimeService {
       ],
     );
 
-    await this.db.query(
-      `
-      update wallet_items
-      set status = 'USED',
-          "updatedAt" = now()
-      where id::text = $1
-         or coalesce(public_id, id::text) = $2
-      `,
-      [input.ticket.internalId, input.ticket.id],
-    );
+    await this.consumeTicketIfNeeded(input.ticket, input.event);
 
     await this.grantDoneTagIfConfigured(input.member, input.event);
 
