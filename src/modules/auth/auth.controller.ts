@@ -135,6 +135,18 @@ export class AuthController {
     return { ok: true, token };
   }
 
+  /** Mobile native Google Sign-In: exchange a Google ID token for a workspace JWT. */
+  @Post('google/id-token')
+  @RateLimit({ limit: 20, windowMs: 60_000 })
+  async exchangeGoogleIdToken(@Body() body: { idToken?: string }) {
+    const idToken = typeof body?.idToken === 'string' ? body.idToken.trim() : '';
+    if (!idToken) {
+      throw new BadRequestException('idToken required');
+    }
+    const token = await this.auth.handleGoogleIdToken(idToken);
+    return { ok: true, token };
+  }
+
   @Post('supabase/exchange')
   @RateLimit({ limit: 20, windowMs: 60_000 })
   async exchangeSupabaseToken(

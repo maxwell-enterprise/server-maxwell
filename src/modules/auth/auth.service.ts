@@ -17,6 +17,7 @@ import {
   USER_ROLE,
 } from '../workspace-identity/user-role.constants';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { OAuth2Client } from 'google-auth-library';
 
 function buildDefaultAvatarUrl(nameOrEmail: string): string {
   const seed = encodeURIComponent((nameOrEmail || 'User').trim());
@@ -141,6 +142,7 @@ export interface MagicLinkDispatchResult {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private supabaseAdminClient: SupabaseClient | null = null;
+  private readonly googleIdTokenVerifier = new OAuth2Client();
   /** Failed mobile OTP verify attempts per email (in-process). */
   private readonly mobileOtpFailures = new Map<string, number>();
 
@@ -395,6 +397,61 @@ export class AuthService {
       picture?: string;
     };
 
+    return this.signInWithGoogleProfile(profile);
+  }
+
+  /**
+   * Mobile native Google Sign-In: validates the signed Google ID token before
+   * resolving it to the same workspace account used by browser OAuth.
+   */
+  async handleGoogleIdToken(rawIdToken: string): Promise<string> {
+    const idToken = String(rawIdToken ?? '').trim();
+    const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+    if (!idToken) {
+      throw new UnauthorizedException('Google ID token is required');
+    }
+    if (!clientId) {
+      throw new UnauthorizedException('Google OAuth is not configured');
+    }
+
+    try {
+      const ticket = await this.googleIdTokenVerifier.verifyIdToken({
+        idToken,
+        audience: clientId,
+      });
+      const profile = ticket.getPayload();
+      if (!profile?.sub || !profile.email || !profile.email_verified) {
+        throw new UnauthorizedException('Google account email is not verified');
+      }
+      return this.signInWithGoogleProfile({
+        sub: profile.sub,
+        email: profile.email,
+        name: profile.name,
+        picture: profile.picture,
+      });
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err;
+      if (isOutboundNetworkFailure(err)) {
+        this.logger.warn(
+          `Google ID token verification unreachable: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        throw new ServiceUnavailableException(
+          'Sign-in could not verify your Google account. Check the server connection and try again.',
+        );
+      }
+      this.logger.warn(
+        `Google ID token verification failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw new UnauthorizedException('Google sign-in token is invalid or expired');
+    }
+  }
+
+  private async signInWithGoogleProfile(profile: {
+    sub: string;
+    email?: string;
+    name?: string;
+    picture?: string;
+  }): Promise<string> {
     const email = profile.email?.trim().toLowerCase();
     if (!email) {
       throw new UnauthorizedException('Google account has no email');
